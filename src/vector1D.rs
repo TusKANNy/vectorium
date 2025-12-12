@@ -82,6 +82,11 @@ where
 {
     #[inline]
     pub fn new(components: AC, values: AV, d: usize) -> Self {
+        assert!(
+            components.as_ref().len() == values.as_ref().len(),
+            "Components and values must have the same length"
+        );
+
         SparseVector1D {
             components,
             values,
