@@ -1,4 +1,5 @@
 #![feature(trait_alias)]
+#![feature(float_algebraic)]
 
 use fixed::FixedU8;
 use fixed::FixedU16;
@@ -18,8 +19,14 @@ pub mod num_marker;
 pub use num_marker::FromF32;
 
 #[allow(non_snake_case)]
-pub mod vector1D;
-pub use vector1D::{DenseVector1D, SparseVector1D, Vector1D};
+pub mod vector1d;
+pub use vector1d::{DenseVector1D, SparseVector1D, Vector1D};
+
+pub mod distances;
+pub use distances::{Distance, DotProduct, EuclideanDistance};
+
+pub mod quantizers;
+pub use quantizers::QueryEvaluator;
 
 /// Marker for types used as values in a dataset
 pub trait ValueType =

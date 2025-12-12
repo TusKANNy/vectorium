@@ -11,7 +11,11 @@
 //! `DotProduct` implements reversed ordering: larger values are considered
 //! better.
 
+use crate::DenseVector1D;
+use crate::SparseVector1D;
+use crate::Vector1D;
 use crate::{ComponentType, ValueType};
+
 use std::hint::assert_unchecked;
 
 /// A simple trait representing a distance-like value (stored as `f32`).
@@ -58,18 +62,6 @@ impl From<f32> for EuclideanDistance {
     }
 }
 
-impl std::convert::TryFrom<f32> for EuclideanDistance {
-    type Error = DistanceError;
-
-    fn try_from(v: f32) -> Result<Self, Self::Error> {
-        if v.is_nan() {
-            Err(DistanceError::NaNValue)
-        } else {
-            Ok(EuclideanDistance(v))
-        }
-    }
-}
-
 impl PartialEq for EuclideanDistance {
     fn eq(&self, other: &Self) -> bool {
         self.0.eq(&other.0)
@@ -113,18 +105,6 @@ impl From<f32> for DotProduct {
     fn from(v: f32) -> Self {
         assert!(!v.is_nan(), "NaN is not allowed for DotProduct");
         DotProduct(v)
-    }
-}
-
-impl std::convert::TryFrom<f32> for DotProduct {
-    type Error = DistanceError;
-
-    fn try_from(v: f32) -> Result<Self, Self::Error> {
-        if v.is_nan() {
-            Err(DistanceError::NaNValue)
-        } else {
-            Ok(DotProduct(v))
-        }
     }
 }
 
@@ -185,28 +165,31 @@ impl Ord for DotProduct {
 /// assert_eq!(result, vectorium::distances::DotProduct::from(4.0f32));
 /// ```
 #[inline]
-pub fn dot_product_dense_sparse<C, Q, V>(
-    query: &DenseVector1D<Q, AsRef<[Q]>>,
-    vector: &SparseVector1D<C, V, AsRef<[C]>, AsRef<[V]>>,
+pub fn dot_product_dense_sparse<C, Q, V, AQ, AC, AV>(
+    query: &DenseVector1D<Q, AQ>,
+    vector: &SparseVector1D<C, V, AC, AV>,
 ) -> DotProduct
 where
     C: ComponentType,
     Q: ValueType,
     V: ValueType,
+    AQ: AsRef<[Q]>,
+    AC: AsRef<[C]>,
+    AV: AsRef<[V]>,
 {
     let query = query.values_as_slice();
     vector
         .components_as_slice()
         .iter()
         .zip(vector.values_as_slice())
-        .map(|(&c, &v)| {
+        .map(|(&c, &v): (&C, &V)| {
             // SAFETY: query.len() == dim + 1. This assumes the input is sanitized.
             unsafe { *query.get_unchecked(c.as_()) }
                 .to_f32()
                 .unwrap()
                 .algebraic_mul(v.to_f32().unwrap())
         })
-        .fold(0.0, |acc, x| acc.algebraic_add(x))
+        .fold(0.0, |acc: f32, x| acc.algebraic_add(x))
         .into()
 }
 
@@ -224,22 +207,24 @@ where
 /// let result = dot_product_dense(a, b);
 /// assert_eq!(result, DotProduct::from(11.0f32));
 /// ```
-pub fn dot_product_dense<Q, V>(
-    query: DenseVector1D<Q, AsRef<[Q]>>,
-    vector: DenseVector1D<V, AsRef<[V]>>,
+pub fn dot_product_dense<Q, V, AQ, AV>(
+    query: DenseVector1D<Q, AQ>,
+    vector: DenseVector1D<V, AV>,
 ) -> DotProduct
 where
     Q: ValueType,
     V: ValueType,
+    AQ: AsRef<[Q]>,
+    AV: AsRef<[V]>,
 {
     let query = query.values_as_slice();
     let vector = vector.values_as_slice();
-    assert_unchecked!(query.len() == vector.len());
+    unsafe { assert_unchecked(query.len() == vector.len()) };
     query
         .iter()
         .zip(vector.iter())
-        .map(|(&q, &v)| q.to_f32().unwrap().algebraic_mul(v.to_f32().unwrap()))
-        .fold(0.0, |acc, x| acc.algebraic_add(x))
+        .map(|(&q, &v): (&Q, &V)| q.to_f32().unwrap().algebraic_mul(v.to_f32().unwrap()))
+        .fold(0.0, |acc: f32, x| acc.algebraic_add(x))
         .into()
 }
 

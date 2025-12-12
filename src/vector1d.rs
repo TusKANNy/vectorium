@@ -5,6 +5,8 @@ pub trait Vector1D {
     type ValueType;
 
     fn len(&self) -> usize;
+
+    #[inline]
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -46,14 +48,17 @@ where
     type ComponentType = ();
     type ValueType = V;
 
+    #[inline(always)]
     fn len(&self) -> usize {
         self.values.as_ref().len()
     }
 
+    #[inline(always)]
     fn values_as_slice(&self) -> &[Self::ValueType] {
         self.values.as_ref()
     }
 
+    #[inline(always)]
     fn components_as_slice(&self) -> &[Self::ComponentType] {
         &[]
     }

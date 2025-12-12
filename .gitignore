@@ -22,3 +22,6 @@ target
 
 # Editor folders
 .vscode/
+
+# Cargo lockfile
+Cargo.lock
