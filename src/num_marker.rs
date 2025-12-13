@@ -41,3 +41,44 @@ macro_rules! impl_from_f32_saturating {
 }
 
 impl_from_f32_saturating![f64, f32, f16, bf16];
+
+// ============================================================================
+// DenseComponent - marker type for dense vectors (no component indices)
+// ============================================================================
+
+use crate::SpaceUsage;
+use num_traits::FromPrimitive;
+use std::hash::Hash;
+
+/// Marker type used as `ComponentType` for dense vectors.
+/// Dense vectors don't have explicit component indices, so this is a placeholder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct DenseComponent;
+
+impl SpaceUsage for DenseComponent {
+    fn space_usage_byte(&self) -> usize {
+        0
+    }
+}
+
+impl AsPrimitive<usize> for DenseComponent {
+    fn as_(self) -> usize {
+        0
+    }
+}
+
+impl FromPrimitive for DenseComponent {
+    fn from_i64(_: i64) -> Option<Self> {
+        Some(DenseComponent)
+    }
+    fn from_u64(_: u64) -> Option<Self> {
+        Some(DenseComponent)
+    }
+}
+
+impl TryFrom<usize> for DenseComponent {
+    type Error = std::convert::Infallible;
+    fn try_from(_: usize) -> Result<Self, Self::Error> {
+        Ok(DenseComponent)
+    }
+}

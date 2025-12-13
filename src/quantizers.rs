@@ -1,4 +1,6 @@
-use crate::{Vector1D, distances::Distance};
+use crate::ComponentType as ComponentTypeTrait;
+use crate::ValueType as ValueTypeTrait;
+use crate::{MutableVector1D, Vector1D, distances::Distance};
 
 pub mod plain;
 
@@ -8,12 +10,19 @@ pub trait QueryEvaluator {
     type QuantizerType: Quantizer;
     type DistanceType: Distance;
 
-    fn new(query: <Self::QuantizerType as Quantizer>::QueryType) -> Self;
+    fn new<QueryVector>(query: QueryVector) -> Self
+    where
+        QueryVector: Vector1D<
+                ValueType = <Self::QuantizerType as Quantizer>::QueryValueType,
+                ComponentType = <Self::QuantizerType as Quantizer>::QueryComponentType,
+            >;
 
-    fn compute_distance(
-        &self,
-        vector: <Self::QuantizerType as Quantizer>::OutputVector1D,
-    ) -> Self::DistanceType;
+    fn compute_distance<EncodedVector>(&self, vector: EncodedVector) -> Self::DistanceType
+    where
+        EncodedVector: Vector1D<
+                ValueType = <Self::QuantizerType as Quantizer>::OutputValueType,
+                ComponentType = <Self::QuantizerType as Quantizer>::OutputComponentType,
+            >;
 
     // fn compute_distance(
     //     &self,
@@ -50,15 +59,31 @@ pub trait QueryEvaluator {
 }
 
 pub trait Quantizer: Sized {
-    type QueryType: Vector1D;
-    type InputVector1D: Vector1D;
-    type OutputVector1D: Vector1D;
-    type Evaluator: QueryEvaluator;
+    type QueryValueType: ValueTypeTrait;
+    type QueryComponentType: ComponentTypeTrait;
+    type InputValueType: ValueTypeTrait;
+    type InputComponentType: ComponentTypeTrait;
+    type OutputValueType: ValueTypeTrait;
+    type OutputComponentType: ComponentTypeTrait;
+    type Evaluator: QueryEvaluator<QuantizerType = Self>;
 
     /// Encode input vectors into quantized output vectors
-    fn encode(&self, input_vectors: Self::InputVector1D, output_vectors: &mut Self::OutputVector1D);
+    fn encode<InputVector, OutputVector>(
+        &self,
+        input_vector: InputVector,
+        output_vector: &mut OutputVector,
+    ) where
+        InputVector:
+            Vector1D<ValueType = Self::InputValueType, ComponentType = Self::InputComponentType>,
+        OutputVector: MutableVector1D<
+                ValueType = Self::OutputValueType,
+                ComponentType = Self::OutputComponentType,
+            >;
 
-    fn get_query_evaluator(&self, query: Self::QueryType) -> Self::Evaluator;
+    fn get_query_evaluator<QueryVector>(&self, query: QueryVector) -> Self::Evaluator
+    where
+        QueryVector:
+            Vector1D<ValueType = Self::QueryValueType, ComponentType = Self::QueryComponentType>;
 
     /// Number of components in the quantized vector
     fn m(&self) -> usize;

@@ -16,17 +16,20 @@ pub mod space_usage;
 pub use space_usage::SpaceUsage;
 
 pub mod num_marker;
-pub use num_marker::FromF32;
+pub use num_marker::{DenseComponent, FromF32};
 
 #[allow(non_snake_case)]
 pub mod vector1d;
-pub use vector1d::{DenseVector1D, SparseVector1D, Vector1D};
+pub use vector1d::{DenseVector1D, MutableVector1D, SparseVector1D, Vector1D};
 
 pub mod distances;
 pub use distances::{Distance, DotProduct, EuclideanDistance};
 
 pub mod quantizers;
 pub use quantizers::QueryEvaluator;
+
+pub mod datasets;
+pub use datasets::dense_dataset::DenseDataset;
 
 /// Marker for types used as values in a dataset
 pub trait ValueType =

@@ -228,6 +228,38 @@ where
         .into()
 }
 
+/// Computes the Euclidean distance (squared) between two dense vectors.
+pub fn euclidean_distance_dense<Q, V, AQ, AV>(
+    query: DenseVector1D<Q, AQ>,
+    vector: DenseVector1D<V, AV>,
+) -> EuclideanDistance
+where
+    Q: ValueType,
+    V: ValueType,
+    AQ: AsRef<[Q]>,
+    AV: AsRef<[V]>,
+{
+    let query = query.values_as_slice();
+    let vector = vector.values_as_slice();
+    unsafe { assert_unchecked(query.len() == vector.len()) };
+
+    let sum_sq = query
+        .iter()
+        .zip(vector.iter())
+        .map(|(&q, &v): (&Q, &V)| {
+            let q = q.to_f32().unwrap();
+            let v = v.to_f32().unwrap();
+
+            let diff = q.algebraic_add(-v);
+
+            // diff^2
+            diff.algebraic_mul(diff)
+        })
+        .fold(0.0f32, |acc, x| acc.algebraic_add(x));
+
+    sum_sq.into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

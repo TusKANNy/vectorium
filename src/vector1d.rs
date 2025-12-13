@@ -1,4 +1,4 @@
-use crate::{ComponentType, ValueType};
+use crate::{ComponentType, DenseComponent, ValueType};
 
 pub trait Vector1D {
     type ComponentType;
@@ -13,6 +13,10 @@ pub trait Vector1D {
 
     fn components_as_slice(&self) -> &[Self::ComponentType];
     fn values_as_slice(&self) -> &[Self::ValueType];
+}
+
+pub trait MutableVector1D: Vector1D {
+    fn values_as_mut_slice(&mut self) -> &mut [Self::ValueType];
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,7 +49,7 @@ where
     V: ValueType,
     AV: AsRef<[V]>,
 {
-    type ComponentType = ();
+    type ComponentType = DenseComponent;
     type ValueType = V;
 
     #[inline(always)]
@@ -61,6 +65,17 @@ where
     #[inline(always)]
     fn components_as_slice(&self) -> &[Self::ComponentType] {
         &[]
+    }
+}
+
+impl<V, AV> MutableVector1D for DenseVector1D<V, AV>
+where
+    V: ValueType,
+    AV: AsRef<[V]> + AsMut<[V]>,
+{
+    #[inline(always)]
+    fn values_as_mut_slice(&mut self) -> &mut [Self::ValueType] {
+        self.values.as_mut()
     }
 }
 
