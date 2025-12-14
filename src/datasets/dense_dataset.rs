@@ -1,12 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
 
 use crate::DenseVector1D;
 use crate::SpaceUsage;
 use crate::Vector1D;
-use crate::datasets::{Dataset, GrowableDataset, Result};
-use crate::quantizers::{Quantizer, QueryEvaluator};
+use crate::datasets::{Dataset, GrowableDataset};
+use crate::quantizers::Quantizer;
 use rayon::prelude::*;
 
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
@@ -164,37 +162,6 @@ where
         Item = impl Vector1D<ComponentType = Q::OutputComponentType, ValueType = Q::OutputValueType>,
     > {
         DenseDatasetIter::new(self)
-    }
-
-    /// Heap-based search for top-k results using a min-heap (BinaryHeap with Reverse).
-    /// More efficient than collecting all results when k << dataset size.
-    #[inline]
-    fn search(
-        &self,
-        query: impl Vector1D<ComponentType = Q::QueryComponentType, ValueType = Q::QueryValueType>,
-        k: usize,
-    ) -> Vec<Result<<Q as Quantizer>::Distance>> {
-        let evaluator = self.quantizer().get_query_evaluator(query);
-
-        // Use a min-heap (via Reverse) to track top-k: root is the worst candidate
-        let mut heap: BinaryHeap<Reverse<Result<<Q as Quantizer>::Distance>>> = BinaryHeap::new();
-
-        for (id, vector) in self.iter().enumerate() {
-            let distance = evaluator.compute_distance(vector);
-            let result = Result { distance, id };
-
-            if heap.len() < k {
-                heap.push(Reverse(result));
-            } else if result < heap.peek().unwrap().0 {
-                heap.pop();
-                heap.push(Reverse(result));
-            }
-        }
-
-        // Convert min-heap to sorted vec
-        let mut results: Vec<_> = heap.into_vec().into_iter().map(|r| r.0).collect();
-        results.sort();
-        results
     }
 
     // #[inline]

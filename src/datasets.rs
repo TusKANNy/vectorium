@@ -1,6 +1,8 @@
 use crate::quantizers::{Quantizer, QueryEvaluator};
 use crate::{Distance, SpaceUsage, Vector1D};
 
+use std::collections::BinaryHeap;
+
 pub mod dense_dataset;
 
 #[derive(Debug, PartialOrd, Eq, Ord, PartialEq, Copy, Clone)]
@@ -54,18 +56,28 @@ where
     ) -> Vec<Result<<Q as Quantizer>::Distance>> {
         let evaluator = self.quantizer().get_query_evaluator(query);
 
-        let mut results: Vec<Result<<Q as Quantizer>::Distance>> = self
-            .iter()
-            .enumerate()
-            .map(|(id, vector)| Result {
-                distance: evaluator.compute_distance(vector),
-                id,
-            })
-            .collect();
+        if k == 0 {
+            return Vec::new();
+        }
 
+        // Use a min-heap (via Reverse) to track top-k: root is the worst candidate
+        let mut heap: BinaryHeap<Result<<Q as Quantizer>::Distance>> = BinaryHeap::with_capacity(k);
+
+        for (id, vector) in self.iter().enumerate() {
+            let distance = evaluator.compute_distance(vector);
+            let result = Result { distance, id };
+
+            if heap.len() < k {
+                heap.push(result);
+            } else if result < *heap.peek().unwrap() {
+                heap.pop();
+                heap.push(result);
+            }
+        }
+
+        // Convert min-heap to sorted vec
+        let mut results: Vec<_> = heap.into_vec().into_iter().map(|r| r).collect();
         results.sort();
-        results.truncate(k);
-
         results
     }
 }

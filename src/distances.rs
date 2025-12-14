@@ -207,6 +207,7 @@ where
 /// let result = dot_product_dense(a, b);
 /// assert_eq!(result, DotProduct::from(11.0f32));
 /// ```
+#[inline]
 pub fn dot_product_dense<Q, V, AQ, AV>(
     query: DenseVector1D<Q, AQ>,
     vector: DenseVector1D<V, AV>,
@@ -229,6 +230,7 @@ where
 }
 
 /// Computes the Euclidean distance (squared) between two dense vectors.
+#[inline]
 pub fn euclidean_distance_dense<Q, V, AQ, AV>(
     query: DenseVector1D<Q, AQ>,
     vector: DenseVector1D<V, AV>,
@@ -250,7 +252,7 @@ where
             let q = q.to_f32().unwrap();
             let v = v.to_f32().unwrap();
 
-            let diff = q.algebraic_add(-v);
+            let diff = q.algebraic_sub(v);
 
             // diff^2
             diff.algebraic_mul(diff)

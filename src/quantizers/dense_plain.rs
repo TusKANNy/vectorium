@@ -11,23 +11,25 @@ use crate::{DenseComponent, DenseVector1D, FromF32, MutableVector1D, ValueType, 
 /// Provides the computation method specific to dense vectors.
 pub trait PlainDenseSupportedDistance: Distance {
     /// Compute distance between two dense f32 vectors
-    fn compute_dense(query: DenseVector1D<f32, &[f32]>, vector: DenseVector1D<f32, &[f32]>)
-    -> Self;
+    fn compute_dense<Q: ValueType, V: ValueType>(
+        query: DenseVector1D<Q, &[Q]>,
+        vector: DenseVector1D<V, &[V]>,
+    ) -> Self;
 }
 
 impl PlainDenseSupportedDistance for EuclideanDistance {
-    fn compute_dense(
-        query: DenseVector1D<f32, &[f32]>,
-        vector: DenseVector1D<f32, &[f32]>,
+    fn compute_dense<Q: ValueType, V: ValueType>(
+        query: DenseVector1D<Q, &[Q]>,
+        vector: DenseVector1D<V, &[V]>,
     ) -> Self {
         euclidean_distance_dense(query, vector)
     }
 }
 
 impl PlainDenseSupportedDistance for DotProduct {
-    fn compute_dense(
-        query: DenseVector1D<f32, &[f32]>,
-        vector: DenseVector1D<f32, &[f32]>,
+    fn compute_dense<Q: ValueType, V: ValueType>(
+        query: DenseVector1D<Q, &[Q]>,
+        vector: DenseVector1D<V, &[V]>,
     ) -> Self {
         dot_product_dense(query, vector)
     }
@@ -170,12 +172,9 @@ where
                 ComponentType = <ScalarDenseQuantizer<In, Out, D> as Quantizer>::OutputComponentType,
             >,
     {
-        // Convert encoded vector to f32
-        let encoded = vector.values_as_slice();
-        let vec_f32: Vec<f32> = encoded.iter().map(|v| v.to_f32().unwrap()).collect();
         D::compute_dense(
             DenseVector1D::new(self.query.as_slice()),
-            DenseVector1D::new(vec_f32.as_slice()),
+            DenseVector1D::new(vector.values_as_slice()),
         )
     }
 }

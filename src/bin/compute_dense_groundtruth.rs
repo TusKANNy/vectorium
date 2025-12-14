@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::Write;
 use std::time::Instant;
 
-use indicatif::{ProgressIterator, ProgressStyle};
+use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::prelude::*;
 
 use vectorium::SpaceUsage;
@@ -91,7 +91,7 @@ where
         .progress_chars("=>-");
 
     let results: Vec<Vec<(f32, usize)>> = queries
-        .iter()
+        .par_iter()
         .progress_count(queries.len() as u64)
         .with_style(pb_style)
         .map(|qvec| {
