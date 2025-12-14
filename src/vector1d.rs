@@ -35,6 +35,7 @@ where
     V: ValueType,
     AV: AsRef<[V]>,
 {
+    #[inline]
     pub fn new(values: AV) -> Self {
         Self {
             components: (),
@@ -52,12 +53,12 @@ where
     type ComponentType = DenseComponent;
     type ValueType = V;
 
-    #[inline(always)]
+    #[inline]
     fn len(&self) -> usize {
         self.values.as_ref().len()
     }
 
-    #[inline(always)]
+    #[inline]
     fn values_as_slice(&self) -> &[Self::ValueType] {
         self.values.as_ref()
     }
