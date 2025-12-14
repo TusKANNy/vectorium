@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 
 use crate::DenseVector1D;
 use crate::SpaceUsage;
 use crate::Vector1D;
-use crate::datasets::Dataset;
-use crate::datasets::GrowableDataset;
-use crate::quantizers::Quantizer;
+use crate::datasets::{Dataset, GrowableDataset, Result};
+use crate::quantizers::{Quantizer, QueryEvaluator};
+use rayon::prelude::*;
 
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct DenseDataset<Q, Data>
@@ -38,6 +40,23 @@ where
     #[inline]
     pub fn values(&self) -> &[Q::OutputValueType] {
         self.data.as_ref()
+    }
+
+    /// Parallel iterator over dataset vectors (each item is a `DenseVector1D` borrowing a slice).
+    #[inline]
+    pub fn par_iter(
+        &self,
+    ) -> impl ParallelIterator<Item = DenseVector1D<Q::OutputValueType, &'_ [Q::OutputValueType]>>
+    {
+        let m = self.quantizer.m();
+        let data = self.data.as_ref();
+        let n = self.n_vecs;
+
+        (0..n).into_par_iter().map(move |i| {
+            let start = i * m;
+            let end = start + m;
+            DenseVector1D::new(&data[start..end])
+        })
     }
 }
 
@@ -145,6 +164,37 @@ where
         Item = impl Vector1D<ComponentType = Q::OutputComponentType, ValueType = Q::OutputValueType>,
     > {
         DenseDatasetIter::new(self)
+    }
+
+    /// Heap-based search for top-k results using a min-heap (BinaryHeap with Reverse).
+    /// More efficient than collecting all results when k << dataset size.
+    #[inline]
+    fn search(
+        &self,
+        query: impl Vector1D<ComponentType = Q::QueryComponentType, ValueType = Q::QueryValueType>,
+        k: usize,
+    ) -> Vec<Result<<Q as Quantizer>::Distance>> {
+        let evaluator = self.quantizer().get_query_evaluator(query);
+
+        // Use a min-heap (via Reverse) to track top-k: root is the worst candidate
+        let mut heap: BinaryHeap<Reverse<Result<<Q as Quantizer>::Distance>>> = BinaryHeap::new();
+
+        for (id, vector) in self.iter().enumerate() {
+            let distance = evaluator.compute_distance(vector);
+            let result = Result { distance, id };
+
+            if heap.len() < k {
+                heap.push(Reverse(result));
+            } else if result < heap.peek().unwrap().0 {
+                heap.pop();
+                heap.push(Reverse(result));
+            }
+        }
+
+        // Convert min-heap to sorted vec
+        let mut results: Vec<_> = heap.into_vec().into_iter().map(|r| r.0).collect();
+        results.sort();
+        results
     }
 
     // #[inline]
