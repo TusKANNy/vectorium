@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::DenseComponent;
 use crate::DenseVector1D;
 use crate::SpaceUsage;
 use crate::Vector1D;
@@ -9,21 +8,21 @@ use crate::datasets::GrowableDataset;
 use crate::quantizers::Quantizer;
 
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
-pub struct DenseDataset<Q, D>
+pub struct DenseDataset<Q, Data>
 where
     Q: Quantizer,
-    D: AsRef<[Q::OutputValueType]>,
+    Data: AsRef<[Q::OutputValueType]>,
 {
-    data: D,
+    data: Data,
     n_vecs: usize,
     d: usize,
     quantizer: Q,
 }
 
-impl<Q, D> SpaceUsage for DenseDataset<Q, D>
+impl<Q, Data> SpaceUsage for DenseDataset<Q, Data>
 where
-    Q: Quantizer<OutputComponentType = DenseComponent>,
-    D: AsRef<[Q::OutputValueType]>,
+    Q: Quantizer<OutputComponentType = crate::DenseComponent>,
+    Data: AsRef<[Q::OutputValueType]>,
 {
     fn space_usage_byte(&self) -> usize {
         std::mem::size_of::<Self>()
@@ -31,10 +30,10 @@ where
     }
 }
 
-impl<Q, D> DenseDataset<Q, D>
+impl<Q, Data> DenseDataset<Q, Data>
 where
-    Q: Quantizer<OutputComponentType = DenseComponent>,
-    D: AsRef<[Q::OutputValueType]>,
+    Q: Quantizer<OutputComponentType = crate::DenseComponent>,
+    Data: AsRef<[Q::OutputValueType]>,
 {
     #[inline]
     pub fn values(&self) -> &[Q::OutputValueType] {
@@ -42,11 +41,34 @@ where
     }
 }
 
-/// immutable
-impl<Q, D> Dataset<Q> for DenseDataset<Q, D>
+impl<Q> DenseDataset<Q, Vec<Q::OutputValueType>>
 where
-    Q: Quantizer<OutputComponentType = DenseComponent>,
-    D: AsRef<[Q::OutputValueType]>,
+    Q: Quantizer<OutputComponentType = crate::DenseComponent>,
+{
+    /// Creates a DenseDataset from raw data.
+    ///
+    /// # Arguments
+    /// * `data` - The raw vector data (flattened)
+    /// * `n_vecs` - Number of vectors
+    /// * `d` - Dimensionality of each vector
+    /// * `quantizer` - The quantizer to use
+    #[inline]
+    pub fn from_raw(data: Vec<Q::OutputValueType>, n_vecs: usize, d: usize, quantizer: Q) -> Self {
+        debug_assert_eq!(data.len(), n_vecs * d, "Data length must equal n_vecs * d");
+        Self {
+            data,
+            n_vecs,
+            d,
+            quantizer,
+        }
+    }
+}
+
+/// immutable
+impl<Q, Data> Dataset<Q> for DenseDataset<Q, Data>
+where
+    Q: Quantizer<OutputComponentType = crate::DenseComponent>,
+    Data: AsRef<[Q::OutputValueType]>,
 {
     #[inline]
     fn quantizer(&self) -> &Q {
@@ -207,7 +229,7 @@ where
 // mutable
 impl<Q> GrowableDataset<Q> for DenseDataset<Q, Vec<Q::OutputValueType>>
 where
-    Q: Quantizer<OutputComponentType = DenseComponent, InputComponentType = DenseComponent>,
+    Q: Quantizer<OutputComponentType = crate::DenseComponent>,
     Q::OutputValueType: Default,
 {
     #[inline]
@@ -258,7 +280,7 @@ where
 impl<Q> From<DenseDataset<Q, Vec<Q::OutputValueType>>>
     for DenseDataset<Q, Box<[Q::OutputValueType]>>
 where
-    Q: Quantizer,
+    Q: Quantizer<OutputComponentType = crate::DenseComponent>,
 {
     fn from(mutable_dataset: DenseDataset<Q, Vec<Q::OutputValueType>>) -> Self {
         DenseDataset {
@@ -306,7 +328,7 @@ where
 /// densedataset iterator
 pub struct DenseDatasetIter<'a, Q>
 where
-    Q: Quantizer<OutputComponentType = DenseComponent>,
+    Q: Quantizer<OutputComponentType = crate::DenseComponent>,
 {
     data: &'a [Q::OutputValueType],
     d: usize,
@@ -315,12 +337,11 @@ where
 
 impl<'a, Q> DenseDatasetIter<'a, Q>
 where
-    Q: Quantizer<OutputComponentType = DenseComponent>,
+    Q: Quantizer<OutputComponentType = crate::DenseComponent>,
 {
-    pub fn new<D>(dataset: &'a DenseDataset<Q, D>) -> Self
+    pub fn new<Data>(dataset: &'a DenseDataset<Q, Data>) -> Self
     where
-        Q: Quantizer<OutputComponentType = DenseComponent>,
-        D: AsRef<[Q::OutputValueType]>,
+        Data: AsRef<[Q::OutputValueType]>,
     {
         Self {
             data: dataset.values(),
@@ -332,7 +353,8 @@ where
 
 impl<'a, Q> Iterator for DenseDatasetIter<'a, Q>
 where
-    Q: Quantizer<OutputComponentType = DenseComponent>,
+    Q: Quantizer<OutputComponentType = crate::DenseComponent>,
+    Q: Quantizer,
 {
     type Item = DenseVector1D<Q::OutputValueType, &'a [Q::OutputValueType]>;
 

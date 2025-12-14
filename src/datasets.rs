@@ -1,7 +1,13 @@
-use crate::quantizers::Quantizer;
-use crate::{SpaceUsage, Vector1D};
+use crate::quantizers::{Quantizer, QueryEvaluator};
+use crate::{Distance, SpaceUsage, Vector1D};
 
 pub mod dense_dataset;
+
+#[derive(Debug, PartialOrd, Eq, Ord, PartialEq, Copy, Clone)]
+pub struct Result<D: Distance> {
+    pub distance: D,
+    pub id: usize,
+}
 
 pub trait Dataset<Q>: SpaceUsage
 where
@@ -40,16 +46,34 @@ where
         Item = impl Vector1D<ComponentType = Q::OutputComponentType, ValueType = Q::OutputValueType>,
     >;
 
-    // fn search<'a, H: OnlineTopKSelector>(
-    //     &self,
-    //     query: <Q::Evaluator<'a> as QueryEvaluator<'a>>::QueryType>,
-    //     heap: &mut H,
-    // ) -> Vec<(f32, usize)>
-    // where
-    //     Q::InputItem: Float + EuclideanDistance<Q::InputItem> + DotProduct<Q::InputItem>;
+    #[inline]
+    fn search(
+        &self,
+        query: impl Vector1D<ComponentType = Q::QueryComponentType, ValueType = Q::QueryValueType>,
+        k: usize,
+    ) -> Vec<Result<<Q as Quantizer>::Distance>> {
+        let evaluator = self.quantizer().get_query_evaluator(query);
+
+        let mut results: Vec<Result<<Q as Quantizer>::Distance>> = self
+            .iter()
+            .enumerate()
+            .map(|(id, vector)| Result {
+                distance: evaluator.compute_distance(vector),
+                id,
+            })
+            .collect();
+
+        results.sort();
+        results.truncate(k);
+
+        results
+    }
 }
 
-pub trait GrowableDataset<Q: Quantizer>: Dataset<Q> {
+pub trait GrowableDataset<Q>: Dataset<Q>
+where
+    Q: Quantizer,
+{
     fn new(quantizer: Q, d: usize) -> Self;
     fn push(
         &mut self,

@@ -19,7 +19,7 @@ use crate::{ComponentType, ValueType};
 use std::hint::assert_unchecked;
 
 /// A simple trait representing a distance-like value (stored as `f32`).
-pub trait Distance {
+pub trait Distance: Ord + Copy + Send + Sync {
     /// Return the numeric distance value.
     fn distance(&self) -> f32;
 }

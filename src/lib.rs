@@ -26,10 +26,18 @@ pub mod distances;
 pub use distances::{Distance, DotProduct, EuclideanDistance};
 
 pub mod quantizers;
+pub use quantizers::Quantizer;
 pub use quantizers::QueryEvaluator;
+pub use quantizers::dense_plain::{
+    PlainDenseQuantizer, PlainDenseQuantizerDotProduct, PlainDenseQuantizerEuclidean,
+    PlainDenseSupportedDistance, ScalarDenseQuantizer, ScalarDenseQueryEvaluator,
+};
 
 pub mod datasets;
 pub use datasets::dense_dataset::DenseDataset;
+
+pub mod readers;
+pub use readers::read_npy_f32;
 
 /// Marker for types used as values in a dataset
 pub trait ValueType =
@@ -45,3 +53,9 @@ pub trait ComponentType = AsPrimitive<usize>
     + Eq
     + Ord
     + std::convert::TryFrom<usize>;
+
+/// Convenience type aliases for common dense dataset configurations
+pub type DenseDatasetEuclideanGrowable<V> =
+    DenseDataset<PlainDenseQuantizer<V, EuclideanDistance>, Vec<V>>;
+pub type DenseDatasetDotProductGrowable<V> =
+    DenseDataset<PlainDenseQuantizer<V, DotProduct>, Vec<V>>;
