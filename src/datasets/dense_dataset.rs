@@ -35,6 +35,28 @@ where
     Q: Quantizer<OutputComponentType = crate::DenseComponent>,
     Data: AsRef<[Q::OutputValueType]>,
 {
+    /// Creates a DenseDataset from raw data.
+    ///
+    /// # Arguments
+    /// * `data` - The raw vector data (flattened)
+    /// * `n_vecs` - Number of vectors
+    /// * `d` - Dimensionality of each vector
+    /// * `quantizer` - The quantizer to use
+    #[inline]
+    pub fn from_raw(data: Data, n_vecs: usize, d: usize, quantizer: Q) -> Self {
+        debug_assert_eq!(
+            data.as_ref().len(),
+            n_vecs * d,
+            "Data length must equal n_vecs * d"
+        );
+        Self {
+            data,
+            n_vecs,
+            d,
+            quantizer,
+        }
+    }
+
     #[inline]
     pub fn values(&self) -> &[Q::OutputValueType] {
         self.data.as_ref()
@@ -55,29 +77,6 @@ where
             let end = start + m;
             DenseVector1D::new(&data[start..end])
         })
-    }
-}
-
-impl<Q> DenseDataset<Q, Vec<Q::OutputValueType>>
-where
-    Q: Quantizer<OutputComponentType = crate::DenseComponent>,
-{
-    /// Creates a DenseDataset from raw data.
-    ///
-    /// # Arguments
-    /// * `data` - The raw vector data (flattened)
-    /// * `n_vecs` - Number of vectors
-    /// * `d` - Dimensionality of each vector
-    /// * `quantizer` - The quantizer to use
-    #[inline]
-    pub fn from_raw(data: Vec<Q::OutputValueType>, n_vecs: usize, d: usize, quantizer: Q) -> Self {
-        debug_assert_eq!(data.len(), n_vecs * d, "Data length must equal n_vecs * d");
-        Self {
-            data,
-            n_vecs,
-            d,
-            quantizer,
-        }
     }
 }
 
@@ -322,25 +321,15 @@ where
 //     }
 // }
 
-// impl<Q, T> AsRef<[Q::OutputItem]> for DenseDataset<Q, T>
-// where
-//     Q: Quantizer,
-//     T: AsRef<[Q::OutputItem]>,
-// {
-//     fn as_ref(&self) -> &[Q::OutputItem] {
-//         self.data.as_ref()
-//     }
-// }
-
-// impl<Q, T> AsMut<[Q::OutputItem]> for DenseDataset<Q, T>
-// where
-//     Q: Quantizer,
-//     T: AsMut<[Q::OutputItem]>,
-// {
-//     fn as_mut(&mut self) -> &mut [Q::OutputItem] {
-//         self.data.as_mut()
-//     }
-// }
+impl<Q, T> AsRef<[Q::OutputValueType]> for DenseDataset<Q, T>
+where
+    Q: Quantizer<OutputComponentType = crate::DenseComponent>,
+    T: AsRef<[Q::OutputValueType]>,
+{
+    fn as_ref(&self) -> &[Q::OutputValueType] {
+        self.data.as_ref()
+    }
+}
 
 /// densedataset iterator
 pub struct DenseDatasetIter<'a, Q>

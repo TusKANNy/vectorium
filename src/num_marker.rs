@@ -42,6 +42,17 @@ macro_rules! impl_from_f32_saturating {
 
 impl_from_f32_saturating![f64, f32, f16, bf16];
 
+pub trait Float {}
+
+macro_rules! impl_from_float {
+    ($($t:ty),*) => {
+        $(impl Float for $t {
+        })*
+    }
+}
+
+impl_from_float![f64, f32, f16, bf16];
+
 // ============================================================================
 // DenseComponent - marker type for dense vectors (no component indices)
 // ============================================================================

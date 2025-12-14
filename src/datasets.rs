@@ -4,6 +4,7 @@ use crate::{Distance, SpaceUsage, Vector1D};
 use std::collections::BinaryHeap;
 
 pub mod dense_dataset;
+pub mod dense_dataset_scalar;
 
 #[derive(Debug, PartialOrd, Eq, Ord, PartialEq, Copy, Clone)]
 pub struct Result<D: Distance> {

@@ -2,7 +2,7 @@ use crate::ComponentType as ComponentTypeTrait;
 use crate::ValueType as ValueTypeTrait;
 use crate::{MutableVector1D, Vector1D, distances::Distance};
 
-pub mod dense_plain;
+pub mod dense_scalar;
 
 /// A query evaluator computes distances between a query and encoded vectors.
 pub trait QueryEvaluator<Q: Quantizer>: Sized {

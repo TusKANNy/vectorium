@@ -3,13 +3,14 @@ use std::fs::File;
 use std::io::Write;
 use std::time::Instant;
 
-use indicatif::{ParallelProgressIterator, ProgressStyle};
-use rayon::prelude::*;
+use half::{bf16, f16};
+use indicatif::{ProgressIterator, ProgressStyle};
 
 use vectorium::SpaceUsage;
 use vectorium::datasets::{Dataset, Result as DatasetResult};
 use vectorium::distances;
 use vectorium::readers;
+use vectorium::{DenseDataset, Float, ScalarDenseQuantizer};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -35,6 +36,11 @@ struct Args {
     #[clap(short, long, value_parser)]
     #[arg(default_value = "euclidean")]
     distance: String,
+
+    /// Value type for dataset: 'f32', 'f16', or 'bf16' (default: f32)
+    #[clap(short, long, value_parser)]
+    #[arg(default_value = "f32")]
+    value_type: String,
 }
 
 fn main() {
@@ -44,30 +50,73 @@ fn main() {
     let query_path = args.query_file.expect("query_file is required");
     let output_path = args.output_path.expect("output_path is required");
     let k = args.k;
+    let value_type = args.value_type.to_lowercase();
+    let distance = args.distance.to_lowercase();
 
-    match args.distance.to_lowercase().as_str() {
-        "euclidean" => compute_groundtruth::<distances::EuclideanDistance>(
+    // Print chosen value type
+    println!("Value type: {}", value_type);
+    if value_type != "f32" {
+        println!("Converting from f32 to {}...", value_type);
+    }
+
+    match (distance.as_str(), value_type.as_str()) {
+        ("euclidean", "f32") => compute_groundtruth::<f32, distances::EuclideanDistance>(
             input_path,
             query_path,
             output_path,
             k,
         ),
-        "dotproduct" => {
-            compute_groundtruth::<distances::DotProduct>(input_path, query_path, output_path, k)
-        }
-        _ => eprintln!(
-            "Unknown distance metric: {}. Use 'euclidean' or 'dotproduct'.",
-            args.distance
+        ("euclidean", "f16") => compute_groundtruth::<f16, distances::EuclideanDistance>(
+            input_path,
+            query_path,
+            output_path,
+            k,
         ),
+        ("euclidean", "bf16") => compute_groundtruth::<bf16, distances::EuclideanDistance>(
+            input_path,
+            query_path,
+            output_path,
+            k,
+        ),
+        ("dotproduct", "f32") => compute_groundtruth::<f32, distances::DotProduct>(
+            input_path,
+            query_path,
+            output_path,
+            k,
+        ),
+        ("dotproduct", "f16") => compute_groundtruth::<f16, distances::DotProduct>(
+            input_path,
+            query_path,
+            output_path,
+            k,
+        ),
+        ("dotproduct", "bf16") => compute_groundtruth::<bf16, distances::DotProduct>(
+            input_path,
+            query_path,
+            output_path,
+            k,
+        ),
+        _ => {
+            eprintln!(
+                "Unknown combination: distance='{}', value_type='{}'. Use distance='euclidean'|'dotproduct' and value_type='f32'|'f16'|'bf16'.",
+                distance, value_type
+            );
+        }
     }
 }
 
-fn compute_groundtruth<D>(input_path: String, query_path: String, output_path: String, k: usize)
+fn compute_groundtruth<V, D>(input_path: String, query_path: String, output_path: String, k: usize)
 where
-    D: vectorium::PlainDenseSupportedDistance + Send + Sync,
+    V: vectorium::ValueType + Float,
+    D: vectorium::ScalarDenseSupportedDistance,
 {
-    let dataset = readers::read_npy_f32::<D>(&input_path).expect("failed to read dataset");
+    // Read dataset and queries as f32
+    let dataset_f32 = readers::read_npy_f32::<D>(&input_path).expect("failed to read dataset");
     let queries = readers::read_npy_f32::<D>(&query_path).expect("failed to read queries");
+
+    // Convert dataset from f32 to target value type V using DenseDataset::convert
+    let dataset: DenseDataset<ScalarDenseQuantizer<f32, V, D>, Vec<V>> =
+        DenseDataset::convert(&dataset_f32);
 
     // Print dataset size in GiB
     let dataset_bytes = dataset.space_usage_byte();
@@ -91,7 +140,7 @@ where
         .progress_chars("=>-");
 
     let results: Vec<Vec<(f32, usize)>> = queries
-        .par_iter()
+        .iter()
         .progress_count(queries.len() as u64)
         .with_style(pb_style)
         .map(|qvec| {

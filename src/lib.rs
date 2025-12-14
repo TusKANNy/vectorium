@@ -16,7 +16,7 @@ pub mod space_usage;
 pub use space_usage::SpaceUsage;
 
 pub mod num_marker;
-pub use num_marker::{DenseComponent, FromF32};
+pub use num_marker::{DenseComponent, Float, FromF32};
 
 #[allow(non_snake_case)]
 pub mod vector1d;
@@ -28,9 +28,10 @@ pub use distances::{Distance, DotProduct, EuclideanDistance};
 pub mod quantizers;
 pub use quantizers::Quantizer;
 pub use quantizers::QueryEvaluator;
-pub use quantizers::dense_plain::{
+pub use quantizers::dense_scalar::{
     PlainDenseQuantizer, PlainDenseQuantizerDotProduct, PlainDenseQuantizerEuclidean,
-    PlainDenseSupportedDistance, ScalarDenseQuantizer, ScalarDenseQueryEvaluator,
+    ScalarDenseQuantizer, ScalarDenseQuantizerDotProduct, ScalarDenseQuantizerEuclidean,
+    ScalarDenseQuantizerSame, ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
 };
 
 pub mod datasets;
@@ -40,8 +41,16 @@ pub mod readers;
 pub use readers::read_npy_f32;
 
 /// Marker for types used as values in a dataset
-pub trait ValueType =
-    SpaceUsage + Copy + ToPrimitive + Zero + Send + Sync + PartialOrd + FromPrimitive + FromF32;
+pub trait ValueType = SpaceUsage
+    + Copy
+    + ToPrimitive
+    + Zero
+    + Send
+    + Sync
+    + PartialOrd
+    + FromPrimitive
+    + FromF32
+    + Default;
 
 pub trait ComponentType = AsPrimitive<usize>
     + FromPrimitive
@@ -56,6 +65,6 @@ pub trait ComponentType = AsPrimitive<usize>
 
 /// Convenience type aliases for common dense dataset configurations
 pub type DenseDatasetEuclideanGrowable<V> =
-    DenseDataset<PlainDenseQuantizer<V, EuclideanDistance>, Vec<V>>;
+    DenseDataset<ScalarDenseQuantizer<V, V, EuclideanDistance>, Vec<V>>;
 pub type DenseDatasetDotProductGrowable<V> =
     DenseDataset<PlainDenseQuantizer<V, DotProduct>, Vec<V>>;

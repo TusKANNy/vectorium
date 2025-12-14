@@ -8,7 +8,7 @@ use ndarray_npy::ReadNpyExt;
 
 use crate::datasets::dense_dataset::DenseDataset;
 
-use crate::quantizers::dense_plain::{PlainDenseQuantizer, PlainDenseSupportedDistance};
+use crate::quantizers::dense_scalar::{PlainDenseQuantizer, ScalarDenseSupportedDistance};
 
 /// Error type for dataset reading operations.
 #[derive(Debug)]
@@ -46,7 +46,7 @@ impl std::error::Error for ReaderError {}
 /// - Each row is a vector
 /// - Each column is a dimension
 ///
-/// The distance type `D` must implement `PlainDenseSupportedDistance`.
+/// The distance type `D` must implement `ScalarDenseSupportedDistance`.
 ///
 /// # Type Parameters
 /// * `D` - The distance type (e.g., `EuclideanDistance` or `DotProduct`)
@@ -66,7 +66,7 @@ pub fn read_npy_f32<D>(
     filename: impl AsRef<Path>,
 ) -> Result<DenseDataset<PlainDenseQuantizer<f32, D>, Vec<f32>>, ReaderError>
 where
-    D: PlainDenseSupportedDistance,
+    D: ScalarDenseSupportedDistance,
 {
     let file = std::fs::File::open(filename)?;
     let reader = io::BufReader::new(file);
