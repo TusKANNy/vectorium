@@ -12,6 +12,39 @@ pub struct Result<D: Distance> {
     pub id: usize,
 }
 
+pub type VectorId = u64;
+pub type VectorKey = u64;
+
+/// A `Dataset` stores a collection of dense or sparse embedding vectors.
+///
+/// Each vector has a logical `VectorId` (a `u64`), which is its index in the
+/// dataset and is the stable way to refer to that vector across components.
+///
+/// Sparse datasets store variable‑length vectors in a packed array and keep
+/// metadata (offsets, lengths) in a separate structure. Accessing a vector by
+/// `VectorId` therefore involves an extra level of indirection:
+///
+///     VectorId -> (offset, length) -> vector data
+///
+/// This extra lookup can slow down accesses and reduce the effectiveness
+/// of software prefetching.
+///
+/// To avoid this, datasets can also expose a `VectorKey` (an opaque `u64`)
+/// for each vector. A `VectorKey` uniquely identifies a vector *within a
+/// particular dataset implementation* and is chosen so that the dataset can
+/// locate and prefetch the vector without going through the offset table.
+/// For dense datasets, the `VectorKey` is typically equal to the `VectorId`.
+/// For sparse datasets, it may encode the vector’s offset and length in the
+/// underlying storage, so not all `u64` values are valid keys.
+///
+/// The dataset provides conversion routines between `VectorId` and
+/// `VectorKey`. Index structures using the dataset can then choose:
+///
+/// - to store `VectorId`s, keeping a purely logical identifier but paying
+///   the extra indirection on each access; or
+/// - to store `VectorKey`s, allowing direct, more efficient access and
+///   prefetching at the cost of tying the index to this specific dataset
+///   representation.
 pub trait Dataset<Q>: SpaceUsage
 where
     Q: Quantizer,
@@ -20,6 +53,7 @@ where
 
     fn shape(&self) -> (usize, usize);
 
+    // Dimensionality of the vectors, i.e., largest possible component index + 1.
     fn dim(&self) -> usize;
 
     fn len(&self) -> usize;
@@ -36,12 +70,15 @@ where
 
     // fn data<'a>(&'a self) -> Self::Vector1DType<'a>;
 
+    fn key_from_id(&self, id: VectorId) -> VectorKey;
+    fn id_from_key(&self, key: VectorKey) -> VectorId;
+
     fn get(
         &self,
-        index: usize,
+        key: VectorKey,
     ) -> impl Vector1D<ComponentType = Q::OutputComponentType, ValueType = Q::OutputValueType>;
 
-    // fn compute_distance_by_id(&self, idx1: usize, idx2: usize) -> impl Distance;
+    fn prefetch(&self, key: VectorKey);
 
     fn iter(
         &self,
@@ -66,7 +103,7 @@ where
 
         for (id, vector) in self.iter().enumerate() {
             let distance = evaluator.compute_distance(vector);
-            let result = Result { distance, id };
+            let result: Result<<Q as Quantizer>::Distance> = Result { distance, id };
 
             if heap.len() < k {
                 heap.push(result);

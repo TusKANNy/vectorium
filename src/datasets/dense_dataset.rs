@@ -5,6 +5,9 @@ use crate::SpaceUsage;
 use crate::Vector1D;
 use crate::datasets::{Dataset, GrowableDataset};
 use crate::quantizers::Quantizer;
+use crate::utils::prefetch_read_slice;
+use crate::{VectorId, VectorKey};
+
 use rayon::prelude::*;
 
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
@@ -96,11 +99,6 @@ where
         (self.n_vecs, self.d)
     }
 
-    // #[inline]
-    // fn data<'a>(&'a self) -> Self::DataType<'a> {
-    //     DenseVector1D::new(self.data.as_ref())
-    // }
-
     #[inline]
     fn dim(&self) -> usize {
         self.d
@@ -116,16 +114,13 @@ where
         self.n_vecs * self.d
     }
 
-    // fn get_space_usage_bytes(&self) -> usize {
-    //     self.len() * self.dim() * std::mem::size_of::<Q::OutputItem>()
-    //         + self.quantizer.get_space_usage_bytes()
-    // }
-
     #[inline]
     fn get(
         &self,
-        index: usize,
+        key: VectorKey,
     ) -> impl Vector1D<ComponentType = Q::OutputComponentType, ValueType = Q::OutputValueType> {
+        let index = key as usize; // indexes and keys coincide in this implementation
+
         assert!(index < self.len(), "Index out of bounds.");
 
         let m = self.quantizer.m();
@@ -136,23 +131,22 @@ where
         DenseVector1D::new(&self.data.as_ref()[start..end])
     }
 
-    // fn compute_distance_by_id(&self, idx1: usize, idx2: usize) -> f32
-    // where
-    //     Q::OutputItem: Float,
-    // {
-    //     let document1_slice = self.get(idx1);
-    //     let document1_slice = document1_slice.values_as_slice();
-    //     let document2_slice = self.get(idx2);
-    //     let document2_slice = document2_slice.values_as_slice();
-    //     match self.quantizer().distance() {
-    //         DistanceType::Euclidean => {
-    //             dense_euclidean_distance_unrolled(document1_slice, document2_slice)
-    //         }
-    //         DistanceType::DotProduct => {
-    //             -dense_dot_product_unrolled(document1_slice, document2_slice)
-    //         }
-    //     }
-    // }
+    #[inline]
+    fn key_from_id(&self, id: VectorId) -> VectorKey {
+        id
+    }
+
+    #[inline]
+    fn id_from_key(&self, key: VectorKey) -> VectorId {
+        key
+    }
+
+    #[inline]
+    fn prefetch(&self, key: VectorKey) {
+        prefetch_read_slice(
+            &self.data.as_ref()[(key as usize) * self.d..(key as usize + 1) * self.d],
+        );
+    }
 
     #[inline]
     fn iter(
@@ -162,32 +156,6 @@ where
     > {
         DenseDatasetIter::new(self)
     }
-
-    // #[inline]
-    // fn search<'a, H: OnlineTopKSelector>(
-    //     &self,
-    //     query: <Q::Evaluator<'a> as QueryEvaluator<'a>>::QueryType,
-    //     heap: &mut H,
-    // ) -> Vec<(f32, usize)>
-    // where
-    //     Q::InputItem: Float + EuclideanDistance<Q::InputItem> + DotProduct<Q::InputItem>,
-    // {
-    //     assert_eq!(
-    //         query.len(),
-    //         self.dim(),
-    //         "Query dimension ({}) does not match the vector dimension ({}).",
-    //         query.len(),
-    //         self.dim()
-    //     );
-
-    //     if self.data().values_as_slice().is_empty() {
-    //         return Vec::new();
-    //     }
-
-    //     let evaluator = self.query_evaluator(query);
-    //     let distances = evaluator.compute_distances(self, 0..self.len());
-    //     evaluator.topk_retrieval(distances, heap)
-    // }
 }
 
 // impl<'a, Q, B> DenseDataset<Q, B>

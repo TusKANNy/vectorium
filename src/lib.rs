@@ -1,5 +1,9 @@
 #![feature(trait_alias)]
+#![feature(portable_simd)]
+#![allow(internal_features)]
+#![feature(core_intrinsics)]
 #![feature(float_algebraic)]
+#![doc = include_str!("../README.md")]
 
 use fixed::FixedU8;
 use fixed::FixedU16;
@@ -35,10 +39,14 @@ pub use quantizers::dense_scalar::{
 };
 
 pub mod datasets;
+pub use datasets::VectorId;
+pub use datasets::VectorKey;
 pub use datasets::dense_dataset::DenseDataset;
 
 pub mod readers;
 pub use readers::read_npy_f32;
+
+pub mod utils;
 
 /// Marker for types used as values in a dataset
 pub trait ValueType = SpaceUsage
