@@ -1,11 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::DenseVector1D;
 use crate::SpaceUsage;
-use crate::Vector1D;
 use crate::datasets::{Dataset, GrowableDataset};
 use crate::quantizers::Quantizer;
 use crate::utils::prefetch_read_slice;
+use crate::{DenseVector1D, Vector1D};
 use crate::{VectorId, VectorKey};
 
 use rayon::prelude::*;
@@ -24,12 +23,14 @@ where
 
 impl<Q, Data> SpaceUsage for DenseDataset<Q, Data>
 where
-    Q: Quantizer<OutputComponentType = crate::DenseComponent>,
-    Data: AsRef<[Q::OutputValueType]>,
+    Q: Quantizer<OutputComponentType = crate::DenseComponent> + SpaceUsage,
+    Data: AsRef<[Q::OutputValueType]> + SpaceUsage,
 {
     fn space_usage_byte(&self) -> usize {
         std::mem::size_of::<Self>()
-            + std::mem::size_of::<Q::OutputValueType>() * self.data.as_ref().len()
+            // + std::mem::size_of::<Q::OutputValueType>() * self.data.as_ref().len()
+            + self.quantizer.space_usage_byte()
+            + self.data.space_usage_byte()
     }
 }
 
@@ -210,7 +211,7 @@ where
 //     }
 // }
 
-// mutable
+// Growable dataset implementation
 impl<Q> GrowableDataset<Q> for DenseDataset<Q, Vec<Q::OutputValueType>>
 where
     Q: Quantizer<OutputComponentType = crate::DenseComponent>,

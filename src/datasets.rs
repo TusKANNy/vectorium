@@ -5,6 +5,7 @@ use std::collections::BinaryHeap;
 
 pub mod dense_dataset;
 pub mod dense_dataset_scalar;
+pub mod sparse_dataset;
 
 pub type VectorId = u64;
 pub type VectorKey = u64;
@@ -19,6 +20,11 @@ pub type Result<D> = ResultGeneric<D, VectorId>;
 pub type ResultWithKey<D> = ResultGeneric<D, VectorKey>;
 
 /// A `Dataset` stores a collection of dense or sparse embedding vectors.
+///
+/// A quantizer is associated with the dataset, defining how input vectors
+/// are encoded and how queries are evaluated against the encoded vectors.
+/// Important: iterators iterate over all **encoded** representation of the
+/// vectors in the dataset.
 ///
 /// Each vector has a logical `VectorId` (a `u64`), which is (and MUST be) its index in the
 /// dataset and is the stable way to refer to that vector across components.
