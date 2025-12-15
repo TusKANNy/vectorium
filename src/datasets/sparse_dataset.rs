@@ -13,10 +13,6 @@ use rayon::prelude::{IndexedParallelIterator, ParallelIterator};
 use rayon::iter::plumbing::ProducerCallback;
 
 
-use std::marker::PhantomData;
-
-
-
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct SparseDatasetGeneric<Q, O, AC, AV>
 where
@@ -102,7 +98,7 @@ where
         let v_components = &self.components.as_ref()[offset..offset + len];
         let v_values = &self.values.as_ref()[offset..offset + len];
 
-        SparseVector1D::new(v_components, v_values, self.dim)
+        SparseVector1D::new(v_components, v_values)
     }
 
     /// Returns a vector of the dataset at the specified `offset` and `len`.
@@ -238,61 +234,7 @@ where
         prefetch_read_slice(sparse_vector.values_as_slice());
     }
 
-    /// Performs a brute-force search to find the K-nearest neighbors (KNN) of the queried vector.
-    ///
-    /// This method scans the entire dataset to find the K-nearest neighbors of the queried vector.
-    /// It computes the *dot product* between the queried vector and each vector in the dataset and returns
-    /// the indices of the K-nearest neighbors along with their distances.
-    ///
-    /// # Parameters
-    ///
-    /// * `q_components`: The components of the queried vector.
-    /// * `q_values`: The values corresponding to the components of the queried vector.
-    /// * `k`: The number of nearest neighbors to find.
-    ///
-    /// # Returns
-    ///
-    /// A vector containing tuples of distances and indices of the K-nearest neighbors, sorted by decreasing distance.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use seismic::SparseDatasetMut;
-    ///
-    /// let data = vec![
-    ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
-    ///                 (vec![1, 3],       vec![4.0, 5.0]),
-    ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
-    ///                 ];
-    ///
-    /// let dataset: SparseDatasetMut<u16, f32> = data.into_iter().collect();
-    ///
-    /// let query_components = &[0, 2];
-    /// let query_values = &[1.0, 1.0];
-    /// let k = 2;
-    ///
-    /// let knn = dataset.search(query_components, query_values, k);
-    ///
-    /// assert_eq!(knn, vec![(4.0, 2), (3.0, 0)]);
-    /// ```
-    pub fn search(&self, q_components: &[C], q_values: &[f32], k: usize) -> Vec<(f32, usize)> {
-        let dense_query = conditionally_densify(q_components, q_values, self.dim());
-
-        self.iter()
-            .map(|(v_components, v_values)| {
-                C::compute_dot_product(
-                    dense_query.as_deref(),
-                    q_components,
-                    q_values,
-                    v_components,
-                    v_values,
-                )
-            })
-            .enumerate()
-            .map(|(i, s)| (s, i))
-            .k_largest_by(k, |a, b| a.0.partial_cmp(&b.0).unwrap())
-            .collect()
-    }
+   
 
     /// Returns an iterator over the vectors of the dataset.
     ///
@@ -316,23 +258,23 @@ where
     ///     assert_eq!(v0, v1);
     /// }
     /// ```
-     fn iter<'a>(&'a self) -> SparseDatasetIter<'a, C, V> {
+    fn iter(&self) -> SparseDatasetIter<Q::OutputComponentType, Q::OutputValueType> {
         SparseDatasetIter::new(self)
     }
 
 
-    /// Returns an iterator over the sparse vector with id `vec_id`.
-    ///
-    /// # Panics
-    /// Panics if the `vec_id` is out of bounds.
-    pub fn iter_vector<'a>(
-        &'a self,
-        vec_id: usize,
-    ) -> Zip<std::slice::Iter<'a, C>, std::slice::Iter<'a, V>> {
-        let (v_components, v_values) = self.get(vec_id);
+    // /// Returns an iterator over the sparse vector with id `vec_id`.
+    // ///
+    // /// # Panics
+    // /// Panics if the `vec_id` is out of bounds.
+    // fn iter(
+    //     &self,
+    //     vec_id: usize,
+    // ) -> Zip<std::slice::Iter<C>, std::slice::Iter<V>> {
+    //     let (v_components, v_values) = self.get(vec_id);
 
-        v_components.iter().zip(v_values)
-    }
+    //     v_components.iter().zip(v_values.iter())
+    // }
 
     /// Returns the number of vectors in the dataset.
     ///
@@ -487,7 +429,7 @@ where
     C: ComponentType,
     V: ValueType,
 {
-    type Item = (&'a [C], &'a [V]);
+    type Item = SparseVector1D<C, V, &'a [C], &'a [V]>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -502,7 +444,7 @@ where
 
         self.last_offset = next_offset;
 
-        Some((cur_components, cur_values))
+        Some(SparseVector1D::new(cur_components, cur_values) )
     }
 }
 
@@ -547,7 +489,7 @@ where
     C: ComponentType,
     V: ValueType,
 {
-    type Item = (&'a [C], &'a [V]);
+    type Item = SparseVector1D<C, V, &'a [C], &'a [V]>;
 
     fn drive_unindexed<CS>(self, consumer: CS) -> CS::Result
     where
@@ -636,7 +578,7 @@ where
         let (rest, cur_values) = self.values.split_at(last_offset - len);
         self.values = rest;
 
-        Some((cur_components, cur_values))
+        Some(SparseVector1D::new(cur_components, cur_values))
     }
 }
 struct SparseDatasetProducer<'a, C, V>
@@ -655,7 +597,7 @@ where
     C: ComponentType,
     V: ValueType,
 {
-    type Item = (&'a [C], &'a [V]);
+    type Item = SparseVector1D<C, V, &'a [C], &'a [V]>;
     type IntoIter = SparseDatasetIter<'a, C, V>;
 
     fn into_iter(self) -> Self::IntoIter {

@@ -1,7 +1,7 @@
 use crate::quantizers::{Quantizer, QueryEvaluator};
 use crate::{Distance, SpaceUsage, Vector1D};
 
-use std::collections::BinaryHeap;
+use itertools::Itertools;
 
 pub mod dense_dataset;
 pub mod dense_dataset_scalar;
@@ -75,7 +75,6 @@ where
     // fn get_space_usage_bytes(&self) -> usize;
 
     #[inline]
-    #[must_use]
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -85,6 +84,7 @@ where
     // fn data<'a>(&'a self) -> Self::Vector1DType<'a>;
 
     fn key_from_id(&self, id: VectorId) -> VectorKey;
+
     fn id_from_key(&self, key: VectorKey) -> VectorId;
 
     fn get(
@@ -100,6 +100,12 @@ where
         Item = impl Vector1D<ComponentType = Q::OutputComponentType, ValueType = Q::OutputValueType>,
     >;
 
+    /// Performs a brute-force search to find the K-nearest neighbors (KNN) of the queried vector.
+    ///
+    /// This method scans the entire dataset to find the K-nearest neighbors of the queried vector.
+    /// It computes the *dot product* between the queried vector and each vector in the dataset and returns
+    /// the indices of the K-nearest neighbors along with their distances.
+    ///
     #[inline]
     fn search(
         &self,
@@ -112,28 +118,14 @@ where
             return Vec::new();
         }
 
-        // Use a min-heap (via Reverse) to track top-k: root is the worst candidate
-        let mut heap: BinaryHeap<Result<<Q as Quantizer>::Distance>> = BinaryHeap::with_capacity(k);
-
-        for (id, vector) in self.iter().enumerate() {
-            let distance = evaluator.compute_distance(vector);
-            let result: Result<<Q as Quantizer>::Distance> = Result {
-                distance,
-                vector: id as u64,
-            };
-
-            if heap.len() < k {
-                heap.push(result);
-            } else if result < *heap.peek().unwrap() {
-                heap.pop();
-                heap.push(result);
-            }
-        }
-
-        // Convert min-heap to sorted vec
-        let mut results: Vec<_> = heap.into_vec().into_iter().map(|r| r).collect();
-        results.sort();
-        results
+        self.iter()
+            .enumerate()
+            .map(|(i, vector)| Result {
+                distance: evaluator.compute_distance(vector),
+                vector: i as u64,
+            })
+            .k_smallest(k)
+            .collect()
     }
 }
 

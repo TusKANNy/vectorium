@@ -20,6 +20,7 @@ fixed = { git = "https://gitlab.com/tinozzo123/fixed", branch = "fast_to_f32_hac
     "serde",
 ] }
 num-traits = "0.2.19"
+itertools = "0.14.0"
 
 
 [profile.release]

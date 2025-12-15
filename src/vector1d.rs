@@ -90,7 +90,6 @@ where
 {
     components: AC,
     values: AV,
-    d: usize, // dimensionality of the vector space
     _phantom: std::marker::PhantomData<(C, V)>,
 }
 
@@ -102,7 +101,7 @@ where
     AV: AsRef<[V]>,
 {
     #[inline]
-    pub fn new(components: AC, values: AV, d: usize) -> Self {
+    pub fn new(components: AC, values: AV) -> Self {
         assert!(
             components.as_ref().len() == values.as_ref().len(),
             "Components and values must have the same length"
@@ -111,7 +110,6 @@ where
         SparseVector1D {
             components,
             values,
-            d,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -166,7 +164,7 @@ mod tests {
     fn sparse_vector_basic() {
         let comps = vec![0usize, 2usize];
         let vals = vec![1.0f32, 3.0f32];
-        let v = SparseVector1D::new(comps.clone(), vals.clone(), 4);
+        let v = SparseVector1D::new(comps.clone(), vals.clone());
         assert_eq!(v.len(), 2);
         assert_eq!(v.components_as_slice(), comps.as_slice());
         assert_eq!(v.values_as_slice(), vals.as_slice());

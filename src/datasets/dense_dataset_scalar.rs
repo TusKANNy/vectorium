@@ -14,7 +14,7 @@ use crate::{Float, ScalarDenseSupportedDistance, ValueType};
 impl<In, Out, D> DenseDataset<ScalarDenseQuantizer<In, Out, D>, Vec<Out>>
 where
     In: ValueType + Float,
-    Out: ValueType + Float,
+    Out: ValueType + Float + crate::FromF32,
     D: ScalarDenseSupportedDistance,
 {
     /// Convert a source dataset into this dataset type.
@@ -26,7 +26,7 @@ where
     ) -> Self
     where
         SrcIn: ValueType + Float,
-        SrcData: AsRef<[In]>,
+        SrcData: AsRef<[In]> + crate::SpaceUsage,
     {
         let (n_vecs, d) = source.shape();
         let quantizer: ScalarDenseQuantizer<In, Out, D> = ScalarDenseQuantizer::new(d);

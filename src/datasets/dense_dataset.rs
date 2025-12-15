@@ -23,14 +23,13 @@ where
 
 impl<Q, Data> SpaceUsage for DenseDataset<Q, Data>
 where
-    Q: Quantizer<OutputComponentType = crate::DenseComponent> + SpaceUsage,
+    Q: Quantizer<OutputComponentType = crate::DenseComponent>,
     Data: AsRef<[Q::OutputValueType]> + SpaceUsage,
 {
     fn space_usage_byte(&self) -> usize {
-        std::mem::size_of::<Self>()
-            // + std::mem::size_of::<Q::OutputValueType>() * self.data.as_ref().len()
-            + self.quantizer.space_usage_byte()
-            + self.data.space_usage_byte()
+        // Use size_of for the quantizer to avoid requiring every Quantizer to
+        // implement `SpaceUsage`.
+        std::mem::size_of::<Self>() + std::mem::size_of::<Q>() + self.data.space_usage_byte()
     }
 }
 
@@ -88,7 +87,7 @@ where
 impl<Q, Data> Dataset<Q> for DenseDataset<Q, Data>
 where
     Q: Quantizer<OutputComponentType = crate::DenseComponent>,
-    Data: AsRef<[Q::OutputValueType]>,
+    Data: AsRef<[Q::OutputValueType]> + SpaceUsage,
 {
     #[inline]
     fn quantizer(&self) -> &Q {
@@ -316,7 +315,7 @@ where
 {
     pub fn new<Data>(dataset: &'a DenseDataset<Q, Data>) -> Self
     where
-        Data: AsRef<[Q::OutputValueType]>,
+        Data: AsRef<[Q::OutputValueType]> + SpaceUsage,
     {
         Self {
             data: dataset.values(),
