@@ -6,18 +6,21 @@ use std::collections::BinaryHeap;
 pub mod dense_dataset;
 pub mod dense_dataset_scalar;
 
-#[derive(Debug, PartialOrd, Eq, Ord, PartialEq, Copy, Clone)]
-pub struct Result<D: Distance> {
-    pub distance: D,
-    pub id: usize,
-}
-
 pub type VectorId = u64;
 pub type VectorKey = u64;
 
+#[derive(Debug, PartialOrd, Eq, Ord, PartialEq, Copy, Clone)]
+pub struct ResultGeneric<D: Distance, T> {
+    pub distance: D,
+    pub vector: T,
+}
+
+pub type Result<D> = ResultGeneric<D, VectorId>;
+pub type ResultWithKey<D> = ResultGeneric<D, VectorKey>;
+
 /// A `Dataset` stores a collection of dense or sparse embedding vectors.
 ///
-/// Each vector has a logical `VectorId` (a `u64`), which is its index in the
+/// Each vector has a logical `VectorId` (a `u64`), which is (and MUST be) its index in the
 /// dataset and is the stable way to refer to that vector across components.
 ///
 /// Sparse datasets store variable‑length vectors in a packed array and keep
@@ -45,6 +48,11 @@ pub type VectorKey = u64;
 /// - to store `VectorKey`s, allowing direct, more efficient access and
 ///   prefetching at the cost of tying the index to this specific dataset
 ///   representation.
+///
+/// Conversion between `VectorId` and `VectorKey` is provided by the dataset.
+/// However, conversion from `VectorKey` back to `VectorId` may be
+/// expensive (e.g., requiring a binary search), so it should be used sparingly.
+
 pub trait Dataset<Q>: SpaceUsage
 where
     Q: Quantizer,
@@ -103,7 +111,10 @@ where
 
         for (id, vector) in self.iter().enumerate() {
             let distance = evaluator.compute_distance(vector);
-            let result: Result<<Q as Quantizer>::Distance> = Result { distance, id };
+            let result: Result<<Q as Quantizer>::Distance> = Result {
+                distance,
+                vector: id as u64,
+            };
 
             if heap.len() < k {
                 heap.push(result);

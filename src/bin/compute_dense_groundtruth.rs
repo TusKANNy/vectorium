@@ -4,7 +4,7 @@ use std::io::Write;
 use std::time::Instant;
 
 use half::{bf16, f16};
-use indicatif::{ProgressIterator, ProgressStyle};
+use indicatif::{ParallelProgressIterator, ProgressStyle};
 
 use vectorium::SpaceUsage;
 use vectorium::datasets::{Dataset, Result as DatasetResult};
@@ -139,14 +139,14 @@ where
         .unwrap()
         .progress_chars("=>-");
 
-    let results: Vec<Vec<(f32, usize)>> = queries
-        .iter()
+    let results: Vec<Vec<(f32, u64)>> = queries
+        .par_iter()
         .progress_count(queries.len() as u64)
         .with_style(pb_style)
         .map(|qvec| {
             let res: Vec<DatasetResult<D>> = dataset.search(qvec, k);
             res.into_iter()
-                .map(|r| (r.distance.distance(), r.id))
+                .map(|r| (r.distance.distance(), r.vector))
                 .collect()
         })
         .collect();
