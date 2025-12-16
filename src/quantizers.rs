@@ -1,6 +1,7 @@
 use crate::ComponentType as ComponentTypeTrait;
 use crate::ValueType as ValueTypeTrait;
-use crate::{DenseVector1D, SparseVector1D, Vector1D, distances::Distance};
+use crate::num_marker::DenseComponent;
+use crate::{Vector1D, distances::Distance};
 
 pub mod dense_scalar;
 pub mod sparse_scalar;
@@ -51,9 +52,9 @@ pub trait Quantizer: Sized {
 
 pub trait DenseQuantizer:
     Quantizer<
-        QueryComponentType = (),
-        InputComponentType = (),
-        OutputComponentType = (),
+        QueryComponentType = DenseComponent,
+        InputComponentType = DenseComponent,
+        OutputComponentType = DenseComponent,
         // InputVectorType = DenseVector1D<Self::InputValueType, Self::InputStorage>,
         // QueryVectorType = DenseVector1D<Self::QueryValueType, Self::QueryStorage>,
     >

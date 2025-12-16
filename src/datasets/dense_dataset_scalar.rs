@@ -3,7 +3,7 @@
 
 use crate::datasets::Dataset;
 use crate::quantizers::{DenseQuantizer, Quantizer};
-use crate::{DenseDataset, DenseVector1D, ScalarDenseQuantizer};
+use crate::{DenseDataset, ScalarDenseQuantizer};
 use crate::{Float, ScalarDenseSupportedDistance, ValueType};
 
 /// Convert a DenseDataset with ScalarDenseQuantizer<SrcIn, SrcOut, D> to

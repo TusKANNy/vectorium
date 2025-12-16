@@ -68,6 +68,26 @@ where
     OutValue: ValueType + Float + FromF32,
     D: ScalarSparseSupportedDistance,
 {
+    fn extend_with_encode<InputVector, ValueContainer, ComponentContainer>(
+        &self,
+        input_vector: InputVector,
+        components: &mut ComponentContainer,
+        values: &mut ValueContainer,
+    ) where
+        InputVector:
+            Vector1D<ValueType = Self::InputValueType, ComponentType = Self::InputComponentType>,
+        ValueContainer: Extend<Self::OutputValueType>,
+        ComponentContainer: Extend<Self::OutputComponentType>,
+    {
+        let input_components = input_vector.components_as_slice();
+        let input_values = input_vector.values_as_slice();
+
+        components.extend(input_components.iter().copied());
+        values.extend(input_values.iter().map(|in_val| {
+            let f32_val = in_val.to_f32().unwrap();
+            OutValue::from_f32_saturating(f32_val)
+        }));
+    }
 }
 
 impl<C, InValue, OutValue, D> Quantizer for ScalarSparseQuantizer<C, InValue, OutValue, D>
@@ -87,27 +107,6 @@ where
     type OutputComponentType = C;
 
     type Evaluator = ScalarSparseQueryEvaluator<C, OutValue, D>;
-
-    fn encode<InputVector, OutputVector>(
-        &self,
-        input_vector: InputVector,
-        output_vector: &mut OutputVector,
-    ) where
-        InputVector:
-            Vector1D<ValueType = Self::InputValueType, ComponentType = Self::InputComponentType>,
-        OutputVector: MutableVector1D<
-                ValueType = Self::OutputValueType,
-                ComponentType = Self::OutputComponentType,
-            >,
-    {
-        let input = input_vector.values_as_slice();
-        let output = output_vector.values_as_mut_slice();
-
-        for (out_val, in_val) in output.iter_mut().zip(input.iter()) {
-            let f32_val = in_val.to_f32().unwrap();
-            *out_val = OutValue::from_f32_saturating(f32_val);
-        }
-    }
 
     fn get_query_evaluator<QueryVector>(&self, query: QueryVector) -> Self::Evaluator
     where

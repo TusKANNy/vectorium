@@ -67,6 +67,12 @@ use std::hash::Hash;
 
 /// Marker type used as `ComponentType` for dense vectors.
 /// Dense vectors don't have explicit component indices, so this is a placeholder.
+///
+/// We use `DenseComponent` instead of the unit type `()` because of Rust's orphan rule.
+/// The orphan rule prevents implementing foreign traits (such as `ComponentType`, `ValueType`,
+/// `SpaceUsage`, etc.) for foreign types. Since `()` is a built-in type, we cannot implement
+/// these custom traits on it within this crate. By defining `DenseComponent` as a local marker
+/// type, we can implement all required trait bounds locally without violating the orphan rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct DenseComponent;
 

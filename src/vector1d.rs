@@ -1,4 +1,5 @@
-use crate::{ComponentType, DenseComponent, ValueType};
+use crate::num_marker::DenseComponent;
+use crate::{ComponentType, ValueType};
 
 pub trait Vector1D {
     type ComponentType;
@@ -25,7 +26,7 @@ where
     V: ValueType,
     AV: AsRef<[V]>,
 {
-    components: (),
+    components: DenseComponent,
     values: AV,
     phantom: std::marker::PhantomData<V>,
 }
@@ -38,7 +39,7 @@ where
     #[inline]
     pub fn new(values: AV) -> Self {
         Self {
-            components: (),
+            components: DenseComponent,
             values,
             phantom: std::marker::PhantomData,
         }
@@ -65,6 +66,7 @@ where
 
     #[inline(always)]
     fn components_as_slice(&self) -> &[Self::ComponentType] {
+        // DenseComponent is a zero-sized type; return empty slice
         &[]
     }
 }

@@ -4,10 +4,9 @@ use std::marker::PhantomData;
 use crate::distances::{
     Distance, DotProduct, EuclideanDistance, dot_product_dense, euclidean_distance_dense,
 };
+use crate::num_marker::DenseComponent;
 use crate::quantizers::{DenseQuantizer, Quantizer, QueryEvaluator};
-use crate::{
-    DenseComponent, DenseVector1D, Float, FromF32, MutableVector1D, SpaceUsage, ValueType, Vector1D,
-};
+use crate::{DenseVector1D, Float, FromF32, SpaceUsage, ValueType, Vector1D};
 
 /// Marker trait for distance types supported by scalar dense quantizers.
 /// Provides the computation method specific to dense vectors.

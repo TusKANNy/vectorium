@@ -41,6 +41,12 @@ where
     }
 }
 
+impl SpaceUsage for () {
+    fn space_usage_byte(&self) -> usize {
+        0
+    }
+}
+
 impl<T> SpaceUsage for Box<[T]>
 where
     T: SpaceUsage + Copy,

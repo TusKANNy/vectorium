@@ -20,7 +20,7 @@ pub mod space_usage;
 pub use space_usage::SpaceUsage;
 
 pub mod num_marker;
-pub use num_marker::{DenseComponent, Float, FromF32};
+pub use num_marker::{Float, FromF32};
 
 #[allow(non_snake_case)]
 pub mod vector1d;
@@ -38,9 +38,9 @@ pub use quantizers::dense_scalar::{
     ScalarDenseQuantizerSame, ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
 };
 pub use quantizers::sparse_scalar::{
-    PlainSparseQuantizer, PlainSparseQuantizerDotProduct,
-    ScalarSparseQuantizer, ScalarSparseQuantizerDotProduct,
-    ScalarSparseQuantizerSame, ScalarSparseQueryEvaluator, ScalarSparseSupportedDistance,
+    PlainSparseQuantizer, PlainSparseQuantizerDotProduct, ScalarSparseQuantizer,
+    ScalarSparseQuantizerDotProduct, ScalarSparseQuantizerSame, ScalarSparseQueryEvaluator,
+    ScalarSparseSupportedDistance,
 };
 
 pub mod datasets;
