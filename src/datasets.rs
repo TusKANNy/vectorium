@@ -1,11 +1,12 @@
 use crate::quantizers::{Quantizer, QueryEvaluator};
-use crate::{Distance, SpaceUsage, Vector1D};
+use crate::{Distance, Vector1D};
 
 use itertools::Itertools;
 
 pub mod dense_dataset;
 pub mod dense_dataset_scalar;
 pub mod sparse_dataset;
+pub mod sparse_dataset_scalar;
 
 pub type VectorId = u64;
 pub type VectorKey = u64;
@@ -20,6 +21,10 @@ pub type Result<D> = ResultGeneric<D, VectorId>;
 pub type ResultWithKey<D> = ResultGeneric<D, VectorKey>;
 
 /// A `Dataset` stores a collection of dense or sparse embedding vectors.
+///
+/// At the moment we have two implementations:
+/// - `DenseDataset` in which we store fixed-length dense vectors, i.e., vectors for which there is no need to store compoennt indices.
+/// - `SparseDataset` in which we store variable-length sparse vectors, i.e., vectors for which we need to store component indices.
 ///
 /// A quantizer is associated with the dataset, defining how input vectors
 /// are encoded and how queries are evaluated against the encoded vectors.
@@ -59,7 +64,7 @@ pub type ResultWithKey<D> = ResultGeneric<D, VectorKey>;
 /// However, conversion from `VectorKey` back to `VectorId` may be
 /// expensive (e.g., requiring a binary search), so it should be used sparingly.
 
-pub trait Dataset<Q>: SpaceUsage
+pub trait Dataset<Q>
 where
     Q: Quantizer,
 {
@@ -72,16 +77,12 @@ where
 
     fn len(&self) -> usize;
 
-    // fn get_space_usage_bytes(&self) -> usize;
-
     #[inline]
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     fn nnz(&self) -> usize;
-
-    // fn data<'a>(&'a self) -> Self::Vector1DType<'a>;
 
     fn key_from_id(&self, id: VectorId) -> VectorKey;
 

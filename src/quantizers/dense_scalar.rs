@@ -4,8 +4,10 @@ use std::marker::PhantomData;
 use crate::distances::{
     Distance, DotProduct, EuclideanDistance, dot_product_dense, euclidean_distance_dense,
 };
-use crate::quantizers::{Quantizer, QueryEvaluator};
-use crate::{DenseComponent, DenseVector1D, Float, FromF32, MutableVector1D, ValueType, Vector1D};
+use crate::quantizers::{DenseQuantizer, Quantizer, QueryEvaluator};
+use crate::{
+    DenseComponent, DenseVector1D, Float, FromF32, MutableVector1D, SpaceUsage, ValueType, Vector1D,
+};
 
 /// Marker trait for distance types supported by scalar dense quantizers.
 /// Provides the computation method specific to dense vectors.
@@ -69,6 +71,29 @@ impl<In, Out, D> ScalarDenseQuantizer<In, Out, D> {
     }
 }
 
+impl<In, Out, D> DenseQuantizer for ScalarDenseQuantizer<In, Out, D>
+where
+    In: ValueType + Float,
+    Out: ValueType + Float + FromF32,
+    D: ScalarDenseSupportedDistance,
+{
+    fn extend_with_encode<InputVector, ValueContainer>(
+        &self,
+        input_vector: InputVector,
+        values: &mut ValueContainer,
+    ) where
+        InputVector:
+            Vector1D<ValueType = Self::InputValueType, ComponentType = Self::InputComponentType>,
+        ValueContainer: Extend<Self::OutputValueType>,
+    {
+        let input = input_vector.values_as_slice();
+        values.extend(input.iter().map(|&in_val| {
+            let f32_val = in_val.to_f32().unwrap();
+            Out::from_f32_saturating(f32_val)
+        }));
+    }
+}
+
 impl<In, Out, D> Quantizer for ScalarDenseQuantizer<In, Out, D>
 where
     In: ValueType + Float,
@@ -85,27 +110,6 @@ where
     type OutputComponentType = DenseComponent;
 
     type Evaluator = ScalarDenseQueryEvaluator<Out, D>;
-
-    fn encode<InputVector, OutputVector>(
-        &self,
-        input_vector: InputVector,
-        output_vector: &mut OutputVector,
-    ) where
-        InputVector:
-            Vector1D<ValueType = Self::InputValueType, ComponentType = Self::InputComponentType>,
-        OutputVector: MutableVector1D<
-                ValueType = Self::OutputValueType,
-                ComponentType = Self::OutputComponentType,
-            >,
-    {
-        let input = input_vector.values_as_slice();
-        let output = output_vector.values_as_mut_slice();
-
-        for (out_val, in_val) in output.iter_mut().zip(input.iter()) {
-            let f32_val = in_val.to_f32().unwrap();
-            *out_val = Out::from_f32_saturating(f32_val);
-        }
-    }
 
     fn get_query_evaluator<QueryVector>(&self, query: QueryVector) -> Self::Evaluator
     where
@@ -150,6 +154,17 @@ where
             query: query.values_as_slice().to_vec(),
             _phantom: PhantomData,
         }
+    }
+}
+
+impl<In, Out, D> SpaceUsage for ScalarDenseQuantizer<In, Out, D>
+where
+    In: ValueType + Float,
+    Out: ValueType + Float + FromF32,
+    D: ScalarDenseSupportedDistance,
+{
+    fn space_usage_byte(&self) -> usize {
+        std::mem::size_of::<Self>()
     }
 }
 

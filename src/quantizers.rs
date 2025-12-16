@@ -1,8 +1,9 @@
 use crate::ComponentType as ComponentTypeTrait;
 use crate::ValueType as ValueTypeTrait;
-use crate::{MutableVector1D, Vector1D, distances::Distance};
+use crate::{DenseVector1D, SparseVector1D, Vector1D, distances::Distance};
 
 pub mod dense_scalar;
+pub mod sparse_scalar;
 
 /// A query evaluator computes distances between a query and encoded vectors.
 pub trait QueryEvaluator<Q: Quantizer>: Sized {
@@ -26,21 +27,14 @@ pub trait Quantizer: Sized {
     type OutputValueType: ValueTypeTrait;
     type OutputComponentType: ComponentTypeTrait;
 
+    // type InputStorage: AsRef<[Self::InputValueType]>;
+    // type QueryStorage: AsRef<[Self::QueryValueType]>;
+
+    // type InputVectorType: Vector1D<ValueType = Self::InputValueType, ComponentType = Self::InputComponentType>;
+    // type QueryVectorType: Vector1D<ValueType = Self::QueryValueType, ComponentType = Self::QueryComponentType>;
+
     /// The query evaluator type for this quantizer and distance
     type Evaluator: QueryEvaluator<Self>;
-
-    /// Encode input vectors into quantized output vectors
-    fn encode<InputVector, OutputVector>(
-        &self,
-        input_vector: InputVector,
-        output_vector: &mut OutputVector,
-    ) where
-        InputVector:
-            Vector1D<ValueType = Self::InputValueType, ComponentType = Self::InputComponentType>,
-        OutputVector: MutableVector1D<
-                ValueType = Self::OutputValueType,
-                ComponentType = Self::OutputComponentType,
-            >;
 
     /// Get a query evaluator for the given distance type
     fn get_query_evaluator<QueryVector>(&self, query: QueryVector) -> Self::Evaluator
@@ -53,4 +47,40 @@ pub trait Quantizer: Sized {
 
     /// Dimensionality of the original vector space
     fn dim(&self) -> usize;
+}
+
+pub trait DenseQuantizer:
+    Quantizer<
+        QueryComponentType = (),
+        InputComponentType = (),
+        OutputComponentType = (),
+        // InputVectorType = DenseVector1D<Self::InputValueType, Self::InputStorage>,
+        // QueryVectorType = DenseVector1D<Self::QueryValueType, Self::QueryStorage>,
+    >
+{
+    /// Encode input vectors into quantized output vectors
+    fn extend_with_encode<InputVector, ValueContainer>(
+        &self,
+        input_vector: InputVector,
+        values: &mut ValueContainer,
+    ) where
+        InputVector: Vector1D<
+            ValueType = Self::InputValueType,
+            ComponentType = Self::InputComponentType,
+        >,
+        ValueContainer: Extend<Self::OutputValueType>;
+}
+
+pub trait SparseQuantizer: Quantizer {
+    /// Encode input vectors into quantized output vectors
+    fn extend_with_encode<InputVector, ValueContainer, ComponentContainer>(
+        &self,
+        input_vector: InputVector,
+        components: &mut ComponentContainer,
+        values: &mut ValueContainer,
+    ) where
+        InputVector:
+            Vector1D<ValueType = Self::InputValueType, ComponentType = Self::InputComponentType>,
+        ValueContainer: Extend<Self::OutputValueType>,
+        ComponentContainer: Extend<Self::OutputComponentType>;
 }

@@ -3,26 +3,53 @@ use std::hint::assert_unchecked;
 
 use crate::SpaceUsage;
 use crate::datasets::{Dataset, GrowableDataset};
-use crate::quantizers::Quantizer;
+use crate::quantizers::{Quantizer, SparseQuantizer};
 use crate::utils::prefetch_read_slice;
 use crate::{ComponentType, ValueType, VectorId, VectorKey};
 use crate::{SparseVector1D, Vector1D};
 
+use rayon::iter::plumbing::ProducerCallback;
 use rayon::iter::plumbing::{Consumer, Producer, UnindexedConsumer, bridge};
 use rayon::prelude::{IndexedParallelIterator, ParallelIterator};
-use rayon::iter::plumbing::ProducerCallback;
 
+/// A growable representation of a sparse dataset.
+
+///
+/// # Examples
+///
+/// ```
+/// use seismic::SparseDatasetGrowable;
+///
+/// // Create a new empty dataset
+/// let mut dataset = SparseDatasetGrowable::<u16, f32>::default();
+/// ```
+///
+// TODO: decidere se vogliamo growable dataset solo per plain o sparse o anche per quantizzati
+pub type SparseDatasetGrowable<Q> = SparseDatasetGeneric<
+    Q,
+    Vec<usize>,
+    Vec<<Q as Quantizer>::OutputComponentType>,
+    Vec<<Q as Quantizer>::OutputValueType>,
+>;
+
+// Implementation of a (immutable) sparse dataset.
+pub type SparseDataset<Q> = SparseDatasetGeneric<
+    Q,
+    Box<[usize]>,
+    Box<[<Q as Quantizer>::OutputComponentType]>,
+    Box<[<Q as Quantizer>::OutputValueType]>,
+>;
 
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct SparseDatasetGeneric<Q, O, AC, AV>
 where
-    Q: Quantizer,
+    Q: SparseQuantizer,
     O: AsRef<[usize]>,
     AC: AsRef<[Q::OutputComponentType]>,
     AV: AsRef<[Q::OutputValueType]>,
 {
     dim: usize,
-    dim_bits: u8, // Number of bits required to represent dim. Needed to pack/umpack offset and lenght in VectorKey
+    dim_bits: u32, // Number of bits required to represent dim. Needed to pack/umpack offset and lenght in VectorKey
     offsets: O,
     components: AC,
     values: AV,
@@ -31,7 +58,7 @@ where
 
 impl<Q, O, AC, AV> SparseDatasetGeneric<Q, O, AC, AV>
 where
-    Q: Quantizer,
+    Q: SparseQuantizer,
     O: AsRef<[usize]>,
     AC: AsRef<[Q::OutputComponentType]>,
     AV: AsRef<[Q::OutputValueType]>,
@@ -46,14 +73,16 @@ where
         }
     }
 
-    pub fn par_iter<'a>(&'a self) -> ParSparseDatasetIter<'a, Q::OutputComponentType, Q::OutputValueType> {
+    pub fn par_iter<'a>(
+        &'a self,
+    ) -> ParSparseDatasetIter<'a, Q::OutputComponentType, Q::OutputValueType> {
         ParSparseDatasetIter::new(self)
     }
 }
 
 impl<Q, O, AC, AV> Dataset<Q> for SparseDatasetGeneric<Q, O, AC, AV>
 where
-    Q: Quantizer,
+    Q: SparseQuantizer,
     O: AsRef<[usize]>,
     AC: AsRef<[Q::OutputComponentType]>,
     AV: AsRef<[Q::OutputValueType]>,
@@ -70,7 +99,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use seismic::SparseDatasetMut;
+    /// use seismic::SparseDatasetGrowable;
     ///
     /// let data = vec![
     ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
@@ -78,7 +107,7 @@ where
     ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
     ///                 ];
     ///
-    /// let dataset: SparseDatasetMut<u16, f32> = data.into_iter().collect();
+    /// let dataset: SparseDatasetGrowable<u16, f32> = data.into_iter().collect();
     ///
     /// let (components, values) = dataset.get(1);
     /// assert_eq!(components, &[1, 3]);
@@ -115,7 +144,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use seismic::SparseDatasetMut;
+    /// use seismic::SparseDatasetGrowable;
     ///
     /// let data = vec![
     ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
@@ -123,7 +152,7 @@ where
     ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
     ///                 ];
     ///
-    /// let dataset: SparseDatasetMut<u16, f32> = data.into_iter().collect();
+    /// let dataset: SparseDatasetGrowable<u16, f32> = data.into_iter().collect();
     ///
     /// let (components, values) = dataset.get_with_offset(3, 2);
     /// assert_eq!(components, &[1, 3]);
@@ -168,36 +197,19 @@ where
         self.offsets.as_ref().binary_search(&offset).unwrap() as VectorId
     }
 
-    /// Prefetches the components and values of specified vectors into the CPU cache.
-    ///
-    /// This method prefetches the components and values of the vectors specified by their indices
-    /// into the CPU cache, which can improve performance by reducing cache misses during subsequent accesses.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use seismic::SparseDatasetMut;
-    ///
-    /// let data = vec![
-    ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
-    ///                 (vec![1, 3],       vec![4.0, 5.0]),
-    ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
-    ///                 ];
-    ///
-    /// let dataset: SparseDatasetMut<u16, f32> = data.into_iter().collect();
-    ///
-    /// // Prefetch components and values of vectors 0 and 1
-    /// dataset.prefetch_vecs(&[0, 1]);
-    /// ```
-    // #[inline]
-    // pub fn prefetch_vecs(&self, vecs: &[usize]) {
-    //     for &id in vecs.iter() {
-    //         let (components, values) = self.get(id);
+    #[inline]
+    fn key_from_id(&self, id: VectorId) -> VectorKey {
+        let offsets = self.offsets.as_ref();
+        let start = offsets[id as usize];
+        let end = offsets[id as usize + 1];
+        let length = end - start;
 
-    //         prefetch_read_slice(components);
-    //         prefetch_read_slice(values);
-    //     }
-    // }
+        ((start as u64) << self.dim_bits) | (length as u64)
+    }
+
+    fn quantizer(&self) -> &Q {
+        &self.quantizer
+    }
 
     /// Prefetches the components and values of a vector with the specified offset and length into the CPU cache.
     ///
@@ -213,7 +225,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use seismic::SparseDatasetMut;
+    /// use seismic::SparseDatasetGrowable;
     ///
     /// let data = vec![
     ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
@@ -221,7 +233,7 @@ where
     ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
     ///                 ];
     ///
-    /// let dataset: SparseDatasetMut<u16, f32> = data.into_iter().collect();
+    /// let dataset: SparseDatasetGrowable<u16, f32> = data.into_iter().collect();
     ///
     /// // Prefetch components and values of the vector starting at index 1 with length 3
     /// dataset.prefetch_vec_with_offset(1, 3);
@@ -234,8 +246,6 @@ where
         prefetch_read_slice(sparse_vector.values_as_slice());
     }
 
-   
-
     /// Returns an iterator over the vectors of the dataset.
     ///
     /// This method returns an iterator that yields references to each vector in the dataset.
@@ -243,7 +253,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use seismic::SparseDatasetMut;
+    /// use seismic::SparseDatasetGrowable;
     ///
     /// let data = vec![
     ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
@@ -251,17 +261,20 @@ where
     ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
     ///                 ];
     ///
-    /// let dataset: SparseDatasetMut<u16, f32> = data.clone().into_iter().collect();
+    /// let dataset: SparseDatasetGrowable<u16, f32> = data.clone().into_iter().collect();
     ///
     /// for ((c0, v0), (c1,v1)) in dataset.iter().zip(data.iter()) {
     ///     assert_eq!(c0, c1);
     ///     assert_eq!(v0, v1);
     /// }
     /// ```
-    fn iter(&self) -> SparseDatasetIter<Q::OutputComponentType, Q::OutputValueType> {
+    fn iter(
+        &self,
+    ) -> impl Iterator<
+        Item = impl Vector1D<ComponentType = Q::OutputComponentType, ValueType = Q::OutputValueType>,
+    > {
         SparseDatasetIter::new(self)
     }
-
 
     // /// Returns an iterator over the sparse vector with id `vec_id`.
     // ///
@@ -281,7 +294,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use seismic::SparseDatasetMut;
+    /// use seismic::SparseDatasetGrowable;
     ///
     /// let data = vec![
     ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
@@ -289,7 +302,7 @@ where
     ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
     ///                ];
     ///
-    /// let dataset: SparseDatasetMut<u16, f32> = data.into_iter().collect();
+    /// let dataset: SparseDatasetGrowable<u16, f32> = data.into_iter().collect();
     ///
     /// assert_eq!(dataset.len(), 3);
     /// ```
@@ -302,7 +315,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use seismic::SparseDatasetMut;
+    /// use seismic::SparseDatasetGrowable;
     ///
     /// let data = vec![
     ///                 (vec![0, 2, 4], vec![1.0, 2.0, 3.0]),
@@ -310,12 +323,17 @@ where
     ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
     ///                ];
     ///
-    /// let dataset: SparseDatasetMut<u16, f32> = data.into_iter().collect();
+    /// let dataset: SparseDatasetGrowable<u16, f32> = data.into_iter().collect();
     ///
     /// assert_eq!(dataset.dim(), 5); // Largest component ID is 4, so dim() returns 5
     /// ```
     fn dim(&self) -> usize {
         self.dim
+    }
+
+    #[inline]
+    fn shape(&self) -> (usize, usize) {
+        (self.len(), self.dim())
     }
 
     /// Returns the number of non-zero components in the dataset.
@@ -326,7 +344,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use seismic::SparseDatasetMut;
+    /// use seismic::SparseDatasetGrowable;
     ///
     /// let data = vec![
     ///                 (vec![0, 2, 4], vec![1.0, 2.0, 3.0]),
@@ -334,7 +352,7 @@ where
     ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
     ///                ];
     ///
-    /// let dataset: SparseDatasetMut<u16, f32> = data.into_iter().collect();
+    /// let dataset: SparseDatasetGrowable<u16, f32> = data.into_iter().collect();
     ///
     /// assert_eq!(dataset.nnz(), 9); // Total non-zero components across all vectors
     /// ```
@@ -342,27 +360,6 @@ where
         self.components.as_ref().len()
     }
 
-    // TODO: Do instead `impl<...> From<SparseDatasetGeneric<...>> for SparseDatasetGeneric<...>`.
-    // However, this requires https://github.com/rust-lang/rust/issues/37653
-    /// Converts a `SparseDatasetGeneric<D, f32, ...>` into a `SparseDatasetGeneric<C, V, ...>`, where `V` is can be casted from a `f32`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use half::f16;
-    /// use seismic::{SparseDataset, SparseDatasetMut};
-    ///
-    /// let data = vec![
-    ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
-    ///                 (vec![1, 3],       vec![4.0, 5.0]),
-    ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
-    ///                ];
-    ///
-    /// let dataset: SparseDatasetMut<u16, f32> = data.into_iter().collect();
-    /// let dataset_f16 = SparseDataset::<u16, f16>::from_dataset_f32(dataset);
-    ///
-    /// assert_eq!(dataset_f16.nnz(), 9); // Total non-zero components across all vectors
-    /// ```
     // pub fn from_dataset_f32<D, P, AD, AU>(dataset: SparseDatasetGeneric<D, f32, P, AD, AU>) -> Self
     // where
     //     D: ComponentType,
@@ -389,6 +386,138 @@ where
     // }
 }
 
+// impl<Q, AC, AV> FromIterator<(AC, AV)> for SparseDatasetGrowable<Q>
+// where
+//     Q: SparseQuantizer,
+//     AC: AsRef<[Q::OutputComponentType]>,
+//     AV: AsRef<[Q::OutputValueType]>,
+// {
+//     /// Constructs a `SparseDatasetGrowable<V>` from an iterator over pairs of references to `[u16]` and `[V]`.
+//     ///
+//     /// This function consumes the provided iterator and constructs a new `SparseDatasetGrowable<V>`.
+//     /// Each pair in the iterator represents a pair of vectors, where the first vector contains
+//     /// the components and the second vector contains their corresponding values.
+//     ///
+//     /// # Parameters
+//     ///
+//     /// * `iter`: An iterator over pairs of vectors `(AsRef<[C]>, AsRef<[V]>)`.
+//     ///
+//     /// # Returns
+//     ///
+//     /// A new instance of `SparseDatasetGrowable<C, V>` populated with the pairs from the iterator.
+//     ///
+//     /// # Examples
+//     ///
+//     /// ```
+//     /// use seismic::SparseDatasetGrowable;
+//     ///
+//     /// let data = vec![
+//     ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
+//     ///                 (vec![1, 3],       vec![4.0, 5.0]),
+//     ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
+//     ///                 ];
+//     ///
+//     /// let dataset: SparseDatasetGrowable<u16, f32> = data.into_iter().collect();
+//     ///
+//     /// assert_eq!(dataset.nnz(), 9); // Total non-zero components across all vectors
+//     /// ```
+//     fn from_iter<I>(iter: I) -> Self
+//     where
+//         I: IntoIterator<Item = (AC, AV)>,
+//     {
+//         let mut dataset = SparseDatasetGrowable::<Q>::new(Q);
+
+//         for (components, values) in iter {
+//             dataset.push(components.as_ref(), values.as_ref());
+//         }
+
+//         dataset
+//     }
+// }
+
+// Unfortunately, Rust doesn't yet support specialization, meaning that we can't use From too generically (otherwise it fails due to reimplementing `From<T> for T`)
+
+impl<Q> From<SparseDatasetGrowable<Q>> for SparseDataset<Q>
+where
+    Q: SparseQuantizer,
+{
+    /// Converts a mutable sparse dataset into an immutable one.
+    ///
+    /// This function consumes the provided `SparseDatasetGrowable<C, V>` and produces
+    /// a corresponding immutable `SparseDataset<C, V>` instance. The conversion is performed
+    /// by transferring ownership of the internal data structures from the mutable dataset
+    /// to the immutable one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use seismic::{SparseDatasetGrowable, SparseDataset};
+    ///
+    /// let mut mutable_dataset = SparseDatasetGrowable::<u16, f32>::new();
+    /// // Populate mutable dataset...
+    /// mutable_dataset.push(&[0, 2, 4],    &[1.0, 2.0, 3.0]);
+    /// mutable_dataset.push(&[1, 3],       &[4.0, 5.0]);
+    /// mutable_dataset.push(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]);
+    ///
+    /// let immutable_dataset: SparseDataset<u16, f32> = mutable_dataset.into();
+    ///
+    /// assert_eq!(immutable_dataset.nnz(), 9); // Total non-zero components across all vectors
+    /// ```
+    fn from(dataset: SparseDatasetGrowable<Q>) -> Self {
+        Self {
+            dim: dataset.dim,
+            dim_bits: (dataset.dim - 1).ilog2() + 1,
+            offsets: dataset.offsets.into(),
+            components: dataset.components.into(),
+            values: dataset.values.into(),
+            quantizer: dataset.quantizer,
+        }
+    }
+}
+
+impl<Q> From<SparseDataset<Q>> for SparseDatasetGrowable<Q>
+where
+    Q: SparseQuantizer,
+{
+    /// Converts an immutable sparse dataset into a mutable one.
+    ///
+    /// This function consumes the provided `SparseDataset<C, V>` and produces
+    /// a corresponding mutable `SparseDatasetGrowable<C, V>` instance. The conversion is performed
+    /// by transferring ownership of the internal data structures from the immutable dataset
+    /// to the mutable one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use seismic::{SparseDatasetGrowable, SparseDataset};
+    ///
+    /// let mut mutable_dataset = SparseDatasetGrowable::<u16, f32>::new();
+    /// // Populate mutable dataset...
+    /// mutable_dataset.push(&[0, 2, 4],    &[1.0, 2.0, 3.0]);
+    /// mutable_dataset.push(&[1, 3],       &[4.0, 5.0]);
+    /// mutable_dataset.push(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]);
+    ///
+    /// let immutable_dataset: SparseDataset<u16, f32> = mutable_dataset.into();
+    ///
+    /// // Convert immutable dataset back to mutable
+    /// let mut mutable_dataset_again: SparseDatasetGrowable<u16, f32> = immutable_dataset.into();
+    ///
+    /// mutable_dataset_again.push(&[1, 7], &[1.0, 3.0]);
+    ///
+    /// assert_eq!(mutable_dataset_again.nnz(), 11); // Total non-zero components across all vectors
+    /// ```
+    fn from(dataset: SparseDataset<Q>) -> Self {
+        Self {
+            dim: dataset.dim,
+            dim_bits: (dataset.dim - 1).ilog2() + 1,
+            offsets: dataset.offsets.into(),
+            components: dataset.components.into(),
+            values: dataset.values.into(),
+            quantizer: dataset.quantizer,
+        }
+    }
+}
+
 /// A struct to iterate over a sparse dataset. It assumes the dataset can be represented as a pair of slices.
 #[derive(Clone)]
 pub struct SparseDatasetIter<'a, C, V>
@@ -410,7 +539,7 @@ where
     #[inline]
     fn new<Q, O, AC, AV>(dataset: &'a SparseDatasetGeneric<Q, O, AC, AV>) -> Self
     where
-        Q: Quantizer<OutputComponentType = C, OutputValueType = V>,
+        Q: SparseQuantizer<OutputComponentType = C, OutputValueType = V>,
         O: AsRef<[usize]>,
         AC: AsRef<[C]>,
         AV: AsRef<[V]>,
@@ -421,6 +550,86 @@ where
             components: dataset.components.as_ref(),
             values: dataset.values.as_ref(),
         }
+    }
+}
+
+impl<Q> GrowableDataset<Q> for SparseDatasetGrowable<Q>
+where
+    Q: SparseQuantizer,
+{
+    /// For SparseDataset, thw dimensionality `d` may be 0 if unkwown when creating a new dataset.
+    fn new(quantizer: Q, d: usize) -> Self {
+        Self {
+            dim: d,
+            dim_bits: if d == 0 { 0 } else { (d - 1).ilog2() + 1 },
+            offsets: vec![0; 1],
+            components: Vec::new(),
+            values: Vec::new(),
+            quantizer,
+        }
+    }
+
+    /// Adds a new sparse vector to the dataset.
+    ///
+    /// The `components` parameter is assumed to be a strictly increasing sequence
+    /// representing the indices of non-zero values in the vector, and `values`
+    /// holds the corresponding values. Both `components` and `values` must have
+    /// the same size and cannot be empty. Additionally, `components` must be sorted.
+    ///
+    /// # Parameters
+    ///
+    /// * `components`: A slice containing the indices of non-zero values in the vector.
+    /// * `values`: A slice containing the corresponding values for each index in `components`.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if:
+    ///
+    /// * The sizes of `components` and `values` are different.
+    /// * The size of either `components` or `values` is 0.
+    /// * `components` is not sorted in ascending order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use seismic::SparseDatasetMut;
+    ///
+    /// let mut dataset = SparseDatasetMut::<u16, f32>::default();
+    /// dataset.push(&[0, 2, 4], &[1.0, 2.0, 3.0]);
+    ///
+    /// assert_eq!(dataset.len(), 1);
+    /// assert_eq!(dataset.dim(), 5);
+    /// assert_eq!(dataset.nnz(), 3);
+    /// ```
+    fn push(
+        &mut self,
+        vec: impl Vector1D<ComponentType = Q::InputComponentType, ValueType = Q::InputValueType>,
+    ) {
+        let components = vec.components_as_slice();
+        let values = vec.values_as_slice();
+
+        assert_eq!(
+            components.len(),
+            values.len(),
+            "Vectors have different sizes"
+        );
+
+        assert!(
+            components.is_sorted(),
+            "Components must be given in sorted order"
+        );
+
+        if let Some(last_component) = components.last().map(|l| l.as_())
+            && last_component >= self.dim
+        {
+            self.dim = last_component + 1;
+            self.dim_bits = (self.dim - 1).ilog2() + 1;
+        }
+
+        self.quantizer
+            .extend_with_encode(vec, &mut self.components, &mut self.values);
+
+        self.offsets.push(self.components.len());
     }
 }
 
@@ -444,7 +653,7 @@ where
 
         self.last_offset = next_offset;
 
-        Some(SparseVector1D::new(cur_components, cur_values) )
+        Some(SparseVector1D::new(cur_components, cur_values))
     }
 }
 
@@ -470,7 +679,7 @@ where
     #[inline]
     fn new<Q, O, AC, AV>(dataset: &'a SparseDatasetGeneric<Q, O, AC, AV>) -> Self
     where
-        Q: Quantizer<OutputComponentType = C, OutputValueType = V>,
+        Q: SparseQuantizer<OutputComponentType = C, OutputValueType = V>,
         O: AsRef<[usize]>,
         AC: AsRef<[C]>,
         AV: AsRef<[V]>,
@@ -547,7 +756,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use seismic::SparseDatasetMut;
+    /// use seismic::SparseDatasetGrowable;
     ///
     /// let data = vec![
     ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
@@ -555,7 +764,7 @@ where
     ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
     ///                 ];
     ///
-    /// let dataset: SparseDatasetMut<u16, f32> = data.clone().into_iter().collect();
+    /// let dataset: SparseDatasetGrowable<u16, f32> = data.clone().into_iter().collect();
     ///
     /// let data_rev: Vec<_> =  dataset.iter().rev().collect();
     ///
@@ -655,7 +864,7 @@ where
 
 impl<Q, O, AC, AV> SpaceUsage for SparseDatasetGeneric<Q, O, AC, AV>
 where
-    Q: Quantizer + SpaceUsage,
+    Q: SparseQuantizer + SpaceUsage,
     O: AsRef<[usize]> + SpaceUsage,
     AC: AsRef<[Q::OutputComponentType]> + SpaceUsage,
     AV: AsRef<[Q::OutputValueType]> + SpaceUsage,

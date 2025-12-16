@@ -69,17 +69,6 @@ where
     }
 }
 
-impl<V, AV> MutableVector1D for DenseVector1D<V, AV>
-where
-    V: ValueType,
-    AV: AsRef<[V]> + AsMut<[V]>,
-{
-    #[inline(always)]
-    fn values_as_mut_slice(&mut self) -> &mut [Self::ValueType] {
-        self.values.as_mut()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct SparseVector1D<C, V, AC, AV>
 where

@@ -2,7 +2,7 @@
 //! Provides methods to convert datasets between different scalar value types.
 
 use crate::datasets::Dataset;
-use crate::quantizers::Quantizer;
+use crate::quantizers::{DenseQuantizer, Quantizer};
 use crate::{DenseDataset, DenseVector1D, ScalarDenseQuantizer};
 use crate::{Float, ScalarDenseSupportedDistance, ValueType};
 
@@ -33,15 +33,11 @@ where
         let m = quantizer.m();
 
         // Preallocate output buffer
-        let mut output_data: Vec<Out> = vec![Out::default(); n_vecs * m];
+        let mut output_data: Vec<Out> = Vec::with_capacity(n_vecs * m);
 
         // Iterate vector by vector and encode
-        for (i, src_vec) in source.iter().enumerate() {
-            let start = i * m;
-            let end = start + m;
-            let mut out_slice = DenseVector1D::new(&mut output_data[start..end]);
-
-            quantizer.encode(src_vec, &mut out_slice);
+        for src_vec in source.iter() {
+            quantizer.extend_with_encode(src_vec, &mut output_data);
         }
 
         DenseDataset::from_raw(output_data, n_vecs, d, quantizer)

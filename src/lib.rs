@@ -37,6 +37,11 @@ pub use quantizers::dense_scalar::{
     ScalarDenseQuantizer, ScalarDenseQuantizerDotProduct, ScalarDenseQuantizerEuclidean,
     ScalarDenseQuantizerSame, ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
 };
+pub use quantizers::sparse_scalar::{
+    PlainSparseQuantizer, PlainSparseQuantizerDotProduct,
+    ScalarSparseQuantizer, ScalarSparseQuantizerDotProduct,
+    ScalarSparseQuantizerSame, ScalarSparseQueryEvaluator, ScalarSparseSupportedDistance,
+};
 
 pub mod datasets;
 pub use datasets::VectorId;

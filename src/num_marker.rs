@@ -53,6 +53,10 @@ macro_rules! impl_from_float {
 
 impl_from_float![f64, f32, f16, bf16];
 
+// Implement Float for fixed-point types
+impl<T: fixed::types::extra::LeEqU8 + Send + Sync> Float for FixedU8<T> {}
+impl<T: fixed::types::extra::LeEqU16 + Send + Sync> Float for FixedU16<T> {}
+
 // ============================================================================
 // DenseComponent - marker type for dense vectors (no component indices)
 // ============================================================================
