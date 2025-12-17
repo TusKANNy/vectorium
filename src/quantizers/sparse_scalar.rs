@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
-use crate::distances::{Distance, DotProduct, dot_product_dense_sparse};
+use crate::distances::{
+    Distance, DotProduct, dot_product_dense_sparse, dot_product_sparse_with_merge,
+};
 use crate::quantizers::{Quantizer, QueryEvaluator, SparseQuantizer};
 use crate::{
     ComponentType, DenseVector1D, Float, FromF32, SpaceUsage, SparseVector1D, ValueType, Vector1D,
@@ -12,9 +14,9 @@ use crate::{
 pub trait ScalarSparseSupportedDistance: Distance {
     /// Compute distance between a dense query (f32) and a sparse encoded vector
     fn compute_sparse<C: ComponentType, V: ValueType + Float>(
-        query_dense: &DenseVector1D<f32, &[f32]>,
-        query: &SparseVector1D<C, f32, &[C], &[f32]>,
-        vector_sparse: &SparseVector1D<C, V, &[C], &[V]>,
+        dense_query: &Option<DenseVector1D<f32, impl AsRef<[f32]>>>,
+        query: &SparseVector1D<C, f32, impl AsRef<[C]>, impl AsRef<[f32]>>,
+        vector_sparse: &SparseVector1D<C, V, impl AsRef<[C]>, impl AsRef<[V]>>,
     ) -> Self;
 }
 
@@ -23,17 +25,15 @@ pub trait ScalarSparseSupportedDistance: Distance {
 impl ScalarSparseSupportedDistance for DotProduct {
     #[inline]
     fn compute_sparse<C: ComponentType, V: ValueType + Float>(
-        query_dense: &DenseVector1D<f32, &[f32]>,
-        query: &SparseVector1D<C, f32, &[C], &[f32]>,
-        vector_sparse: &SparseVector1D<C, V, &[C], &[V]>,
+        dense_query: &Option<DenseVector1D<f32, impl AsRef<[f32]>>>,
+        query: &SparseVector1D<C, f32, impl AsRef<[C]>, impl AsRef<[f32]>>,
+        vector_sparse: &SparseVector1D<C, V, impl AsRef<[C]>, impl AsRef<[V]>>,
     ) -> Self {
-
-        if self.dense_query.is_none() {
-            dot_product_with_merge(self.query, vector_sparse)
+        if dense_query.is_none() {
+            dot_product_sparse_with_merge(query, vector_sparse)
         } else {
-            dot_product_dense_sparse(query_dense, vector_sparse)
+            dot_product_dense_sparse(dense_query.as_ref().unwrap(), vector_sparse)
         }
-        
     }
 }
 
@@ -150,7 +150,7 @@ where
     AC: AsRef<[C]>,
     AV: AsRef<[f32]>,
 {
-    dense_query: Option<Vec<f32>>,
+    dense_query: Option<DenseVector1D<f32, Vec<f32>>>,
     query: SparseVector1D<C, f32, AC, AV>,
     _phantom: PhantomData<(OutValue, D)>,
 }
@@ -164,7 +164,7 @@ where
     AV: AsRef<[f32]>,
 {
     pub fn from_query(query: SparseVector1D<C, f32, AC, AV>, dim: usize) -> Self {
-        let dense_query = if dim < 1 << 20 {
+        let dense_query = if dim < 2_usize.pow(20) {
             // For small dimensions, create a dense representation
             let mut dense_query = vec![0.0; dim];
             let components = query.components_as_slice();
@@ -172,7 +172,7 @@ where
             for (&i, &v) in components.iter().zip(values) {
                 dense_query[i.as_()] = v;
             }
-            Some(dense_query)
+            Some(DenseVector1D::new(dense_query))
         } else {
             // For large dimensions, keep sparse representation
             None
@@ -219,8 +219,7 @@ where
     {
         let vector_sparse =
             SparseVector1D::new(vector.components_as_slice(), vector.values_as_slice());
-        D::compute_sparse((&dense_query, &self.query, &vector_sparse);
-
+        D::compute_sparse(&self.dense_query, &self.query, &vector_sparse)
     }
 }
 

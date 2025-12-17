@@ -165,17 +165,14 @@ impl Ord for DotProduct {
 /// assert_eq!(result, vectorium::distances::DotProduct::from(4.0f32));
 /// ```
 #[inline]
-pub fn dot_product_dense_sparse<C, Q, V, AQ, AC, AV>(
-    query: &DenseVector1D<Q, AQ>,
-    vector: &SparseVector1D<C, V, AC, AV>,
+pub fn dot_product_dense_sparse<C, Q, V>(
+    query: &DenseVector1D<Q, impl AsRef<[Q]>>,
+    vector: &SparseVector1D<C, V, impl AsRef<[C]>, impl AsRef<[V]>>,
 ) -> DotProduct
 where
     C: ComponentType,
     Q: ValueType,
     V: ValueType,
-    AQ: AsRef<[Q]>,
-    AC: AsRef<[C]>,
-    AV: AsRef<[V]>,
 {
     let query = query.values_as_slice();
     vector
@@ -223,18 +220,14 @@ where
 /// ```
 #[inline]
 #[must_use]
-pub fn dot_product_with_merge<C, Q, V, ACQ, AVQ, AC, AV>(
-    query: &SparseVector1D<C, Q, ACQ, AVQ>,
-    vector: &SparseVector1D<C, V, AC, AV>,
+pub fn dot_product_sparse_with_merge<C, Q, V>(
+    query: &SparseVector1D<C, Q, impl AsRef<[C]>, impl AsRef<[Q]>>,
+    vector: &SparseVector1D<C, V, impl AsRef<[C]>, impl AsRef<[V]>>,
 ) -> DotProduct
 where
     C: ComponentType,
     Q: ValueType,
     V: ValueType,
-    ACQ: AsRef<[C]>,
-    AVQ: AsRef<[Q]>,
-    AC: AsRef<[C]>,
-    AV: AsRef<[V]>,
 {
     let v_components = vector.components_as_slice();
     let v_values = vector.values_as_slice();
@@ -291,15 +284,13 @@ where
 /// assert_eq!(result, DotProduct::from(11.0f32));
 /// ```
 #[inline]
-pub fn dot_product_dense<Q, V, AQ, AV>(
-    query: DenseVector1D<Q, AQ>,
-    vector: DenseVector1D<V, AV>,
+pub fn dot_product_dense<Q, V>(
+    query: DenseVector1D<Q, impl AsRef<[Q]>>,
+    vector: DenseVector1D<V, impl AsRef<[V]>>,
 ) -> DotProduct
 where
     Q: ValueType,
     V: ValueType,
-    AQ: AsRef<[Q]>,
-    AV: AsRef<[V]>,
 {
     let query = query.values_as_slice();
     let vector = vector.values_as_slice();
@@ -314,15 +305,13 @@ where
 
 /// Computes the Euclidean distance (squared) between two dense vectors.
 #[inline]
-pub fn euclidean_distance_dense<Q, V, AQ, AV>(
-    query: DenseVector1D<Q, AQ>,
-    vector: DenseVector1D<V, AV>,
+pub fn euclidean_distance_dense<Q, V>(
+    query: DenseVector1D<Q, impl AsRef<[Q]>>,
+    vector: DenseVector1D<V, impl AsRef<[V]>>,
 ) -> EuclideanDistance
 where
     Q: ValueType,
     V: ValueType,
-    AQ: AsRef<[Q]>,
-    AV: AsRef<[V]>,
 {
     let query = query.values_as_slice();
     let vector = vector.values_as_slice();
