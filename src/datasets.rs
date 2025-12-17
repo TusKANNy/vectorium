@@ -1,12 +1,10 @@
 use crate::quantizers::{Quantizer, QueryEvaluator};
-use crate::{Distance, Vector1D};
+use crate::{Distance, SpaceUsage, Vector1D};
 
 use itertools::Itertools;
 
 pub mod dense_dataset;
-pub mod dense_dataset_scalar;
 pub mod sparse_dataset;
-pub mod sparse_dataset_scalar;
 
 pub type VectorId = u64;
 pub type VectorKey = u64;
@@ -64,7 +62,7 @@ pub type ResultWithKey<D> = ResultGeneric<D, VectorKey>;
 /// However, conversion from `VectorKey` back to `VectorId` may be
 /// expensive (e.g., requiring a binary search), so it should be used sparingly.
 
-pub trait Dataset<Q>
+pub trait Dataset<Q>: SpaceUsage
 where
     Q: Quantizer,
 {
@@ -113,7 +111,7 @@ where
         query: impl Vector1D<ComponentType = Q::QueryComponentType, ValueType = Q::QueryValueType>,
         k: usize,
     ) -> Vec<Result<<Q as Quantizer>::Distance>> {
-        let evaluator = self.quantizer().get_query_evaluator(query);
+        let evaluator = self.quantizer().get_query_evaluator(query, self.dim());
 
         if k == 0 {
             return Vec::new();

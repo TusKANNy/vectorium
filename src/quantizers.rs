@@ -8,7 +8,7 @@ pub mod sparse_scalar;
 
 /// A query evaluator computes distances between a query and encoded vectors.
 pub trait QueryEvaluator<Q: Quantizer>: Sized {
-    fn new<QueryVector>(query: QueryVector) -> Self
+    fn new<QueryVector>(query: QueryVector, dim: usize) -> Self
     where
         QueryVector: Vector1D<ValueType = Q::QueryValueType, ComponentType = Q::QueryComponentType>;
 
@@ -37,8 +37,11 @@ pub trait Quantizer: Sized {
     /// The query evaluator type for this quantizer and distance
     type Evaluator: QueryEvaluator<Self>;
 
+    // /// Create a new quantizer for vectors of the given dimensionality `d`` and number of components in the quantized vector `m`.
+    // fn new(d: usize, m: usize) -> Self;
+
     /// Get a query evaluator for the given distance type
-    fn get_query_evaluator<QueryVector>(&self, query: QueryVector) -> Self::Evaluator
+    fn get_query_evaluator<QueryVector>(&self, query: QueryVector, dim: usize) -> Self::Evaluator
     where
         QueryVector:
             Vector1D<ValueType = Self::QueryValueType, ComponentType = Self::QueryComponentType>;

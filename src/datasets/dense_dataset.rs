@@ -9,21 +9,25 @@ use crate::{VectorId, VectorKey};
 
 use rayon::prelude::*;
 
-// TODO: implement DenseDatasetGeneric come fatto in sparse_dataset.rs
+// Implementation of a growable dense dataset.
+pub type DenseDatasetGrowable<Q> = DenseDatasetGeneric<Q, Vec<<Q as Quantizer>::OutputValueType>>;
+
+// Implementation of a (immutable) sparse dataset.
+pub type DenseDataset<Q> = DenseDatasetGeneric<Q, Box<[<Q as Quantizer>::OutputValueType]>>;
 
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
-pub struct DenseDataset<Q, Data>
+pub struct DenseDatasetGeneric<Q, Data>
 where
     Q: DenseQuantizer,
     Data: AsRef<[Q::OutputValueType]>,
 {
-    data: Data,
+    dim: usize,
     n_vecs: usize,
-    d: usize,
+    data: Data,
     quantizer: Q,
 }
 
-impl<Q, Data> SpaceUsage for DenseDataset<Q, Data>
+impl<Q, Data> SpaceUsage for DenseDatasetGeneric<Q, Data>
 where
     Q: DenseQuantizer + SpaceUsage,
     Data: AsRef<[Q::OutputValueType]> + SpaceUsage,
@@ -37,12 +41,12 @@ where
     }
 }
 
-impl<Q, Data> DenseDataset<Q, Data>
+impl<Q, Data> DenseDatasetGeneric<Q, Data>
 where
     Q: DenseQuantizer,
     Data: AsRef<[Q::OutputValueType]>,
 {
-    /// Creates a DenseDataset from raw data.
+    /// Creates a DenseDatasetGeneric from raw data.
     ///
     /// # Arguments
     /// * `data` - The raw vector data (flattened)
@@ -50,16 +54,16 @@ where
     /// * `d` - Dimensionality of each vector
     /// * `quantizer` - The quantizer to use
     #[inline]
-    pub fn from_raw(data: Data, n_vecs: usize, d: usize, quantizer: Q) -> Self {
+    pub fn from_raw(data: Data, n_vecs: usize, dim: usize, quantizer: Q) -> Self {
         debug_assert_eq!(
             data.as_ref().len(),
-            n_vecs * d,
-            "Data length must equal n_vecs * d"
+            n_vecs * dim,
+            "Data length must equal n_vecs * dim"
         );
         Self {
-            data,
+            dim,
             n_vecs,
-            d,
+            data,
             quantizer,
         }
     }
@@ -88,10 +92,11 @@ where
 }
 
 /// immutable
-impl<Q, Data> Dataset<Q> for DenseDataset<Q, Data>
+impl<Q, Data> Dataset<Q> for DenseDatasetGeneric<Q, Data>
 where
-    Q: DenseQuantizer,
+    Q: DenseQuantizer + SpaceUsage,
     Data: AsRef<[Q::OutputValueType]> + SpaceUsage,
+    Q::OutputValueType: SpaceUsage,
 {
     #[inline]
     fn quantizer(&self) -> &Q {
@@ -100,12 +105,12 @@ where
 
     #[inline]
     fn shape(&self) -> (usize, usize) {
-        (self.n_vecs, self.d)
+        (self.n_vecs, self.dim)
     }
 
     #[inline]
     fn dim(&self) -> usize {
-        self.d
+        self.dim
     }
 
     #[inline]
@@ -115,7 +120,7 @@ where
 
     #[inline]
     fn nnz(&self) -> usize {
-        self.n_vecs * self.d
+        self.n_vecs * self.dim
     }
 
     #[inline]
@@ -148,7 +153,7 @@ where
     #[inline]
     fn prefetch(&self, key: VectorKey) {
         prefetch_read_slice(
-            &self.data.as_ref()[(key as usize) * self.d..(key as usize + 1) * self.d],
+            &self.data.as_ref()[(key as usize) * self.dim..(key as usize + 1) * self.dim],
         );
     }
 
@@ -162,7 +167,7 @@ where
     }
 }
 
-// impl<'a, Q, B> DenseDataset<Q, B>
+// impl<'a, Q, B> DenseDatasetGeneric<Q, B>
 // where
 //     Q: Quantizer,
 //     B: AsRef<[Q::OutputItem]>,
@@ -173,7 +178,7 @@ where
 //     }
 // }
 
-// impl<'a, Q> DenseDataset<Q, Vec<Q::OutputItem>>
+// impl<'a, Q> DenseDatasetGeneric<Q, Vec<Q::OutputItem>>
 // where
 //     Q: Quantizer,
 // {
@@ -215,17 +220,17 @@ where
 // }
 
 // Growable dataset implementation
-impl<Q> GrowableDataset<Q> for DenseDataset<Q, Vec<Q::OutputValueType>>
+impl<Q> GrowableDataset<Q> for DenseDatasetGeneric<Q, Vec<Q::OutputValueType>>
 where
-    Q: DenseQuantizer,
-    Q::OutputValueType: Default,
+    Q: DenseQuantizer + SpaceUsage,
+    Q::OutputValueType: Default + SpaceUsage,
 {
     #[inline]
-    fn new(quantizer: Q, d: usize) -> Self {
+    fn new(quantizer: Q, dim: usize) -> Self {
         Self {
             data: Vec::new(),
             n_vecs: 0,
-            d,
+            dim,
             quantizer,
         }
     }
@@ -236,7 +241,7 @@ where
         vec: impl Vector1D<ComponentType = Q::InputComponentType, ValueType = Q::InputValueType>,
     ) {
         assert!(
-            vec.len() == self.d,
+            vec.len() == self.dim,
             "Input vector' length doesn't match datasets's dimensionality."
         );
 
@@ -246,7 +251,7 @@ where
     }
 }
 
-// impl<Q> Extend<Q::OutputItem> for DenseDataset<Q, Vec<Q::OutputItem>>
+// impl<Q> Extend<Q::OutputItem> for DenseDatasetGeneric<Q, Vec<Q::OutputItem>>
 // where
 //     Q: Quantizer,
 // {
@@ -258,17 +263,79 @@ where
 //     }
 // }
 
-impl<Q> From<DenseDataset<Q, Vec<Q::OutputValueType>>>
-    for DenseDataset<Q, Box<[Q::OutputValueType]>>
+impl<Q> From<DenseDatasetGrowable<Q>> for DenseDataset<Q>
 where
     Q: DenseQuantizer,
 {
-    fn from(mutable_dataset: DenseDataset<Q, Vec<Q::OutputValueType>>) -> Self {
-        DenseDataset {
-            data: mutable_dataset.data.into_boxed_slice(),
-            n_vecs: mutable_dataset.n_vecs,
-            d: mutable_dataset.d,
-            quantizer: mutable_dataset.quantizer,
+    /// Converts a mutable dense dataset into an immutable one.
+    ///
+    /// This function consumes the provided `DenseDatasetGrowable<C, V>` and produces
+    /// a corresponding immutable `DenseDataset<C, V>` instance. The conversion is performed
+    /// by transferring ownership of the internal data structures from the mutable dataset
+    /// to the immutable one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use vectorium::{DenseDatasetGrowable, DenseDataset};
+    ///
+    /// let mut growable_dataset = DenseDatasetGrowable::<u16, f32>::new();
+    /// // Populate mutable dataset...
+    /// growable_dataset.push(&[0, 2, 4],    &[1.0, 2.0, 3.0]);
+    /// growable_dataset.push(&[1, 3],       &[4.0, 5.0]);
+    /// growable_dataset.push(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]);
+    ///
+    /// let immutable_dataset: DenseDataset<u16, f32> = growable_dataset.into();
+    ///
+    /// assert_eq!(immutable_dataset.nnz(), 9); // Total non-zero components across all vectors
+    /// ```
+    fn from(dataset: DenseDatasetGrowable<Q>) -> Self {
+        Self {
+            dim: dataset.dim,
+            n_vecs: dataset.n_vecs,
+            data: dataset.data.into_boxed_slice(),
+            quantizer: dataset.quantizer,
+        }
+    }
+}
+
+impl<Q> From<DenseDataset<Q>> for DenseDatasetGrowable<Q>
+where
+    Q: DenseQuantizer,
+{
+    /// Converts an immutable sparse dataset into a mutable one.
+    ///
+    /// This function consumes the provided `DenseDataset<C, V>` and produces
+    /// a corresponding mutable `DenseDatasetGrowable<C, V>` instance. The conversion is performed
+    /// by transferring ownership of the internal data structures from the immutable dataset
+    /// to the mutable one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use vectorium::{DenseDatasetGrowable, DenseDataset};
+    ///
+    /// let mut growable_dataset = DenseDatasetGrowable::<u16, f32>::new();
+    /// // Populate mutable dataset...
+    /// growable_dataset.push(&[0, 2, 4],    &[1.0, 2.0, 3.0]);
+    /// growable_dataset.push(&[1, 3],       &[4.0, 5.0]);
+    /// growable_dataset.push(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]);
+    ///
+    /// let immutable_dataset: DenseDataset<u16, f32> = growable_dataset.into();
+    ///
+    /// // Convert immutable dataset back to mutable
+    /// let mut growable_dataset_again: DenseDatasetGrowable<u16, f32> = immutable_dataset.into();
+    ///
+    /// growable_dataset_again.push(&[1, 7], &[1.0, 3.0]);
+    ///
+    /// assert_eq!(growable_dataset_again.nnz(), 11); // Total non-zero components across all vectors
+    /// ```
+    fn from(dataset: DenseDataset<Q>) -> Self {
+        Self {
+            dim: dataset.dim,
+            data: dataset.data.to_vec(),
+            n_vecs: dataset.n_vecs,
+            quantizer: dataset.quantizer,
         }
     }
 }
@@ -286,7 +353,7 @@ where
 //     }
 // }
 
-impl<Q, T> AsRef<[Q::OutputValueType]> for DenseDataset<Q, T>
+impl<Q, T> AsRef<[Q::OutputValueType]> for DenseDatasetGeneric<Q, T>
 where
     Q: DenseQuantizer,
     T: AsRef<[Q::OutputValueType]>,
@@ -302,7 +369,7 @@ where
     Q: DenseQuantizer,
 {
     data: &'a [Q::OutputValueType],
-    d: usize,
+    dim: usize,
     index: usize,
 }
 
@@ -310,13 +377,14 @@ impl<'a, Q> DenseDatasetIter<'a, Q>
 where
     Q: DenseQuantizer,
 {
-    pub fn new<Data>(dataset: &'a DenseDataset<Q, Data>) -> Self
+    pub fn new<Data>(dataset: &'a DenseDatasetGeneric<Q, Data>) -> Self
     where
         Data: AsRef<[Q::OutputValueType]> + SpaceUsage,
+        Q: SpaceUsage,
     {
         Self {
             data: dataset.values(),
-            d: dataset.dim(),
+            dim: dataset.dim(),
             index: 0,
         }
     }
@@ -336,10 +404,55 @@ where
         }
 
         let start = self.index;
-        let end = std::cmp::min(start + self.d, self.data.len());
+        let end = std::cmp::min(start + self.dim, self.data.len());
         self.index = end;
 
         Some(DenseVector1D::new(&self.data[start..end]))
+    }
+}
+
+use crate::quantizers::dense_scalar::{ScalarDenseQuantizer, ScalarDenseSupportedDistance};
+use crate::{Float, ValueType};
+
+/// Conversion methods for DenseDataset
+///
+/// Convert a DenseDataset ith ScalarDenseQuantizer<SrcIn, SrcOut, D> to
+/// DenseDataset<ScalarDenseQuantizer<SrcOut, Out, D>, Vec<Out>>.
+///
+/// The source dataset's output type (SrcOut) must match the target quantizer's
+/// input type (In).
+impl<In, Out, D, AVOut> DenseDatasetGeneric<ScalarDenseQuantizer<In, Out, D>, AVOut>
+where
+    In: ValueType + Float,
+    Out: ValueType + Float + crate::FromF32,
+    AVOut: AsRef<[Out]> + crate::SpaceUsage + From<Vec<Out>>,
+    D: ScalarDenseSupportedDistance,
+{
+    pub fn quantize<SrcIn, SrcData>(
+        source: &DenseDatasetGeneric<ScalarDenseQuantizer<SrcIn, In, D>, SrcData>,
+    ) -> Self
+    where
+        SrcIn: ValueType + Float,
+        SrcData: AsRef<[In]> + crate::SpaceUsage,
+    {
+        let (n_vecs, dim) = source.shape();
+        let quantizer: ScalarDenseQuantizer<In, Out, D> = ScalarDenseQuantizer::new(dim);
+        let dst_dim = quantizer.m();
+
+        // Preallocate output buffer
+        let mut output_data: Vec<Out> = Vec::with_capacity(n_vecs * dst_dim);
+
+        // Iterate vector by vector and encode
+        for src_vec in source.iter() {
+            quantizer.extend_with_encode(src_vec, &mut output_data);
+        }
+
+        DenseDatasetGeneric::<ScalarDenseQuantizer<In, Out, D>, AVOut> {
+            dim: dst_dim,
+            n_vecs,
+            data: output_data.into(),
+            quantizer,
+        }
     }
 }
 
@@ -387,11 +500,11 @@ where
 
 //         let mut rng = rand::thread_rng();
 //         let sampled_id = sample(&mut rng, self.len(), n_vecs);
-//         let mut sample = Self::with_capacity_plain(n_vecs, self.d);
+//         let mut sample = Self::with_capacity_plain(n_vecs, self.dim);
 
 //         for id in sampled_id {
 //             sample.push(&DenseVector1D::new(
-//                 &self.data[id * self.d..(id + 1) * self.d],
+//                 &self.data[id * self.dim..(id + 1) * self.dim],
 //             ));
 //         }
 

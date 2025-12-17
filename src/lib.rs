@@ -44,12 +44,31 @@ pub use quantizers::sparse_scalar::{
 };
 
 pub mod datasets;
+pub use datasets::Dataset;
 pub use datasets::VectorId;
 pub use datasets::VectorKey;
-pub use datasets::dense_dataset::DenseDataset;
+pub use datasets::dense_dataset::{DenseDataset, DenseDatasetGeneric, DenseDatasetGrowable};
+pub use datasets::sparse_dataset::{SparseDataset, SparseDatasetGrowable};
+
+// Usefull type aliases for dense dataset types
+pub type ScalarDenseDataset<VIn, VOut, D> = DenseDataset<ScalarDenseQuantizer<VIn, VOut, D>>;
+pub type ScalarDenseDatasetGrowable<VIn, VOut, D> =
+    DenseDatasetGrowable<ScalarDenseQuantizer<VIn, VOut, D>>;
+
+pub type PlainDenseDataset<V, D> = ScalarDenseDatasetGrowable<V, V, D>;
+pub type PlainDenseDatasetGrowable<V, D> = ScalarDenseDatasetGrowable<V, V, D>;
+
+// Usefull type aliases for sparse dataset types
+pub type ScalarSparseDataset<C, V, D> = SparseDataset<ScalarSparseQuantizer<C, V, V, D>>;
+pub type ScalarSparseDatasetGrowable<C, V, D> =
+    SparseDatasetGrowable<ScalarSparseQuantizer<C, V, V, D>>;
+
+pub type PlainSparseDataset<C, V, D> = SparseDataset<PlainSparseQuantizer<C, V, D>>;
+pub type PlainSparseDatasetGrowable<C, V, D> = SparseDatasetGrowable<PlainSparseQuantizer<C, V, D>>;
 
 pub mod readers;
 pub use readers::read_npy_f32;
+pub use readers::read_seismic_format;
 
 pub mod utils;
 
@@ -63,6 +82,7 @@ pub trait ValueType = SpaceUsage
     + PartialOrd
     + FromPrimitive
     + FromF32
+    + SpaceUsage
     + Default;
 
 pub trait ComponentType = AsPrimitive<usize>
@@ -75,9 +95,3 @@ pub trait ComponentType = AsPrimitive<usize>
     + Eq
     + Ord
     + std::convert::TryFrom<usize>;
-
-/// Convenience type aliases for common dense dataset configurations
-pub type DenseDatasetEuclideanGrowable<V> =
-    DenseDataset<ScalarDenseQuantizer<V, V, EuclideanDistance>, Vec<V>>;
-pub type DenseDatasetDotProductGrowable<V> =
-    DenseDataset<PlainDenseQuantizer<V, DotProduct>, Vec<V>>;

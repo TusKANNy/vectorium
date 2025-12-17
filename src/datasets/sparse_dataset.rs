@@ -40,7 +40,7 @@ pub type SparseDataset<Q> = SparseDatasetGeneric<
     Box<[<Q as Quantizer>::OutputValueType]>,
 >;
 
-#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct SparseDatasetGeneric<Q, O, AC, AV>
 where
     Q: SparseQuantizer,
@@ -82,10 +82,12 @@ where
 
 impl<Q, O, AC, AV> Dataset<Q> for SparseDatasetGeneric<Q, O, AC, AV>
 where
-    Q: SparseQuantizer,
-    O: AsRef<[usize]>,
-    AC: AsRef<[Q::OutputComponentType]>,
-    AV: AsRef<[Q::OutputValueType]>,
+    Q: SparseQuantizer + SpaceUsage,
+    O: AsRef<[usize]> + SpaceUsage,
+    AC: AsRef<[Q::OutputComponentType]> + SpaceUsage,
+    AV: AsRef<[Q::OutputValueType]> + SpaceUsage,
+    Q::OutputComponentType: SpaceUsage,
+    Q::OutputValueType: SpaceUsage,
 {
     /// Retrieves the components and values of the sparse vector at the specified index.
     ///
@@ -439,7 +441,9 @@ where
 
 impl<Q> From<SparseDatasetGrowable<Q>> for SparseDataset<Q>
 where
-    Q: SparseQuantizer,
+    Q: SparseQuantizer + SpaceUsage,
+    Q::OutputComponentType: SpaceUsage,
+    Q::OutputValueType: SpaceUsage,
 {
     /// Converts a mutable sparse dataset into an immutable one.
     ///
@@ -453,13 +457,13 @@ where
     /// ```
     /// use seismic::{SparseDatasetGrowable, SparseDataset};
     ///
-    /// let mut mutable_dataset = SparseDatasetGrowable::<u16, f32>::new();
+    /// let mut growable_dataset = SparseDatasetGrowable::<u16, f32>::new();
     /// // Populate mutable dataset...
-    /// mutable_dataset.push(&[0, 2, 4],    &[1.0, 2.0, 3.0]);
-    /// mutable_dataset.push(&[1, 3],       &[4.0, 5.0]);
-    /// mutable_dataset.push(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]);
+    /// growable_dataset.push(&[0, 2, 4],    &[1.0, 2.0, 3.0]);
+    /// growable_dataset.push(&[1, 3],       &[4.0, 5.0]);
+    /// growable_dataset.push(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]);
     ///
-    /// let immutable_dataset: SparseDataset<u16, f32> = mutable_dataset.into();
+    /// let immutable_dataset: SparseDataset<u16, f32> = growable_dataset.into();
     ///
     /// assert_eq!(immutable_dataset.nnz(), 9); // Total non-zero components across all vectors
     /// ```
@@ -477,7 +481,9 @@ where
 
 impl<Q> From<SparseDataset<Q>> for SparseDatasetGrowable<Q>
 where
-    Q: SparseQuantizer,
+    Q: SparseQuantizer + SpaceUsage,
+    Q::OutputComponentType: SpaceUsage,
+    Q::OutputValueType: SpaceUsage,
 {
     /// Converts an immutable sparse dataset into a mutable one.
     ///
@@ -491,20 +497,20 @@ where
     /// ```
     /// use seismic::{SparseDatasetGrowable, SparseDataset};
     ///
-    /// let mut mutable_dataset = SparseDatasetGrowable::<u16, f32>::new();
+    /// let mut growable_dataset = SparseDatasetGrowable::<u16, f32>::new();
     /// // Populate mutable dataset...
-    /// mutable_dataset.push(&[0, 2, 4],    &[1.0, 2.0, 3.0]);
-    /// mutable_dataset.push(&[1, 3],       &[4.0, 5.0]);
-    /// mutable_dataset.push(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]);
+    /// growable_dataset.push(&[0, 2, 4],    &[1.0, 2.0, 3.0]);
+    /// growable_dataset.push(&[1, 3],       &[4.0, 5.0]);
+    /// growable_dataset.push(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]);
     ///
-    /// let immutable_dataset: SparseDataset<u16, f32> = mutable_dataset.into();
+    /// let immutable_dataset: SparseDataset<u16, f32> = growable_dataset.into();
     ///
     /// // Convert immutable dataset back to mutable
-    /// let mut mutable_dataset_again: SparseDatasetGrowable<u16, f32> = immutable_dataset.into();
+    /// let mut growable_dataset_again: SparseDatasetGrowable<u16, f32> = immutable_dataset.into();
     ///
-    /// mutable_dataset_again.push(&[1, 7], &[1.0, 3.0]);
+    /// growable_dataset_again.push(&[1, 7], &[1.0, 3.0]);
     ///
-    /// assert_eq!(mutable_dataset_again.nnz(), 11); // Total non-zero components across all vectors
+    /// assert_eq!(growable_dataset_again.nnz(), 11); // Total non-zero components across all vectors
     /// ```
     fn from(dataset: SparseDataset<Q>) -> Self {
         Self {
@@ -555,13 +561,15 @@ where
 
 impl<Q> GrowableDataset<Q> for SparseDatasetGrowable<Q>
 where
-    Q: SparseQuantizer,
+    Q: SparseQuantizer + SpaceUsage,
+    Q::OutputComponentType: SpaceUsage,
+    Q::OutputValueType: SpaceUsage,
 {
     /// For SparseDataset, thw dimensionality `d` may be 0 if unkwown when creating a new dataset.
-    fn new(quantizer: Q, d: usize) -> Self {
+    fn new(quantizer: Q, dim: usize) -> Self {
         Self {
-            dim: d,
-            dim_bits: if d == 0 { 0 } else { (d - 1).ilog2() + 1 },
+            dim,
+            dim_bits: if dim == 0 { 0 } else { (dim - 1).ilog2() + 1 },
             offsets: vec![0; 1],
             components: Vec::new(),
             values: Vec::new(),
