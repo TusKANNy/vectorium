@@ -193,6 +193,89 @@ where
         .into()
 }
 
+/// Computes the dot product between a query and a vector using merge style.
+/// This function should be used when the query has just a few components.
+/// Both the query's and vector's terms must be sorted by id.
+///
+/// # Arguments
+///
+/// * `query_term_ids` - The ids of the query terms.
+/// * `query_values` - The values of the query terms.
+/// * `v_term_ids` - The ids of the vector terms.
+/// * `v_values` - The values of the vector terms.
+///
+/// # Returns
+///
+/// The dot product between the query and the vector.
+///
+/// # Examples
+///
+/// ```
+/// use vectorium::distances::dot_product_with_merge;
+///
+/// let query_term_ids = [1_u32, 2, 7];
+/// let query_values = [1.0, 1.0, 1.0];
+/// let v_term_ids = [0_u32, 1, 2, 3, 4];
+/// let v_values = [0.1, 1.0, 1.0, 1.0, 0.5];
+///
+/// let result = dot_product_with_merge(&query_term_ids, &query_values, &v_term_ids, &v_values);
+/// assert_eq!(result, 2.0);
+/// ```
+#[inline]
+#[must_use]
+pub fn dot_product_with_merge<C, Q, V, ACQ, AVQ, AC, AV>(
+    query: &SparseVector1D<C, Q, ACQ, AVQ>,
+    vector: &SparseVector1D<C, V, AC, AV>,
+) -> DotProduct
+where
+    C: ComponentType,
+    Q: ValueType,
+    V: ValueType,
+    ACQ: AsRef<[C]>,
+    AVQ: AsRef<[Q]>,
+    AC: AsRef<[C]>,
+    AV: AsRef<[V]>,
+{
+    let v_components = vector.components_as_slice();
+    let v_values = vector.values_as_slice();
+    let query_components = query.components_as_slice();
+    let query_values = query.values_as_slice();
+
+    unsafe {
+        assert_unchecked(
+            v_components.len() == v_values.len() && query_components.len() == query_values.len(),
+        )
+    }
+    let mut result = 0.0;
+    let mut v_iter = v_components.iter().zip(v_values);
+    let mut current = v_iter.next();
+    let b = current.is_some();
+    for (&q_id, &q_v) in query_components.iter().zip(query_values) {
+        // This assert actually improves performance: https://github.com/rust-lang/rust/issues/134667
+        if b {
+            unsafe { assert_unchecked(current.is_some()) }
+        }
+        while let Some((&v_id, _)) = current
+            && v_id < q_id
+        {
+            current = v_iter.next();
+        }
+        if !b {
+            unsafe { assert_unchecked(current.is_none()) }
+        }
+        match current {
+            Some((&v_id, v_v)) if v_id == q_id => {
+                result += v_v.to_f32().unwrap() * q_v.to_f32().unwrap();
+            }
+            None => {
+                break;
+            }
+            _ => {}
+        }
+    }
+    result.into()
+}
+
 /// Computes the dot product between two dense vectors.
 ///
 /// The function accepts `DenseVector1D`.

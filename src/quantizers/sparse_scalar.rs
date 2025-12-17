@@ -13,6 +13,7 @@ pub trait ScalarSparseSupportedDistance: Distance {
     /// Compute distance between a dense query (f32) and a sparse encoded vector
     fn compute_sparse<C: ComponentType, V: ValueType + Float>(
         query_dense: &DenseVector1D<f32, &[f32]>,
+        query: &SparseVector1D<C, f32, &[C], &[f32]>,
         vector_sparse: &SparseVector1D<C, V, &[C], &[V]>,
     ) -> Self;
 }
@@ -23,9 +24,16 @@ impl ScalarSparseSupportedDistance for DotProduct {
     #[inline]
     fn compute_sparse<C: ComponentType, V: ValueType + Float>(
         query_dense: &DenseVector1D<f32, &[f32]>,
+        query: &SparseVector1D<C, f32, &[C], &[f32]>,
         vector_sparse: &SparseVector1D<C, V, &[C], &[V]>,
     ) -> Self {
-        dot_product_dense_sparse(query_dense, vector_sparse)
+
+        if self.dense_query.is_none() {
+            dot_product_with_merge(self.query, vector_sparse)
+        } else {
+            dot_product_dense_sparse(query_dense, vector_sparse)
+        }
+        
     }
 }
 
@@ -209,15 +217,10 @@ where
                 ComponentType = <ScalarSparseQuantizer<C, InValue, OutValue, D> as Quantizer>::OutputComponentType,
             >,
     {
-        if self.dense_query.is_none() {
-            unimplemented!();
-        } else {
-            // Create dense query wrapper and sparse vector wrapper
-            let dense_query = DenseVector1D::new(self.dense_query.as_ref().unwrap().as_slice());
-            let vector_sparse =
-                SparseVector1D::new(vector.components_as_slice(), vector.values_as_slice());
-            D::compute_sparse(&dense_query, &vector_sparse)
-        }
+        let vector_sparse =
+            SparseVector1D::new(vector.components_as_slice(), vector.values_as_slice());
+        D::compute_sparse((&dense_query, &self.query, &vector_sparse);
+
     }
 }
 
