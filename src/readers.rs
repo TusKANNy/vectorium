@@ -83,7 +83,7 @@ where
 
     let quantizer = PlainDenseQuantizer::new(d);
 
-    Ok(PlainDenseDataset::from_raw(data, n_vecs, d, quantizer))
+    Ok(PlainDenseDataset::from_raw(data, n_vecs, quantizer))
 }
 
 /// Read a sparse dataset from the Seismic binary file format.
@@ -116,9 +116,9 @@ pub fn read_seismic_format<C, V, D>(
     filename: impl AsRef<Path>,
 ) -> IoResult<PlainSparseDataset<C, V, D>>
 where
-    C: ComponentType + Default,
+    C: ComponentType,
     V: ValueType + Float,
-    D: ScalarSparseSupportedDistance + Default,
+    D: ScalarSparseSupportedDistance,
 {
     read_seismic_format_limit(filename, None)
 }
@@ -143,27 +143,55 @@ pub fn read_seismic_format_limit<C, V, D>(
     limit: Option<usize>,
 ) -> IoResult<PlainSparseDataset<C, V, D>>
 where
-    C: ComponentType + Default,
+    C: ComponentType,
     V: ValueType + Float,
-    D: ScalarSparseSupportedDistance + Default,
+    D: ScalarSparseSupportedDistance,
 {
     let path = Path::new(filename.as_ref());
-    let f = File::open(path)?;
-
-    let mut br = BufReader::new(f);
-
     let mut buffer_d = [0_u8; std::mem::size_of::<u32>()];
     let mut buffer = [0_u8; std::mem::size_of::<f32>()];
 
+    // Pass 1: scan to determine input_dim (max component + 1), without constructing the dataset.
+    let mut br = BufReader::new(File::open(path)?);
     br.read_exact(&mut buffer_d)?;
-    let mut n_vecs = u32::from_le_bytes(buffer_d) as usize;
+    let file_n_vecs = u32::from_le_bytes(buffer_d) as usize;
+    let n_vecs = limit.map_or(file_n_vecs, |n| n.min(file_n_vecs));
 
-    if let Some(n) = limit {
-        n_vecs = n.min(n_vecs);
+    let mut max_component: Option<usize> = None;
+    for _ in 0..n_vecs {
+        br.read_exact(&mut buffer_d)?;
+        let n = u32::from_le_bytes(buffer_d) as usize;
+
+        for _ in 0..n {
+            br.read_exact(&mut buffer_d)?;
+            let comp_val = u32::from_le_bytes(buffer_d) as usize;
+            max_component = Some(max_component.map_or(comp_val, |m| m.max(comp_val)));
+        }
+
+        // Skip values (f32) for this vector.
+        for _ in 0..n {
+            br.read_exact(&mut buffer)?;
+        }
     }
 
-    let quantizer = PlainSparseQuantizer::default();
-    let mut data = PlainSparseDatasetGrowable::<C, V, D>::new(quantizer, 0);
+    let input_dim = max_component.map_or(0, |m| m + 1);
+
+    // Pass 2: construct dataset and re-read, now that the dimensionality is known.
+    let quantizer = <PlainSparseQuantizer<C, V, D> as crate::quantizers::Quantizer>::new(
+        input_dim,
+        input_dim,
+    );
+    let mut data = PlainSparseDatasetGrowable::<C, V, D>::new(quantizer);
+
+    let mut br = BufReader::new(File::open(path)?);
+    br.read_exact(&mut buffer_d)?; // n_vecs header
+    let file_n_vecs_2 = u32::from_le_bytes(buffer_d) as usize;
+    if file_n_vecs_2 != file_n_vecs {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Inconsistent header n_vecs between passes",
+        ));
+    }
 
     use crate::SparseVector1D;
 
@@ -203,6 +231,5 @@ where
         data.push(sparse_vec);
     }
 
-    // Convert growable dataset to immutable dataset
     Ok(data.into())
 }

@@ -142,8 +142,7 @@ impl Ord for DotProduct {
 /// # Arguments
 ///
 /// * `query` - The dense query vector.
-/// * `v_term_ids` - The indices of the non-zero components in the vector.
-/// * `v_values` - The values of the non-zero components in the vector.
+/// * `vector` - The sparse vector.
 ///
 /// # Returns
 ///
@@ -159,13 +158,16 @@ impl Ord for DotProduct {
 /// let query = DenseVector1D::new(&[1.0f32, 2.0, 3.0]);
 /// let comps = &[0usize, 2usize];
 /// let vals = &[1.0f32, 1.0f32];
-/// let v = SparseVector1D::new(comps, vals, 3);
+/// let v = SparseVector1D::new(comps, vals);
 ///
-/// let result = dot_product_dense_sparse(&query, &v);
+/// let result = unsafe { dot_product_dense_sparse(&query, &v) };
 /// assert_eq!(result, vectorium::distances::DotProduct::from(4.0f32));
 /// ```
+///
+/// # Safety
+/// - Ogni componente `c` in `vector.components_as_slice()` deve soddisfare `c.as_() < query.len()`.
 #[inline]
-pub fn dot_product_dense_sparse<C, Q, V>(
+pub unsafe fn dot_product_dense_sparse<C, Q, V>(
     query: &DenseVector1D<Q, impl AsRef<[Q]>>,
     vector: &SparseVector1D<C, V, impl AsRef<[C]>, impl AsRef<[V]>>,
 ) -> DotProduct
@@ -180,7 +182,7 @@ where
         .iter()
         .zip(vector.values_as_slice())
         .map(|(&c, &v): (&C, &V)| {
-            // SAFETY: query.len() == dim + 1. This assumes the input is sanitized.
+            // SAFETY: il chiamante garantisce che `c.as_() < query.len()`.
             unsafe { *query.get_unchecked(c.as_()) }
                 .to_f32()
                 .unwrap()
@@ -196,10 +198,8 @@ where
 ///
 /// # Arguments
 ///
-/// * `query_term_ids` - The ids of the query terms.
-/// * `query_values` - The values of the query terms.
-/// * `v_term_ids` - The ids of the vector terms.
-/// * `v_values` - The values of the vector terms.
+/// * `query` - Sparse query vector.
+/// * `vector` - Sparse vector.
 ///
 /// # Returns
 ///
@@ -208,19 +208,26 @@ where
 /// # Examples
 ///
 /// ```
-/// use vectorium::distances::dot_product_with_merge;
+/// use vectorium::distances::dot_product_sparse_with_merge;
 ///
-/// let query_term_ids = [1_u32, 2, 7];
+/// let query_components = [1_u32, 2, 7];
 /// let query_values = [1.0, 1.0, 1.0];
-/// let v_term_ids = [0_u32, 1, 2, 3, 4];
+/// let v_components = [0_u32, 1, 2, 3, 4];
 /// let v_values = [0.1, 1.0, 1.0, 1.0, 0.5];
 ///
-/// let result = dot_product_with_merge(&query_term_ids, &query_values, &v_term_ids, &v_values);
-/// assert_eq!(result, 2.0);
+/// let query = vectorium::SparseVector1D::new(&query_components, &query_values);
+/// let vector = vectorium::SparseVector1D::new(&v_components, &v_values);
+/// let result = unsafe { dot_product_sparse_with_merge(&query, &vector) };
+/// assert_eq!(result, vectorium::distances::DotProduct::from(2.0));
 /// ```
+///
+/// # Safety
+/// - `query.components_as_slice().len() == query.values_as_slice().len()`.
+/// - `vector.components_as_slice().len() == vector.values_as_slice().len()`.
+/// - Entrambe le liste di componenti devono essere ordinate (crescente).
 #[inline]
 #[must_use]
-pub fn dot_product_sparse_with_merge<C, Q, V>(
+pub unsafe fn dot_product_sparse_with_merge<C, Q, V>(
     query: &SparseVector1D<C, Q, impl AsRef<[C]>, impl AsRef<[Q]>>,
     vector: &SparseVector1D<C, V, impl AsRef<[C]>, impl AsRef<[V]>>,
 ) -> DotProduct
@@ -280,11 +287,14 @@ where
 ///
 /// let a = DenseVector1D::new(&[1.0f32, 2.0]);
 /// let b = DenseVector1D::new(&[3.0f32, 4.0]);
-/// let result = dot_product_dense(a, b);
+/// let result = unsafe { dot_product_dense(a, b) };
 /// assert_eq!(result, DotProduct::from(11.0f32));
 /// ```
+///
+/// # Safety
+/// - `query.len() == vector.len()`.
 #[inline]
-pub fn dot_product_dense<Q, V>(
+pub unsafe fn dot_product_dense<Q, V>(
     query: DenseVector1D<Q, impl AsRef<[Q]>>,
     vector: DenseVector1D<V, impl AsRef<[V]>>,
 ) -> DotProduct
@@ -304,8 +314,11 @@ where
 }
 
 /// Computes the Euclidean distance (squared) between two dense vectors.
+///
+/// # Safety
+/// - `query.len() == vector.len()`.
 #[inline]
-pub fn euclidean_distance_dense<Q, V>(
+pub unsafe fn euclidean_distance_dense<Q, V>(
     query: DenseVector1D<Q, impl AsRef<[Q]>>,
     vector: DenseVector1D<V, impl AsRef<[V]>>,
 ) -> EuclideanDistance
@@ -345,9 +358,9 @@ mod tests {
         // sparse vector with components at 0 and 2
         let comps: &[usize] = &[0usize, 2usize];
         let vals: &[f32] = &[1.0f32, 1.0f32];
-        let v = SparseVector1D::new(comps, vals, 3);
+        let v = SparseVector1D::new(comps, vals);
 
-        let result = dot_product_dense_sparse(&query, &v);
+        let result = unsafe { dot_product_dense_sparse(&query, &v) };
         assert_eq!(result, DotProduct::from(4.0f32));
     }
 
@@ -371,7 +384,7 @@ mod tests {
     fn dot_product_dense_slice_slice() {
         let q = DenseVector1D::new(&[1.0f32, 2.0, 3.0]);
         let v = DenseVector1D::new(&[4.0f32, 5.0, 6.0]);
-        let res = dot_product_dense(q, v);
+        let res = unsafe { dot_product_dense(q, v) };
         // 1*4 + 2*5 + 3*6 = 32
         assert_eq!(res, DotProduct::from(32.0f32));
     }
@@ -380,7 +393,7 @@ mod tests {
     fn dot_product_dense_vec_vec() {
         let q = DenseVector1D::new(vec![1.0f32, 2.0, 3.0]);
         let v = DenseVector1D::new(vec![4.0f32, 5.0, 6.0]);
-        let res = dot_product_dense(q, v);
+        let res = unsafe { dot_product_dense(q, v) };
         assert_eq!(res, DotProduct::from(32.0f32));
     }
 
@@ -388,7 +401,7 @@ mod tests {
     fn dot_product_dense_vec_slice() {
         let q = DenseVector1D::new(vec![1.0f32, 2.0, 3.0]);
         let v = DenseVector1D::new(&[4.0f32, 5.0, 6.0]);
-        let res = dot_product_dense(q, v);
+        let res = unsafe { dot_product_dense(q, v) };
         assert_eq!(res, DotProduct::from(32.0f32));
     }
 }

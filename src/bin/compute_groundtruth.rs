@@ -255,10 +255,10 @@ fn compute_dense_groundtruth<V, D>(
     let dataset_gib = dataset.space_usage_GiB();
 
     println!("N documents: {}", dataset.len());
-    println!("N dims: {}", dataset.dim());
+    println!("N dims: {}", dataset.input_dim());
     println!("N non-zeroes: {}", dataset.nnz());
     println!("N queries: {}", queries.len());
-    println!("N dims: {}", queries.dim());
+    println!("N dims: {}", queries.input_dim());
 
     println!("Dataset size: {:.3} GiB", dataset_gib);
     println!("Computing groundtruth for {} queries...", queries.len());
@@ -307,9 +307,9 @@ fn compute_sparse_groundtruth<C, V, D>(
     output_path: String,
     k: usize,
 ) where
-    C: vectorium::ComponentType + Default,
+    C: vectorium::ComponentType,
     V: vectorium::ValueType + Float,
-    D: vectorium::ScalarSparseSupportedDistance + Default,
+    D: vectorium::ScalarSparseSupportedDistance,
 {
     // Read sparse dataset from seismic binary format
     let dataset: PlainSparseDataset<C, V, D> =
@@ -323,10 +323,10 @@ fn compute_sparse_groundtruth<C, V, D>(
     let dataset_gib = dataset.space_usage_GiB();
 
     println!("N documents: {}", dataset.len());
-    println!("N dims: {}", dataset.dim());
+    println!("N dims: {}", dataset.input_dim());
     println!("N non-zeroes: {}", dataset.nnz());
     println!("N queries: {}", queries.len());
-    println!("N dims: {}", queries.dim());
+    println!("N dims: {}", queries.input_dim());
 
     println!("Dataset size: {:.3} GiB", dataset_gib);
     println!("Computing ground truth for {} queries...", queries.len());

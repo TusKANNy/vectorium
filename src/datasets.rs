@@ -1,4 +1,4 @@
-use crate::quantizers::{Quantizer, QueryEvaluator};
+use crate::quantizers::{Quantizer, QueryEvaluator, QueryVectorFor};
 use crate::{Distance, SpaceUsage, Vector1D};
 
 use itertools::Itertools;
@@ -35,8 +35,9 @@ pub type ResultWithKey<D> = ResultGeneric<D, VectorKey>;
 /// Sparse datasets store variable‑length vectors in a packed array and keep
 /// metadata (offsets, lengths) in a separate structure. Accessing a vector by
 /// `VectorId` therefore involves an extra level of indirection:
-///
-///     VectorId -> (offset, length) -> vector data
+/// ```text
+/// VectorId -> (offset, length) -> vector data
+/// ```
 ///
 /// This extra lookup can slow down accesses and reduce the effectiveness
 /// of software prefetching.
@@ -68,10 +69,21 @@ where
 {
     fn quantizer(&self) -> &Q;
 
-    fn shape(&self) -> (usize, usize);
+    fn shape(&self) -> (usize, usize) {
+        (self.len(), self.input_dim())
+    }
 
-    // Dimensionality of the vectors, i.e., largest possible component index + 1.
-    fn dim(&self) -> usize;
+    /// Dimensionality of the input vectors (original vector space).
+    #[inline]
+    fn input_dim(&self) -> usize {
+        self.quantizer().input_dim()
+    }
+
+    /// Dimensionality of the encoded vectors (stored representation).
+    #[inline]
+    fn output_dim(&self) -> usize {
+        self.quantizer().output_dim()
+    }
 
     fn len(&self) -> usize;
 
@@ -86,6 +98,7 @@ where
 
     fn id_from_key(&self, key: VectorKey) -> VectorId;
 
+    /// Get the representation of the vector with the given key.
     fn get(
         &self,
         key: VectorKey,
@@ -93,6 +106,7 @@ where
 
     fn prefetch(&self, key: VectorKey);
 
+    /// Returns an iterator over all encoded vectors in the dataset.
     fn iter(
         &self,
     ) -> impl Iterator<
@@ -108,10 +122,10 @@ where
     #[inline]
     fn search(
         &self,
-        query: impl Vector1D<ComponentType = Q::QueryComponentType, ValueType = Q::QueryValueType>,
+        query: impl QueryVectorFor<Q>,
         k: usize,
     ) -> Vec<Result<<Q as Quantizer>::Distance>> {
-        let evaluator = self.quantizer().get_query_evaluator(query, self.dim());
+        let evaluator = self.quantizer().get_query_evaluator(query);
 
         if k == 0 {
             return Vec::new();
@@ -132,7 +146,12 @@ pub trait GrowableDataset<Q>: Dataset<Q>
 where
     Q: Quantizer,
 {
-    fn new(quantizer: Q, d: usize) -> Self;
+    /// Create a new growable dataset with the given quantizer and dimensionality.
+    fn new(quantizer: Q) -> Self;
+
+    /// Push a new vector into the dataset.
+    /// The vector must have the appropriate component and value types as defined by the quantizer.
+    /// The encoding defined by the quantizer is applied to the input vector before storing it in the dataset.
     fn push(
         &mut self,
         vec: impl Vector1D<ComponentType = Q::InputComponentType, ValueType = Q::InputValueType>,

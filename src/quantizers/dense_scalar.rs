@@ -5,7 +5,7 @@ use crate::distances::{
     Distance, DotProduct, EuclideanDistance, dot_product_dense, euclidean_distance_dense,
 };
 use crate::num_marker::DenseComponent;
-use crate::quantizers::{DenseQuantizer, Quantizer, QueryEvaluator};
+use crate::quantizers::{DenseQuantizer, Quantizer, QueryEvaluator, QueryVectorFor};
 use crate::{DenseVector1D, Float, FromF32, SpaceUsage, ValueType, Vector1D};
 
 /// Marker trait for distance types supported by scalar dense quantizers.
@@ -23,7 +23,10 @@ impl ScalarDenseSupportedDistance for EuclideanDistance {
         query: DenseVector1D<Q, &[Q]>,
         vector: DenseVector1D<V, &[V]>,
     ) -> Self {
-        euclidean_distance_dense(query, vector)
+        let q_len = query.len();
+        let v_len = vector.len();
+        assert_eq!(q_len, v_len, "Dense vectors must have the same length");
+        unsafe { euclidean_distance_dense(query, vector) }
     }
 }
 
@@ -32,7 +35,10 @@ impl ScalarDenseSupportedDistance for DotProduct {
         query: DenseVector1D<Q, &[Q]>,
         vector: DenseVector1D<V, &[V]>,
     ) -> Self {
-        dot_product_dense(query, vector)
+        let q_len = query.len();
+        let v_len = vector.len();
+        assert_eq!(q_len, v_len, "Dense vectors must have the same length");
+        unsafe { dot_product_dense(query, vector) }
     }
 }
 
@@ -43,7 +49,7 @@ impl ScalarDenseSupportedDistance for DotProduct {
 /// - `D`: Distance type (must implement ScalarDenseSupportedDistance)
 ///
 /// Query value type is always f32.
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScalarDenseQuantizer<In, Out, D> {
     d: usize,
     _phantom: PhantomData<(In, Out, D)>,
@@ -76,13 +82,11 @@ where
     Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
 {
-    fn extend_with_encode<InputVector, ValueContainer>(
+    fn extend_with_encode<ValueContainer>(
         &self,
-        input_vector: InputVector,
+        input_vector: DenseVector1D<Self::InputValueType, impl AsRef<[Self::InputValueType]>>,
         values: &mut ValueContainer,
     ) where
-        InputVector:
-            Vector1D<ValueType = Self::InputValueType, ComponentType = Self::InputComponentType>,
         ValueContainer: Extend<Self::OutputValueType>,
     {
         let input = input_vector.values_as_slice();
@@ -109,22 +113,31 @@ where
     type OutputComponentType = DenseComponent;
 
     type Evaluator = ScalarDenseQueryEvaluator<Out, D>;
+
     #[inline]
-    fn get_query_evaluator<QueryVector>(&self, query: QueryVector, _dim: usize) -> Self::Evaluator
-    where
-        QueryVector:
-            Vector1D<ValueType = Self::QueryValueType, ComponentType = Self::QueryComponentType>,
-    {
-        ScalarDenseQueryEvaluator::from_query(query)
+    fn new(input_dim: usize, output_dim: usize) -> Self {
+        assert_eq!(
+            input_dim, output_dim,
+            "ScalarDenseQuantizer requires input_dim == output_dim"
+        );
+        Self::new(output_dim)
     }
 
     #[inline]
-    fn m(&self) -> usize {
+    fn get_query_evaluator<QueryVector>(&self, query: QueryVector) -> Self::Evaluator
+    where
+        QueryVector: QueryVectorFor<Self>,
+    {
+        <Self::Evaluator as QueryEvaluator<Self>>::new(query, self)
+    }
+
+    #[inline]
+    fn output_dim(&self) -> usize {
         self.d
     }
 
     #[inline]
-    fn dim(&self) -> usize {
+    fn input_dim(&self) -> usize {
         self.d
     }
 }
@@ -174,7 +187,7 @@ where
     Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
 {
-    fn new<QueryVector>(query: QueryVector, _dim: usize) -> Self
+    fn new<QueryVector>(query: QueryVector, _quantizer: &ScalarDenseQuantizer<In, Out, D>) -> Self
     where
         QueryVector: Vector1D<
                 ValueType = <ScalarDenseQuantizer<In, Out, D> as Quantizer>::QueryValueType,

@@ -21,7 +21,6 @@ where
     Q: DenseQuantizer,
     Data: AsRef<[Q::OutputValueType]>,
 {
-    dim: usize,
     n_vecs: usize,
     data: Data,
     quantizer: Q,
@@ -51,17 +50,15 @@ where
     /// # Arguments
     /// * `data` - The raw vector data (flattened)
     /// * `n_vecs` - Number of vectors
-    /// * `d` - Dimensionality of each vector
     /// * `quantizer` - The quantizer to use
     #[inline]
-    pub fn from_raw(data: Data, n_vecs: usize, dim: usize, quantizer: Q) -> Self {
-        debug_assert_eq!(
+    pub fn from_raw(data: Data, n_vecs: usize, quantizer: Q) -> Self {
+        assert_eq!(
             data.as_ref().len(),
-            n_vecs * dim,
-            "Data length must equal n_vecs * dim"
+            n_vecs * quantizer.output_dim(),
+            "Data length must equal n_vecs * quantizer.output_dim()"
         );
         Self {
-            dim,
             n_vecs,
             data,
             quantizer,
@@ -79,7 +76,7 @@ where
         &self,
     ) -> impl ParallelIterator<Item = DenseVector1D<Q::OutputValueType, &'_ [Q::OutputValueType]>>
     {
-        let m = self.quantizer.m();
+        let m = self.quantizer.output_dim();
         let data = self.data.as_ref();
         let n = self.n_vecs;
 
@@ -104,23 +101,13 @@ where
     }
 
     #[inline]
-    fn shape(&self) -> (usize, usize) {
-        (self.n_vecs, self.dim)
-    }
-
-    #[inline]
-    fn dim(&self) -> usize {
-        self.dim
-    }
-
-    #[inline]
     fn len(&self) -> usize {
         self.n_vecs
     }
 
     #[inline]
     fn nnz(&self) -> usize {
-        self.n_vecs * self.dim
+        self.n_vecs * self.quantizer.output_dim()
     }
 
     #[inline]
@@ -132,8 +119,7 @@ where
 
         assert!(index < self.len(), "Index out of bounds.");
 
-        let m = self.quantizer.m();
-
+        let m = self.quantizer.output_dim();
         let start = index * m;
         let end = start + m;
 
@@ -152,8 +138,9 @@ where
 
     #[inline]
     fn prefetch(&self, key: VectorKey) {
+        let m = self.quantizer.output_dim();
         prefetch_read_slice(
-            &self.data.as_ref()[(key as usize) * self.dim..(key as usize + 1) * self.dim],
+            &self.data.as_ref()[(key as usize) * m..(key as usize + 1) * m],
         );
     }
 
@@ -226,11 +213,10 @@ where
     Q::OutputValueType: Default + SpaceUsage,
 {
     #[inline]
-    fn new(quantizer: Q, dim: usize) -> Self {
+    fn new(quantizer: Q) -> Self {
         Self {
             data: Vec::new(),
             n_vecs: 0,
-            dim,
             quantizer,
         }
     }
@@ -241,8 +227,8 @@ where
         vec: impl Vector1D<ComponentType = Q::InputComponentType, ValueType = Q::InputValueType>,
     ) {
         assert!(
-            vec.len() == self.dim,
-            "Input vector' length doesn't match datasets's dimensionality."
+            vec.len() == self.quantizer.input_dim(),
+            "Input vector' length doesn't match quantizer input dimensionality."
         );
 
         self.quantizer.extend_with_encode(vec, &mut self.data);
@@ -276,22 +262,25 @@ where
     ///
     /// # Examples
     ///
-    /// ```
-    /// use vectorium::{DenseDatasetGrowable, DenseDataset};
+    /// ```rust
+    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{DenseDataset, PlainDenseDatasetGrowable};
+    /// use vectorium::{DenseVector1D, EuclideanDistance, PlainDenseQuantizer};
     ///
-    /// let mut growable_dataset = DenseDatasetGrowable::<u16, f32>::new();
+    /// let quantizer = PlainDenseQuantizer::<f32, EuclideanDistance>::new(4);
+    /// let mut growable_dataset = PlainDenseDatasetGrowable::<f32, EuclideanDistance>::new(quantizer);
+    ///
     /// // Populate mutable dataset...
-    /// growable_dataset.push(&[0, 2, 4],    &[1.0, 2.0, 3.0]);
-    /// growable_dataset.push(&[1, 3],       &[4.0, 5.0]);
-    /// growable_dataset.push(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]);
+    /// growable_dataset.push(DenseVector1D::new(&[1.0, 2.0, 3.0, 4.0]));
+    /// growable_dataset.push(DenseVector1D::new(&[0.0, 4.0, 5.0, 6.0]));
+    /// growable_dataset.push(DenseVector1D::new(&[1.0, 2.0, 3.0, 4.0]));
     ///
-    /// let immutable_dataset: DenseDataset<u16, f32> = growable_dataset.into();
-    ///
-    /// assert_eq!(immutable_dataset.nnz(), 9); // Total non-zero components across all vectors
+    /// let immutable_dataset: DenseDataset<_> = growable_dataset.into();
+    /// assert_eq!(immutable_dataset.len(), 3);
+    /// assert_eq!(immutable_dataset.nnz(), 12);
     /// ```
     fn from(dataset: DenseDatasetGrowable<Q>) -> Self {
         Self {
-            dim: dataset.dim,
             n_vecs: dataset.n_vecs,
             data: dataset.data.into_boxed_slice(),
             quantizer: dataset.quantizer,
@@ -312,27 +301,28 @@ where
     ///
     /// # Examples
     ///
-    /// ```
-    /// use vectorium::{DenseDatasetGrowable, DenseDataset};
+    /// ```rust
+    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{DenseVector1D, EuclideanDistance, PlainDenseDataset, PlainDenseDatasetGrowable, PlainDenseQuantizer};
     ///
-    /// let mut growable_dataset = DenseDatasetGrowable::<u16, f32>::new();
-    /// // Populate mutable dataset...
-    /// growable_dataset.push(&[0, 2, 4],    &[1.0, 2.0, 3.0]);
-    /// growable_dataset.push(&[1, 3],       &[4.0, 5.0]);
-    /// growable_dataset.push(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]);
+    /// let quantizer = PlainDenseQuantizer::<f32, EuclideanDistance>::new(4);
+    /// let mut growable_dataset = PlainDenseDatasetGrowable::<f32, EuclideanDistance>::new(quantizer);
     ///
-    /// let immutable_dataset: DenseDataset<u16, f32> = growable_dataset.into();
+    /// growable_dataset.push(DenseVector1D::new(&[1.0, 2.0, 3.0, 4.0]));
+    /// growable_dataset.push(DenseVector1D::new(&[0.0, 4.0, 5.0, 6.0]));
+    /// growable_dataset.push(DenseVector1D::new(&[1.0, 2.0, 3.0, 4.0]));
     ///
-    /// // Convert immutable dataset back to mutable
-    /// let mut growable_dataset_again: DenseDatasetGrowable<u16, f32> = immutable_dataset.into();
+    /// let immutable_dataset: PlainDenseDataset<f32, EuclideanDistance> = growable_dataset.into();
     ///
-    /// growable_dataset_again.push(&[1, 7], &[1.0, 3.0]);
+    /// // Convert immutable dataset back to a growable one
+    /// let mut growable_dataset_again: PlainDenseDatasetGrowable<f32, EuclideanDistance> = immutable_dataset.into();
+    /// growable_dataset_again.push(DenseVector1D::new(&[1.0, 7.0, 8.0, 9.0]));
     ///
-    /// assert_eq!(growable_dataset_again.nnz(), 11); // Total non-zero components across all vectors
+    /// assert_eq!(growable_dataset_again.len(), 4);
+    /// assert_eq!(growable_dataset_again.nnz(), 16);
     /// ```
     fn from(dataset: DenseDataset<Q>) -> Self {
         Self {
-            dim: dataset.dim,
             data: dataset.data.to_vec(),
             n_vecs: dataset.n_vecs,
             quantizer: dataset.quantizer,
@@ -384,7 +374,7 @@ where
     {
         Self {
             data: dataset.values(),
-            dim: dataset.dim(),
+            dim: dataset.quantizer.output_dim(),
             index: 0,
         }
     }
@@ -435,9 +425,10 @@ where
         SrcIn: ValueType + Float,
         SrcData: AsRef<[In]> + crate::SpaceUsage,
     {
-        let (n_vecs, dim) = source.shape();
-        let quantizer: ScalarDenseQuantizer<In, Out, D> = ScalarDenseQuantizer::new(dim);
-        let dst_dim = quantizer.m();
+        let n_vecs = source.len();
+        let src_dim = source.quantizer.output_dim();
+        let quantizer: ScalarDenseQuantizer<In, Out, D> = ScalarDenseQuantizer::new(src_dim);
+        let dst_dim = quantizer.output_dim();
 
         // Preallocate output buffer
         let mut output_data: Vec<Out> = Vec::with_capacity(n_vecs * dst_dim);
@@ -448,7 +439,6 @@ where
         }
 
         DenseDatasetGeneric::<ScalarDenseQuantizer<In, Out, D>, AVOut> {
-            dim: dst_dim,
             n_vecs,
             data: output_data.into(),
             quantizer,

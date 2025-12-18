@@ -17,11 +17,15 @@ use rayon::prelude::{IndexedParallelIterator, ParallelIterator};
 ///
 /// # Examples
 ///
-/// ```
-/// use seismic::SparseDatasetGrowable;
+/// ```rust
+/// use vectorium::datasets::{Dataset, GrowableDataset};
+/// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer};
 ///
 /// // Create a new empty dataset
-/// let mut dataset = SparseDatasetGrowable::<u16, f32>::default();
+/// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(0, 0);
+/// let dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
+/// assert_eq!(dataset.len(), 0);
+/// assert_eq!(dataset.nnz(), 0);
 /// ```
 ///
 // TODO: decidere se vogliamo growable dataset solo per plain o sparse o anche per quantizzati
@@ -48,8 +52,7 @@ where
     AC: AsRef<[Q::OutputComponentType]>,
     AV: AsRef<[Q::OutputValueType]>,
 {
-    dim: usize,
-    dim_bits: u32, // Number of bits required to represent dim. Needed to pack/umpack offset and lenght in VectorKey
+    dim_bits: u32, // Number of bits required to represent input_dim. Needed to pack/unpack offset and length in VectorKey
     offsets: O,
     components: AC,
     values: AV,
@@ -100,20 +103,21 @@ where
     ///
     /// # Examples
     ///
-    /// ```
-    /// use seismic::SparseDatasetGrowable;
+    /// ```rust
+    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::Vector1D;
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
-    /// let data = vec![
-    ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
-    ///                 (vec![1, 3],       vec![4.0, 5.0]),
-    ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
-    ///                 ];
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     ///
-    /// let dataset: SparseDatasetGrowable<u16, f32> = data.into_iter().collect();
+    /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
+    /// dataset.push(SparseVector1D::new(vec![1, 3], vec![4.0, 5.0]));
     ///
-    /// let (components, values) = dataset.get(1);
-    /// assert_eq!(components, &[1, 3]);
-    /// assert_eq!(values, &[4.0, 5.0]);
+    /// let key = dataset.key_from_id(1);
+    /// let v = dataset.get(key);
+    /// assert_eq!(v.components_as_slice(), &[1, 3]);
+    /// assert_eq!(v.values_as_slice(), &[4.0, 5.0]);
     /// ```
     #[inline]
     fn get(
@@ -132,34 +136,7 @@ where
         SparseVector1D::new(v_components, v_values)
     }
 
-    /// Returns a vector of the dataset at the specified `offset` and `len`.
-    ///
-    /// This method returns slices of components and values for the dataset starting at the specified `offset`
-    /// and with the specified `len`.
-    ///
-    /// This method is needed by [`InvertedIndex`] which often already knows the offset of the required vector. This speeds up the access.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the `offset` + `len` is out of range.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use seismic::SparseDatasetGrowable;
-    ///
-    /// let data = vec![
-    ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
-    ///                 (vec![1, 3],       vec![4.0, 5.0]),
-    ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
-    ///                 ];
-    ///
-    /// let dataset: SparseDatasetGrowable<u16, f32> = data.into_iter().collect();
-    ///
-    /// let (components, values) = dataset.get_with_offset(3, 2);
-    /// assert_eq!(components, &[1, 3]);
-    /// assert_eq!(values, &[4.0, 5.0]);
-    /// ```
+    // NOTE: `get_with_offset` was used by an older API but is not currently exposed.
     // #[inline]
     // pub fn get_with_offset(&self, offset: usize, len: usize) -> (&[C], &[V]) {
     //     unsafe { assert_unchecked(self.components.as_ref().len() == self.values.as_ref().len()) };
@@ -213,32 +190,21 @@ where
         &self.quantizer
     }
 
-    /// Prefetches the components and values of a vector with the specified offset and length into the CPU cache.
-    ///
-    /// This method prefetches the components and values of a vector starting at the specified `offset``
-    /// and with the specified length `len` into the CPU cache, which can improve performance by reducing
-    /// cache misses during subsequent accesses.
-    ///
-    /// # Parameters
-    ///
-    /// * `offset`: The starting index of the vector to prefetch.
-    /// * `len`: The length of the vector to prefetch.
+    /// Prefetches the components and values of an encoded vector into CPU cache.
     ///
     /// # Examples
     ///
-    /// ```
-    /// use seismic::SparseDatasetGrowable;
+    /// ```rust
+    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::Vector1D;
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
-    /// let data = vec![
-    ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
-    ///                 (vec![1, 3],       vec![4.0, 5.0]),
-    ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
-    ///                 ];
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
+    /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
     ///
-    /// let dataset: SparseDatasetGrowable<u16, f32> = data.into_iter().collect();
-    ///
-    /// // Prefetch components and values of the vector starting at index 1 with length 3
-    /// dataset.prefetch_vec_with_offset(1, 3);
+    /// let key = dataset.key_from_id(0);
+    /// dataset.prefetch(key);
     /// ```
     #[inline]
     fn prefetch(&self, key: VectorKey) {
@@ -254,20 +220,26 @@ where
     ///
     /// # Examples
     ///
-    /// ```
-    /// use seismic::SparseDatasetGrowable;
+    /// ```rust
+    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::Vector1D;
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
     /// let data = vec![
-    ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
-    ///                 (vec![1, 3],       vec![4.0, 5.0]),
-    ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
-    ///                 ];
+    ///     (vec![0_u32, 2, 4], vec![1.0, 2.0, 3.0]),
+    ///     (vec![1_u32, 3], vec![4.0, 5.0]),
+    ///     (vec![0_u32, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0]),
+    /// ];
     ///
-    /// let dataset: SparseDatasetGrowable<u16, f32> = data.clone().into_iter().collect();
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
+    /// for (c, v) in data.iter() {
+    ///     dataset.push(SparseVector1D::new(c.clone(), v.clone()));
+    /// }
     ///
-    /// for ((c0, v0), (c1,v1)) in dataset.iter().zip(data.iter()) {
-    ///     assert_eq!(c0, c1);
-    ///     assert_eq!(v0, v1);
+    /// for (vec, (c, v)) in dataset.iter().zip(data.iter()) {
+    ///     assert_eq!(vec.components_as_slice(), c.as_slice());
+    ///     assert_eq!(vec.values_as_slice(), v.as_slice());
     /// }
     /// ```
     fn iter(
@@ -295,16 +267,16 @@ where
     ///
     /// # Examples
     ///
-    /// ```
-    /// use seismic::SparseDatasetGrowable;
+    /// ```rust
+    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
-    /// let data = vec![
-    ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
-    ///                 (vec![1, 3],       vec![4.0, 5.0]),
-    ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
-    ///                ];
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     ///
-    /// let dataset: SparseDatasetGrowable<u16, f32> = data.into_iter().collect();
+    /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
+    /// dataset.push(SparseVector1D::new(vec![1, 3], vec![4.0, 5.0]));
+    /// dataset.push(SparseVector1D::new(vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0]));
     ///
     /// assert_eq!(dataset.len(), 3);
     /// ```
@@ -316,27 +288,16 @@ where
     ///
     /// # Examples
     ///
+    /// ```rust
+    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
+    ///
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
+    ///
+    /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
+    /// assert_eq!(dataset.input_dim(), 5);
     /// ```
-    /// use seismic::SparseDatasetGrowable;
-    ///
-    /// let data = vec![
-    ///                 (vec![0, 2, 4], vec![1.0, 2.0, 3.0]),
-    ///                 (vec![1, 3], vec![4.0, 5.0]),
-    ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
-    ///                ];
-    ///
-    /// let dataset: SparseDatasetGrowable<u16, f32> = data.into_iter().collect();
-    ///
-    /// assert_eq!(dataset.dim(), 5); // Largest component ID is 4, so dim() returns 5
-    /// ```
-    fn dim(&self) -> usize {
-        self.dim
-    }
-
-    #[inline]
-    fn shape(&self) -> (usize, usize) {
-        (self.len(), self.dim())
-    }
 
     /// Returns the number of non-zero components in the dataset.
     ///
@@ -345,18 +306,18 @@ where
     ///
     /// # Examples
     ///
-    /// ```
-    /// use seismic::SparseDatasetGrowable;
+    /// ```rust
+    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
-    /// let data = vec![
-    ///                 (vec![0, 2, 4], vec![1.0, 2.0, 3.0]),
-    ///                 (vec![1, 3], vec![4.0, 5.0]),
-    ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
-    ///                ];
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     ///
-    /// let dataset: SparseDatasetGrowable<u16, f32> = data.into_iter().collect();
+    /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
+    /// dataset.push(SparseVector1D::new(vec![1, 3], vec![4.0, 5.0]));
+    /// dataset.push(SparseVector1D::new(vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0]));
     ///
-    /// assert_eq!(dataset.nnz(), 9); // Total non-zero components across all vectors
+    /// assert_eq!(dataset.nnz(), 9);
     /// ```
     fn nnz(&self) -> usize {
         self.components.as_ref().len()
@@ -454,23 +415,23 @@ where
     ///
     /// # Examples
     ///
-    /// ```
-    /// use seismic::{SparseDatasetGrowable, SparseDataset};
+    /// ```rust
+    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
-    /// let mut growable_dataset = SparseDatasetGrowable::<u16, f32>::new();
-    /// // Populate mutable dataset...
-    /// growable_dataset.push(&[0, 2, 4],    &[1.0, 2.0, 3.0]);
-    /// growable_dataset.push(&[1, 3],       &[4.0, 5.0]);
-    /// growable_dataset.push(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]);
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let mut growable_dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     ///
-    /// let immutable_dataset: SparseDataset<u16, f32> = growable_dataset.into();
+    /// growable_dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
+    /// growable_dataset.push(SparseVector1D::new(vec![1, 3], vec![4.0, 5.0]));
+    /// growable_dataset.push(SparseVector1D::new(vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0]));
     ///
-    /// assert_eq!(immutable_dataset.nnz(), 9); // Total non-zero components across all vectors
+    /// let immutable_dataset: PlainSparseDataset<u32, f32, DotProduct> = growable_dataset.into();
+    /// assert_eq!(immutable_dataset.nnz(), 9);
     /// ```
     fn from(dataset: SparseDatasetGrowable<Q>) -> Self {
         Self {
-            dim: dataset.dim,
-            dim_bits: (dataset.dim - 1).ilog2() + 1,
+            dim_bits: dataset.dim_bits,
             offsets: dataset.offsets.into(),
             components: dataset.components.into(),
             values: dataset.values.into(),
@@ -494,28 +455,27 @@ where
     ///
     /// # Examples
     ///
-    /// ```
-    /// use seismic::{SparseDatasetGrowable, SparseDataset};
+    /// ```rust
+    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
-    /// let mut growable_dataset = SparseDatasetGrowable::<u16, f32>::new();
-    /// // Populate mutable dataset...
-    /// growable_dataset.push(&[0, 2, 4],    &[1.0, 2.0, 3.0]);
-    /// growable_dataset.push(&[1, 3],       &[4.0, 5.0]);
-    /// growable_dataset.push(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]);
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let mut growable_dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     ///
-    /// let immutable_dataset: SparseDataset<u16, f32> = growable_dataset.into();
+    /// growable_dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
+    /// growable_dataset.push(SparseVector1D::new(vec![1, 3], vec![4.0, 5.0]));
+    ///
+    /// let immutable_dataset: PlainSparseDataset<u32, f32, DotProduct> = growable_dataset.into();
     ///
     /// // Convert immutable dataset back to mutable
-    /// let mut growable_dataset_again: SparseDatasetGrowable<u16, f32> = immutable_dataset.into();
+    /// let mut growable_dataset_again: PlainSparseDatasetGrowable<u32, f32, DotProduct> = immutable_dataset.into();
+    /// growable_dataset_again.push(SparseVector1D::new(vec![1, 4], vec![1.0, 3.0]));
     ///
-    /// growable_dataset_again.push(&[1, 7], &[1.0, 3.0]);
-    ///
-    /// assert_eq!(growable_dataset_again.nnz(), 11); // Total non-zero components across all vectors
+    /// assert_eq!(growable_dataset_again.nnz(), 7);
     /// ```
     fn from(dataset: SparseDataset<Q>) -> Self {
         Self {
-            dim: dataset.dim,
-            dim_bits: (dataset.dim - 1).ilog2() + 1,
+            dim_bits: dataset.dim_bits,
             offsets: dataset.offsets.into(),
             components: dataset.components.into(),
             values: dataset.values.into(),
@@ -543,7 +503,7 @@ where
     V: ValueType,
 {
     #[inline]
-    fn new<Q, O, AC, AV>(dataset: &'a SparseDatasetGeneric<Q, O, AC, AV>) -> Self
+    pub fn new<Q, O, AC, AV>(dataset: &'a SparseDatasetGeneric<Q, O, AC, AV>) -> Self
     where
         Q: SparseQuantizer<OutputComponentType = C, OutputValueType = V>,
         O: AsRef<[usize]>,
@@ -566,9 +526,9 @@ where
     Q::OutputValueType: SpaceUsage,
 {
     /// For SparseDataset, thw dimensionality `d` may be 0 if unkwown when creating a new dataset.
-    fn new(quantizer: Q, dim: usize) -> Self {
+    fn new(quantizer: Q) -> Self {
+        let dim = quantizer.input_dim();
         Self {
-            dim,
             dim_bits: if dim == 0 { 0 } else { (dim - 1).ilog2() + 1 },
             offsets: vec![0; 1],
             components: Vec::new(),
@@ -599,14 +559,16 @@ where
     ///
     /// # Examples
     ///
-    /// ```
-    /// use seismic::SparseDatasetMut;
+    /// ```rust
+    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
-    /// let mut dataset = SparseDatasetMut::<u16, f32>::default();
-    /// dataset.push(&[0, 2, 4], &[1.0, 2.0, 3.0]);
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
+    /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
     ///
     /// assert_eq!(dataset.len(), 1);
-    /// assert_eq!(dataset.dim(), 5);
+    /// assert_eq!(dataset.input_dim(), 5);
     /// assert_eq!(dataset.nnz(), 3);
     /// ```
     fn push(
@@ -627,11 +589,14 @@ where
             "Components must be given in sorted order"
         );
 
-        if let Some(last_component) = components.last().map(|l| l.as_())
-            && last_component >= self.dim
-        {
-            self.dim = last_component + 1;
-            self.dim_bits = (self.dim - 1).ilog2() + 1;
+        let cur_dim = self.quantizer.input_dim();
+        if let Some(last_component) = components.last().map(|l| l.as_()) {
+            assert!(
+                last_component < cur_dim,
+                "Component index {} is out of bounds for input_dim {}",
+                last_component,
+                cur_dim
+            );
         }
 
         self.quantizer
@@ -685,7 +650,7 @@ where
     V: ValueType,
 {
     #[inline]
-    fn new<Q, O, AC, AV>(dataset: &'a SparseDatasetGeneric<Q, O, AC, AV>) -> Self
+    pub fn new<Q, O, AC, AV>(dataset: &'a SparseDatasetGeneric<Q, O, AC, AV>) -> Self
     where
         Q: SparseQuantizer<OutputComponentType = C, OutputValueType = V>,
         O: AsRef<[usize]>,
@@ -763,23 +728,28 @@ where
     ///
     /// # Examples
     ///
-    /// ```
-    /// use seismic::SparseDatasetGrowable;
+    /// ```rust
+    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::datasets::sparse_dataset::SparseDatasetIter;
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D, Vector1D};
     ///
     /// let data = vec![
-    ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
-    ///                 (vec![1, 3],       vec![4.0, 5.0]),
-    ///                 (vec![0, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0])
-    ///                 ];
+    ///     (vec![0_u32, 2, 4], vec![1.0, 2.0, 3.0]),
+    ///     (vec![1_u32, 3], vec![4.0, 5.0]),
+    ///     (vec![0_u32, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0]),
+    /// ];
     ///
-    /// let dataset: SparseDatasetGrowable<u16, f32> = data.clone().into_iter().collect();
-    ///
-    /// let data_rev: Vec<_> =  dataset.iter().rev().collect();
-    ///
-    /// for ((c0,v0), (c1, v1)) in data.into_iter().zip(data_rev.into_iter().rev()) {
-    ///     assert_eq!(c0.as_slice(), c1);
-    ///     assert_eq!(v0.as_slice(), v1);
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
+    /// for (c, v) in data.iter() {
+    ///     dataset.push(SparseVector1D::new(c.clone(), v.clone()));
     /// }
+    ///
+    /// // Use the concrete iterator type so `next_back()` is available.
+    /// let mut iter = SparseDatasetIter::new(&dataset);
+    /// let last = iter.next_back().unwrap();
+    /// assert_eq!(last.components_as_slice(), &[0, 1, 2, 3]);
+    /// assert_eq!(last.values_as_slice(), &[1.0, 2.0, 3.0, 4.0]);
     /// ```
     fn next_back(&mut self) -> Option<Self::Item> {
         let (&last_offset, rest) = self.offsets.split_last()?;
