@@ -600,7 +600,11 @@ where
         }
 
         self.quantizer
-            .extend_with_encode(vec, &mut self.components, &mut self.values);
+            .extend_with_encode(
+                SparseVector1D::new(components, values),
+                &mut self.components,
+                &mut self.values,
+            );
 
         self.offsets.push(self.components.len());
     }

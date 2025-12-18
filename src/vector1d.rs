@@ -16,6 +16,29 @@ pub trait Vector1D {
     fn values_as_slice(&self) -> &[Self::ValueType];
 }
 
+impl<T> Vector1D for &T
+where
+    T: Vector1D + ?Sized,
+{
+    type ComponentType = T::ComponentType;
+    type ValueType = T::ValueType;
+
+    #[inline]
+    fn len(&self) -> usize {
+        (**self).len()
+    }
+
+    #[inline]
+    fn components_as_slice(&self) -> &[Self::ComponentType] {
+        (**self).components_as_slice()
+    }
+
+    #[inline]
+    fn values_as_slice(&self) -> &[Self::ValueType] {
+        (**self).values_as_slice()
+    }
+}
+
 pub trait MutableVector1D: Vector1D {
     fn values_as_mut_slice(&mut self) -> &mut [Self::ValueType];
 }

@@ -32,12 +32,15 @@ where
 {
 }
 
+impl<'a, Q, T> QueryVectorFor<Q> for &'a T
+where
+    Q: Quantizer,
+    T: QueryVectorFor<Q> + ?Sized,
+{
+}
+
 /// A query evaluator computes distances between a query and encoded vectors.
 pub trait QueryEvaluator<Q: Quantizer>: Sized {
-    fn new<QueryVector>(query: QueryVector, quantizer: &Q) -> Self
-    where
-        QueryVector: Vector1D<ValueType = Q::QueryValueType, ComponentType = Q::QueryComponentType>;
-
     fn compute_distance<EncodedVector>(&self, vector: EncodedVector) -> Q::Distance
     where
         EncodedVector:
@@ -59,8 +62,12 @@ pub trait Quantizer: Sized {
     // type InputVectorType: Vector1D<ValueType = Self::InputValueType, ComponentType = Self::InputComponentType>;
     // type QueryVectorType: Vector1D<ValueType = Self::QueryValueType, ComponentType = Self::QueryComponentType>;
 
-    /// The query evaluator type for this quantizer and distance
-    type Evaluator: QueryEvaluator<Self>;
+    /// The query evaluator type for this quantizer and distance.
+    ///
+    /// The evaluator may borrow the query vector, hence it is lifetime-parameterized.
+    type Evaluator<'a>: QueryEvaluator<Self>
+    where
+        Self: 'a;
 
     // /// Create a new quantizer for input vectors of the given dimensionality `input_dim` and number of components in the quantized vector `output_dim`.
     fn new(input_dim: usize, output_dim: usize) -> Self;
@@ -68,9 +75,9 @@ pub trait Quantizer: Sized {
     /// TODO: do we need fn train(data: Option<Dataset<Q>>) -> Self; ?
 
     /// Get a query evaluator for the given distance type
-    fn get_query_evaluator<QueryVector>(&self, query: QueryVector) -> Self::Evaluator
+    fn get_query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Self::Evaluator<'a>
     where
-        QueryVector: QueryVectorFor<Self>;
+        QueryVector: QueryVectorFor<Self> + ?Sized;
 
     /// Dimensionality of the encoded vector space.
     ///

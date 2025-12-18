@@ -110,7 +110,10 @@ where
     type OutputValueType = OutValue;
     type OutputComponentType = C;
 
-    type Evaluator = ScalarSparseQueryEvaluator<C, OutValue, D, Vec<C>, Vec<f32>>;
+    type Evaluator<'a>
+        = ScalarSparseQueryEvaluator<'a, C, OutValue, D>
+    where
+        Self: 'a;
 
     #[inline]
     fn new(input_dim: usize, output_dim: usize) -> Self {
@@ -125,11 +128,11 @@ where
         }
     }
 
-    fn get_query_evaluator<QueryVector>(&self, query: QueryVector) -> Self::Evaluator
+    fn get_query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Self::Evaluator<'a>
     where
-        QueryVector: QueryVectorFor<Self>,
+        QueryVector: QueryVectorFor<Self> + ?Sized,
     {
-        <Self::Evaluator as QueryEvaluator<Self>>::new(query, self)
+        ScalarSparseQueryEvaluator::new(query, self)
     }
 
     #[inline]
@@ -145,43 +148,40 @@ where
 
 /// Query evaluator for ScalarSparseQuantizer.
 /// Stores the query (as f32) components and values, and computes distances against encoded vectors.
-pub struct ScalarSparseQueryEvaluator<C, OutValue, D, AC, AV>
+pub struct ScalarSparseQueryEvaluator<'a, C, OutValue, D>
 where
     C: ComponentType,
     OutValue: ValueType + Float,
     D: ScalarSparseSupportedDistance,
-    AC: AsRef<[C]>,
-    AV: AsRef<[f32]>,
 {
     dense_query: Option<DenseVector1D<f32, Vec<f32>>>,
-    query: SparseVector1D<C, f32, AC, AV>,
+    query_components: &'a [C],
+    query_values: &'a [f32],
     _phantom: PhantomData<(OutValue, D)>,
 }
 
-impl<C, InValue, OutValue, D> QueryEvaluator<ScalarSparseQuantizer<C, InValue, OutValue, D>>
-    for ScalarSparseQueryEvaluator<C, OutValue, D, Vec<C>, Vec<f32>>
+impl<'a, C, OutValue, D> ScalarSparseQueryEvaluator<'a, C, OutValue, D>
 where
     C: ComponentType,
-    InValue: ValueType + Float,
-    OutValue: ValueType + Float + FromF32,
+    OutValue: ValueType + Float,
     D: ScalarSparseSupportedDistance,
 {
-    fn new<QueryVector>(
-        query: QueryVector,
+    pub fn new<QueryVector, InValue>(
+        query: &'a QueryVector,
         quantizer: &ScalarSparseQuantizer<C, InValue, OutValue, D>,
     ) -> Self
     where
-        QueryVector: Vector1D<
-                ValueType = <ScalarSparseQuantizer<C, InValue, OutValue, D> as Quantizer>::QueryValueType,
-                ComponentType = <ScalarSparseQuantizer<C, InValue, OutValue, D> as Quantizer>::QueryComponentType,
-            >,
+        QueryVector: Vector1D<ValueType = f32, ComponentType = C> + ?Sized,
+        InValue: ValueType + Float,
     {
         let dense_query = if quantizer.input_dim() < 2_usize.pow(20) {
             // For small dimensions, create a dense representation
             let mut dense_query = vec![0.0; quantizer.input_dim()];
-            let components = query.components_as_slice();
-            let values = query.values_as_slice();
-            for (&i, &v) in components.iter().zip(values) {
+            for (&i, &v) in query
+                .components_as_slice()
+                .iter()
+                .zip(query.values_as_slice().iter())
+            {
                 dense_query[i.as_()] = v;
             }
             Some(DenseVector1D::new(dense_query))
@@ -190,15 +190,23 @@ where
             None
         };
 
-        let query_components = query.components_as_slice().to_vec();
-        let query_values = query.values_as_slice().to_vec();
         Self {
             dense_query,
-            query: SparseVector1D::new(query_components, query_values),
+            query_components: query.components_as_slice(),
+            query_values: query.values_as_slice(),
             _phantom: PhantomData,
         }
     }
+}
 
+impl<'a, C, InValue, OutValue, D> QueryEvaluator<ScalarSparseQuantizer<C, InValue, OutValue, D>>
+    for ScalarSparseQueryEvaluator<'a, C, OutValue, D>
+where
+    C: ComponentType,
+    InValue: ValueType + Float,
+    OutValue: ValueType + Float + FromF32,
+    D: ScalarSparseSupportedDistance,
+{
     #[inline]
     fn compute_distance<EncodedVector>(
         &self,
@@ -210,9 +218,10 @@ where
                 ComponentType = <ScalarSparseQuantizer<C, InValue, OutValue, D> as Quantizer>::OutputComponentType,
             >,
     {
+        let query_sparse = SparseVector1D::new(self.query_components, self.query_values);
         let vector_sparse =
             SparseVector1D::new(vector.components_as_slice(), vector.values_as_slice());
-        D::compute_sparse(&self.dense_query, &self.query, &vector_sparse)
+        D::compute_sparse(&self.dense_query, &query_sparse, &vector_sparse)
     }
 }
 

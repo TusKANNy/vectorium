@@ -125,11 +125,11 @@ where
         query: impl QueryVectorFor<Q>,
         k: usize,
     ) -> Vec<Result<<Q as Quantizer>::Distance>> {
-        let evaluator = self.quantizer().get_query_evaluator(query);
-
         if k == 0 {
             return Vec::new();
         }
+
+        let evaluator = self.quantizer().get_query_evaluator(&query);
 
         self.iter()
             .enumerate()

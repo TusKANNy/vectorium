@@ -231,7 +231,8 @@ where
             "Input vector' length doesn't match quantizer input dimensionality."
         );
 
-        self.quantizer.extend_with_encode(vec, &mut self.data);
+        let input = DenseVector1D::new(vec.values_as_slice());
+        self.quantizer.extend_with_encode(input, &mut self.data);
 
         self.n_vecs += 1;
     }
@@ -435,7 +436,8 @@ where
 
         // Iterate vector by vector and encode
         for src_vec in source.iter() {
-            quantizer.extend_with_encode(src_vec, &mut output_data);
+            let input = DenseVector1D::new(src_vec.values_as_slice());
+            quantizer.extend_with_encode(input, &mut output_data);
         }
 
         DenseDatasetGeneric::<ScalarDenseQuantizer<In, Out, D>, AVOut> {

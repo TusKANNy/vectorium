@@ -112,7 +112,7 @@ where
     type OutputValueType = Out;
     type OutputComponentType = DenseComponent;
 
-    type Evaluator = ScalarDenseQueryEvaluator<Out, D>;
+    type Evaluator<'a> = ScalarDenseQueryEvaluator<Out, D> where Self: 'a;
 
     #[inline]
     fn new(input_dim: usize, output_dim: usize) -> Self {
@@ -124,11 +124,11 @@ where
     }
 
     #[inline]
-    fn get_query_evaluator<QueryVector>(&self, query: QueryVector) -> Self::Evaluator
+    fn get_query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Self::Evaluator<'a>
     where
-        QueryVector: QueryVectorFor<Self>,
+        QueryVector: QueryVectorFor<Self> + ?Sized,
     {
-        <Self::Evaluator as QueryEvaluator<Self>>::new(query, self)
+        ScalarDenseQueryEvaluator::from_query(query)
     }
 
     #[inline]
@@ -187,17 +187,10 @@ where
     Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
 {
-    fn new<QueryVector>(query: QueryVector, _quantizer: &ScalarDenseQuantizer<In, Out, D>) -> Self
-    where
-        QueryVector: Vector1D<
-                ValueType = <ScalarDenseQuantizer<In, Out, D> as Quantizer>::QueryValueType,
-                ComponentType = <ScalarDenseQuantizer<In, Out, D> as Quantizer>::QueryComponentType,
-            >,
-    {
-        Self::from_query(query)
-    }
-
-    fn compute_distance<EncodedVector>(&self, vector: EncodedVector) -> <ScalarDenseQuantizer<In, Out, D> as Quantizer>::Distance
+    fn compute_distance<EncodedVector>(
+        &self,
+        vector: EncodedVector,
+    ) -> <ScalarDenseQuantizer<In, Out, D> as Quantizer>::Distance
     where
         EncodedVector: Vector1D<
                 ValueType = <ScalarDenseQuantizer<In, Out, D> as Quantizer>::OutputValueType,
