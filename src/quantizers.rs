@@ -1,10 +1,13 @@
 use crate::ComponentType as ComponentTypeTrait;
+use crate::SpaceUsage;
 use crate::ValueType as ValueTypeTrait;
 use crate::num_marker::DenseComponent;
 use crate::{DenseVector1D, SparseVector1D, Vector1D, distances::Distance};
 
 pub mod dense_scalar;
 pub mod sparse_scalar;
+#[cfg(feature = "dotvbyte")]
+pub mod dotvbyte_fixedu8;
 
 /// Marker trait for types that are valid query vectors for a given quantizer `Q`.
 ///
@@ -18,7 +21,7 @@ pub trait QueryVectorFor<Q: Quantizer>:
 
 impl<Q, AV> QueryVectorFor<Q> for DenseVector1D<Q::QueryValueType, AV>
 where
-    Q: DenseQuantizer,
+    Q: Quantizer<QueryComponentType = DenseComponent>,
     AV: AsRef<[Q::QueryValueType]>,
 {
 }
@@ -102,6 +105,14 @@ pub trait Quantizer: Sized {
     ///
     /// For sparse vectors, this is the maximum possible component index + 1.
     fn input_dim(&self) -> usize;
+}
+
+/// A quantizer whose encoded representation is a packed slice of fixed-width elements.
+///
+/// This is meant to be used together with a `PackedDataset` (variable-length by offsets).
+pub trait PackedQuantizer: Quantizer {
+    /// Element type stored in the dataset backing array (e.g. `u64` for word-packed encodings).
+    type EncodingType: SpaceUsage + Copy + Send + Sync + 'static;
 }
 
 pub trait DenseQuantizer:

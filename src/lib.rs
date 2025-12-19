@@ -3,6 +3,8 @@
 #![allow(internal_features)]
 #![feature(core_intrinsics)]
 #![feature(float_algebraic)]
+#![feature(gen_blocks)]
+#![feature(yield_expr)]
 #![doc = include_str!("../README.md")]
 
 use fixed::FixedU8;
@@ -26,6 +28,9 @@ pub use num_marker::{Float, FromF32};
 pub mod vector1d;
 pub use vector1d::{DenseVector1D, MutableVector1D, SparseVector1D, Vector1D};
 
+pub mod packed_vector;
+pub use packed_vector::{PackedEncoded, PackedVector};
+
 pub mod distances;
 pub use distances::{Distance, DotProduct, EuclideanDistance};
 
@@ -42,12 +47,15 @@ pub use quantizers::sparse_scalar::{
     ScalarSparseQuantizerDotProduct, ScalarSparseQuantizerSame, ScalarSparseQueryEvaluator,
     ScalarSparseSupportedDistance,
 };
+#[cfg(feature = "dotvbyte")]
+pub use quantizers::dotvbyte_fixedu8::{DotVByteFixedU8Quantizer, DotVByteFixedU8QueryEvaluator};
 
 pub mod datasets;
 pub use datasets::Dataset;
 pub use datasets::VectorId;
 pub use datasets::VectorKey;
 pub use datasets::dense_dataset::{DenseDataset, DenseDatasetGeneric, DenseDatasetGrowable};
+pub use datasets::packed_dataset::{PackedDataset, PackedDatasetGeneric, PackedDatasetGrowable};
 pub use datasets::sparse_dataset::{SparseDataset, SparseDatasetGrowable};
 
 // Usefull type aliases for dense dataset types

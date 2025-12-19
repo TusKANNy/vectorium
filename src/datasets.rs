@@ -4,6 +4,7 @@ use crate::{Distance, SpaceUsage, Vector1D};
 use itertools::Itertools;
 
 pub mod dense_dataset;
+pub mod packed_dataset;
 pub mod sparse_dataset;
 
 pub type VectorId = u64;
@@ -23,6 +24,7 @@ pub type ResultWithKey<D> = ResultGeneric<D, VectorKey>;
 /// At the moment we have two implementations:
 /// - `DenseDataset` in which we store fixed-length dense vectors, i.e., vectors for which there is no need to store compoennt indices.
 /// - `SparseDataset` in which we store variable-length sparse vectors, i.e., vectors for which we need to store component indices.
+/// - `PackedDataset` in which we store variable-length packed encodings (not `Vector1D`) concatenated in a single array and delimited by `offsets`.
 ///
 /// A quantizer is associated with the dataset, defining how input vectors
 /// are encoded and how queries are evaluated against the encoded vectors.
