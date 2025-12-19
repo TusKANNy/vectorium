@@ -12,6 +12,10 @@ use rayon::iter::plumbing::ProducerCallback;
 use rayon::iter::plumbing::{Consumer, Producer, UnindexedConsumer, bridge};
 use rayon::prelude::{IndexedParallelIterator, ParallelIterator};
 
+#[cfg(feature = "dotvbyte")]
+#[path = "sparse_dateset/sparse_dot_vbyte_dataset.rs"]
+pub mod sparse_dot_vbyte_dataset;
+
 /// A growable representation of a sparse dataset.
 
 ///
@@ -48,6 +52,17 @@ pub type SparseDataset<Q> = SparseDatasetGeneric<
 pub struct SparseDatasetGeneric<Q, O, AC, AV>
 where
     Q: SparseQuantizer,
+    for<'a> Q::EncodedVector<'a>: Vector1D<
+            ComponentType = Q::OutputComponentType,
+            ValueType = Q::OutputValueType,
+        > + From<
+            SparseVector1D<
+                Q::OutputComponentType,
+                Q::OutputValueType,
+                &'a [Q::OutputComponentType],
+                &'a [Q::OutputValueType],
+            >,
+        >,
     O: AsRef<[usize]>,
     AC: AsRef<[Q::OutputComponentType]>,
     AV: AsRef<[Q::OutputValueType]>,
@@ -62,6 +77,17 @@ where
 impl<Q, O, AC, AV> SparseDatasetGeneric<Q, O, AC, AV>
 where
     Q: SparseQuantizer,
+    for<'a> Q::EncodedVector<'a>: Vector1D<
+            ComponentType = Q::OutputComponentType,
+            ValueType = Q::OutputValueType,
+        > + From<
+            SparseVector1D<
+                Q::OutputComponentType,
+                Q::OutputValueType,
+                &'a [Q::OutputComponentType],
+                &'a [Q::OutputValueType],
+            >,
+        >,
     O: AsRef<[usize]>,
     AC: AsRef<[Q::OutputComponentType]>,
     AV: AsRef<[Q::OutputValueType]>,
@@ -86,6 +112,17 @@ where
 impl<Q, O, AC, AV> Dataset<Q> for SparseDatasetGeneric<Q, O, AC, AV>
 where
     Q: SparseQuantizer + SpaceUsage,
+    for<'a> Q::EncodedVector<'a>: Vector1D<
+            ComponentType = Q::OutputComponentType,
+            ValueType = Q::OutputValueType,
+        > + From<
+            SparseVector1D<
+                Q::OutputComponentType,
+                Q::OutputValueType,
+                &'a [Q::OutputComponentType],
+                &'a [Q::OutputValueType],
+            >,
+        >,
     O: AsRef<[usize]> + SpaceUsage,
     AC: AsRef<[Q::OutputComponentType]> + SpaceUsage,
     AV: AsRef<[Q::OutputValueType]> + SpaceUsage,
@@ -120,10 +157,7 @@ where
     /// assert_eq!(v.values_as_slice(), &[4.0, 5.0]);
     /// ```
     #[inline]
-    fn get(
-        &self,
-        key: VectorKey,
-    ) -> impl Vector1D<ComponentType = Q::OutputComponentType, ValueType = Q::OutputValueType> {
+    fn get<'a>(&'a self, key: VectorKey) -> Q::EncodedVector<'a> {
         let range = self.key_to_range(key);
         let offset = range.start;
         let len = range.end - range.start;
@@ -133,7 +167,7 @@ where
         let v_components = &self.components.as_ref()[offset..offset + len];
         let v_values = &self.values.as_ref()[offset..offset + len];
 
-        SparseVector1D::new(v_components, v_values)
+        Q::EncodedVector::from(SparseVector1D::new(v_components, v_values))
     }
 
     // NOTE: `get_with_offset` was used by an older API but is not currently exposed.
@@ -242,12 +276,8 @@ where
     ///     assert_eq!(vec.values_as_slice(), v.as_slice());
     /// }
     /// ```
-    fn iter(
-        &self,
-    ) -> impl Iterator<
-        Item = impl Vector1D<ComponentType = Q::OutputComponentType, ValueType = Q::OutputValueType>,
-    > {
-        SparseDatasetIter::new(self)
+    fn iter<'a>(&'a self) -> impl Iterator<Item = Q::EncodedVector<'a>> {
+        SparseEncodedDatasetIter::new(self)
     }
 
     // /// Returns an iterator over the sparse vector with id `vec_id`.
@@ -403,6 +433,17 @@ where
 impl<Q> From<SparseDatasetGrowable<Q>> for SparseDataset<Q>
 where
     Q: SparseQuantizer + SpaceUsage,
+    for<'a> Q::EncodedVector<'a>: Vector1D<
+            ComponentType = Q::OutputComponentType,
+            ValueType = Q::OutputValueType,
+        > + From<
+            SparseVector1D<
+                Q::OutputComponentType,
+                Q::OutputValueType,
+                &'a [Q::OutputComponentType],
+                &'a [Q::OutputValueType],
+            >,
+        >,
     Q::OutputComponentType: SpaceUsage,
     Q::OutputValueType: SpaceUsage,
 {
@@ -443,6 +484,17 @@ where
 impl<Q> From<SparseDataset<Q>> for SparseDatasetGrowable<Q>
 where
     Q: SparseQuantizer + SpaceUsage,
+    for<'a> Q::EncodedVector<'a>: Vector1D<
+            ComponentType = Q::OutputComponentType,
+            ValueType = Q::OutputValueType,
+        > + From<
+            SparseVector1D<
+                Q::OutputComponentType,
+                Q::OutputValueType,
+                &'a [Q::OutputComponentType],
+                &'a [Q::OutputValueType],
+            >,
+        >,
     Q::OutputComponentType: SpaceUsage,
     Q::OutputValueType: SpaceUsage,
 {
@@ -484,7 +536,10 @@ where
     }
 }
 
-/// A struct to iterate over a sparse dataset. It assumes the dataset can be represented as a pair of slices.
+/// A struct to iterate over the *raw* sparse dataset storage as slice-backed `SparseVector1D`.
+///
+/// This iterator is independent from the quantizer’s `EncodedVector` choice and is
+/// used by internal utilities (including the parallel iterator plumbing).
 #[derive(Clone)]
 pub struct SparseDatasetIter<'a, C, V>
 where
@@ -506,6 +561,17 @@ where
     pub fn new<Q, O, AC, AV>(dataset: &'a SparseDatasetGeneric<Q, O, AC, AV>) -> Self
     where
         Q: SparseQuantizer<OutputComponentType = C, OutputValueType = V>,
+        for<'b> Q::EncodedVector<'b>: Vector1D<
+                ComponentType = Q::OutputComponentType,
+                ValueType = Q::OutputValueType,
+            > + From<
+                SparseVector1D<
+                    Q::OutputComponentType,
+                    Q::OutputValueType,
+                    &'b [Q::OutputComponentType],
+                    &'b [Q::OutputValueType],
+                >,
+            >,
         O: AsRef<[usize]>,
         AC: AsRef<[C]>,
         AV: AsRef<[V]>,
@@ -519,9 +585,74 @@ where
     }
 }
 
+/// Iterator yielding the quantizer-defined encoded representation `Q::EncodedVector<'a>`.
+#[derive(Clone)]
+pub struct SparseEncodedDatasetIter<'a, Q>
+where
+    Q: SparseQuantizer,
+    for<'b> Q::EncodedVector<'b>: Vector1D<
+            ComponentType = Q::OutputComponentType,
+            ValueType = Q::OutputValueType,
+        > + From<
+            SparseVector1D<
+                Q::OutputComponentType,
+                Q::OutputValueType,
+                &'b [Q::OutputComponentType],
+                &'b [Q::OutputValueType],
+            >,
+        >,
+{
+    last_offset: usize,
+    offsets: &'a [usize],
+    components: &'a [Q::OutputComponentType],
+    values: &'a [Q::OutputValueType],
+}
+
+impl<'a, Q> SparseEncodedDatasetIter<'a, Q>
+where
+    Q: SparseQuantizer,
+    for<'b> Q::EncodedVector<'b>: Vector1D<
+            ComponentType = Q::OutputComponentType,
+            ValueType = Q::OutputValueType,
+        > + From<
+            SparseVector1D<
+                Q::OutputComponentType,
+                Q::OutputValueType,
+                &'b [Q::OutputComponentType],
+                &'b [Q::OutputValueType],
+            >,
+        >,
+{
+    #[inline]
+    pub fn new<O, AC, AV>(dataset: &'a SparseDatasetGeneric<Q, O, AC, AV>) -> Self
+    where
+        O: AsRef<[usize]>,
+        AC: AsRef<[Q::OutputComponentType]>,
+        AV: AsRef<[Q::OutputValueType]>,
+    {
+        Self {
+            last_offset: 0,
+            offsets: &dataset.offsets.as_ref()[1..],
+            components: dataset.components.as_ref(),
+            values: dataset.values.as_ref(),
+        }
+    }
+}
+
 impl<Q> GrowableDataset<Q> for SparseDatasetGrowable<Q>
 where
     Q: SparseQuantizer + SpaceUsage,
+    for<'a> Q::EncodedVector<'a>: Vector1D<
+            ComponentType = Q::OutputComponentType,
+            ValueType = Q::OutputValueType,
+        > + From<
+            SparseVector1D<
+                Q::OutputComponentType,
+                Q::OutputValueType,
+                &'a [Q::OutputComponentType],
+                &'a [Q::OutputValueType],
+            >,
+        >,
     Q::OutputComponentType: SpaceUsage,
     Q::OutputValueType: SpaceUsage,
 {
@@ -599,12 +730,11 @@ where
             );
         }
 
-        self.quantizer
-            .extend_with_encode(
-                SparseVector1D::new(components, values),
-                &mut self.components,
-                &mut self.values,
-            );
+        self.quantizer.extend_with_encode(
+            SparseVector1D::new(components, values),
+            &mut self.components,
+            &mut self.values,
+        );
 
         self.offsets.push(self.components.len());
     }
@@ -634,6 +764,40 @@ where
     }
 }
 
+impl<'a, Q> Iterator for SparseEncodedDatasetIter<'a, Q>
+where
+    Q: SparseQuantizer,
+    for<'b> Q::EncodedVector<'b>: Vector1D<
+            ComponentType = Q::OutputComponentType,
+            ValueType = Q::OutputValueType,
+        > + From<
+            SparseVector1D<
+                Q::OutputComponentType,
+                Q::OutputValueType,
+                &'b [Q::OutputComponentType],
+                &'b [Q::OutputValueType],
+            >,
+        >,
+{
+    type Item = Q::EncodedVector<'a>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let (&next_offset, rest) = self.offsets.split_first()?;
+        self.offsets = rest;
+
+        let (cur_components, rest) = self.components.split_at(next_offset - self.last_offset);
+        self.components = rest;
+
+        let (cur_values, rest) = self.values.split_at(next_offset - self.last_offset);
+        self.values = rest;
+
+        self.last_offset = next_offset;
+
+        Some(Q::EncodedVector::from(SparseVector1D::new(cur_components, cur_values)))
+    }
+}
+
 /// A struct to iterate over a sparse dataset in parallel.
 /// It assumes the dataset can be represented as a pair of slices.
 #[derive(Clone)]
@@ -657,6 +821,17 @@ where
     pub fn new<Q, O, AC, AV>(dataset: &'a SparseDatasetGeneric<Q, O, AC, AV>) -> Self
     where
         Q: SparseQuantizer<OutputComponentType = C, OutputValueType = V>,
+        for<'b> Q::EncodedVector<'b>: Vector1D<
+                ComponentType = Q::OutputComponentType,
+                ValueType = Q::OutputValueType,
+            > + From<
+                SparseVector1D<
+                    Q::OutputComponentType,
+                    Q::OutputValueType,
+                    &'b [Q::OutputComponentType],
+                    &'b [Q::OutputValueType],
+                >,
+            >,
         O: AsRef<[usize]>,
         AC: AsRef<[C]>,
         AV: AsRef<[V]>,
@@ -847,6 +1022,17 @@ where
 impl<Q, O, AC, AV> SpaceUsage for SparseDatasetGeneric<Q, O, AC, AV>
 where
     Q: SparseQuantizer + SpaceUsage,
+    for<'a> Q::EncodedVector<'a>: Vector1D<
+            ComponentType = Q::OutputComponentType,
+            ValueType = Q::OutputValueType,
+        > + From<
+            SparseVector1D<
+                Q::OutputComponentType,
+                Q::OutputValueType,
+                &'a [Q::OutputComponentType],
+                &'a [Q::OutputValueType],
+            >,
+        >,
     O: AsRef<[usize]> + SpaceUsage,
     AC: AsRef<[Q::OutputComponentType]> + SpaceUsage,
     AV: AsRef<[Q::OutputValueType]> + SpaceUsage,

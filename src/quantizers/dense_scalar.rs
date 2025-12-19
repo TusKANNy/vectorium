@@ -5,7 +5,9 @@ use crate::distances::{
     Distance, DotProduct, EuclideanDistance, dot_product_dense, euclidean_distance_dense,
 };
 use crate::num_marker::DenseComponent;
-use crate::quantizers::{DenseQuantizer, Quantizer, QueryEvaluator, QueryVectorFor};
+use crate::quantizers::{
+    DenseQuantizer, Quantizer, QueryEvaluator, QueryVectorFor,
+};
 use crate::{DenseVector1D, Float, FromF32, SpaceUsage, ValueType, Vector1D};
 
 /// Marker trait for distance types supported by scalar dense quantizers.
@@ -113,6 +115,7 @@ where
     type OutputComponentType = DenseComponent;
 
     type Evaluator<'a> = ScalarDenseQueryEvaluator<Out, D> where Self: 'a;
+    type EncodedVector<'a> = DenseVector1D<Out, &'a [Out]>;
 
     #[inline]
     fn new(input_dim: usize, output_dim: usize) -> Self {
@@ -187,16 +190,10 @@ where
     Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
 {
-    fn compute_distance<EncodedVector>(
+    fn compute_distance(
         &self,
-        vector: EncodedVector,
-    ) -> <ScalarDenseQuantizer<In, Out, D> as Quantizer>::Distance
-    where
-        EncodedVector: Vector1D<
-                ValueType = <ScalarDenseQuantizer<In, Out, D> as Quantizer>::OutputValueType,
-                ComponentType = <ScalarDenseQuantizer<In, Out, D> as Quantizer>::OutputComponentType,
-            >,
-    {
+        vector: <ScalarDenseQuantizer<In, Out, D> as Quantizer>::EncodedVector<'_>,
+    ) -> <ScalarDenseQuantizer<In, Out, D> as Quantizer>::Distance {
         D::compute_dense(
             DenseVector1D::new(self.query.as_slice()),
             DenseVector1D::new(vector.values_as_slice()),

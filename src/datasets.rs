@@ -70,7 +70,7 @@ where
     fn quantizer(&self) -> &Q;
 
     fn shape(&self) -> (usize, usize) {
-        (self.len(), self.input_dim())
+        (self.len(), self.output_dim())
     }
 
     /// Dimensionality of the input vectors (original vector space).
@@ -80,6 +80,7 @@ where
     }
 
     /// Dimensionality of the encoded vectors (stored representation).
+    /// For example, this is equal to `m` for PQ quantizers, or the number of values per vector for scalar quantizers.
     #[inline]
     fn output_dim(&self) -> usize {
         self.quantizer().output_dim()
@@ -99,19 +100,12 @@ where
     fn id_from_key(&self, key: VectorKey) -> VectorId;
 
     /// Get the representation of the vector with the given key.
-    fn get(
-        &self,
-        key: VectorKey,
-    ) -> impl Vector1D<ComponentType = Q::OutputComponentType, ValueType = Q::OutputValueType>;
+    fn get<'a>(&'a self, key: VectorKey) -> Q::EncodedVector<'a>;
 
     fn prefetch(&self, key: VectorKey);
 
     /// Returns an iterator over all encoded vectors in the dataset.
-    fn iter(
-        &self,
-    ) -> impl Iterator<
-        Item = impl Vector1D<ComponentType = Q::OutputComponentType, ValueType = Q::OutputValueType>,
-    >;
+    fn iter<'a>(&'a self) -> impl Iterator<Item = Q::EncodedVector<'a>>;
 
     /// Performs a brute-force search to find the K-nearest neighbors (KNN) of the queried vector.
     ///

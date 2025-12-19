@@ -1,5 +1,5 @@
 use crate::num_marker::DenseComponent;
-use crate::{ComponentType, ValueType};
+use crate::{ComponentType, PackedType, ValueType};
 
 pub trait Vector1D {
     type ComponentType;
@@ -153,6 +153,64 @@ where
     #[inline(always)]
     fn values_as_slice(&self) -> &[Self::ValueType] {
         self.values.as_ref()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PackedSparseVector1D<C, V, D, AD>
+where
+    C: ComponentType,
+    V: ValueType,
+    D: PackedType,
+    AD: AsRef<[D]>,
+{
+    data: AD,
+    _phantom: std::marker::PhantomData<(C, V, D)>,
+}
+
+/// In PackedSparseVector1D, the components and values are stored in contiguous memory blocks, potentially compressed for saving space.
+/// We need the proper Encoder type to interpret the packed data.
+
+impl<C, V, D, AD> PackedSparseVector1D<C, V, D, AD>
+where
+    C: ComponentType,
+    V: ValueType,
+    D: PackedType,
+    AD: AsRef<[D]>,
+{
+    #[inline]
+    pub fn new(data: AD) -> Self {
+        PackedSparseVector1D {
+            data,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<C, V, D, AD> Vector1D for PackedSparseVector1D<C, V, D, AD>
+where
+    C: ComponentType,
+    V: ValueType,
+    D: PackedType,
+    AD: AsRef<[D]>,
+{
+    type ComponentType = C;
+    type ValueType = V;
+
+    /// Returns the length of the sparse array. It's the length of the packed data, not the number of components or values in the original vector.
+    #[inline(always)]
+    fn len(&self) -> usize {
+        self.data.as_ref().len()
+    }
+
+    #[inline(always)]
+    fn components_as_slice(&self) -> &[Self::ComponentType] {
+        &[] // Packed representation does not expose components directly
+    }
+
+    #[inline(always)]
+    fn values_as_slice(&self) -> &[Self::ValueType] {
+        &[] // Packed representation does not expose values directly
     }
 }
 

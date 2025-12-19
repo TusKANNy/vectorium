@@ -41,10 +41,7 @@ where
 
 /// A query evaluator computes distances between a query and encoded vectors.
 pub trait QueryEvaluator<Q: Quantizer>: Sized {
-    fn compute_distance<EncodedVector>(&self, vector: EncodedVector) -> Q::Distance
-    where
-        EncodedVector:
-            Vector1D<ValueType = Q::OutputValueType, ComponentType = Q::OutputComponentType>;
+    fn compute_distance(&self, vector: Q::EncodedVector<'_>) -> Q::Distance;
 }
 
 pub trait Quantizer: Sized {
@@ -69,19 +66,36 @@ pub trait Quantizer: Sized {
     where
         Self: 'a;
 
-    // /// Create a new quantizer for input vectors of the given dimensionality `input_dim` and number of components in the quantized vector `output_dim`.
+    /// The encoded representation of dataset vectors produced by this quantizer.
+    ///
+    /// This is intentionally a *concrete* type chosen by the quantizer (e.g.
+    /// `DenseVector1D<.., &'a [..]>`, `SparseVector1D<..>`, `&'a [u64]`, ...).
+    ///
+    /// Datasets that store a specific representation can constrain this type.
+    type EncodedVector<'a>;
+
+    /// Create a new quantizer for input vectors of the given dimensionality `input_dim` and number of components in the quantized vector `output_dim`.
     fn new(input_dim: usize, output_dim: usize) -> Self;
 
     /// TODO: do we need fn train(data: Option<Dataset<Q>>) -> Self; ?
 
     /// Get a query evaluator for the given distance type
-    fn get_query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Self::Evaluator<'a>
+    fn get_query_evaluator<'a, QueryVector>(
+        &'a self,
+        query: &'a QueryVector,
+    ) -> Self::Evaluator<'a>
     where
         QueryVector: QueryVectorFor<Self> + ?Sized;
 
     /// Dimensionality of the encoded vector space.
     ///
     /// For dense encoders, this is typically the number of values produced per vector.
+    ///
+    /// Note: if the encoded representation is *packed* and has variable length
+    /// in memory (e.g. `&[u64]` with per-vector offsets), `output_dim()` is **not**
+    /// the packed blob length. It must remain the logical dimensionality of the
+    /// post-quantization space used for distance evaluation; the packed length is
+    /// storage-specific and determined by the dataset offsets.
     fn output_dim(&self) -> usize;
 
     /// Dimensionality of the original (input) vector space.
@@ -94,32 +108,28 @@ pub trait DenseQuantizer:
     Quantizer<
         QueryComponentType = DenseComponent,
         InputComponentType = DenseComponent,
-        OutputComponentType = DenseComponent,   
-        // TODO: Do we to specify these types for input and query vector types to force?
-        // InputVectorType = DenseVector1D<Self::InputValueType, Self::InputStorage>,
-        // QueryVectorType = DenseVector1D<Self::QueryValueType, Self::QueryStorage>,
+        OutputComponentType = DenseComponent,
     >
 {
     /// Encode input vectors into quantized output vectors
     fn extend_with_encode<ValueContainer>(
         &self,
-        input_vector: DenseVector1D<
-            Self::InputValueType,
-            impl AsRef<[Self::InputValueType]>>,
+        input_vector: DenseVector1D<Self::InputValueType, impl AsRef<[Self::InputValueType]>>,
         values: &mut ValueContainer,
-    ) where  
+    ) where
         ValueContainer: Extend<Self::OutputValueType>;
 }
 
 pub trait SparseQuantizer: Quantizer {
     /// Encode input vectors into quantized output vectors
-    fn extend_with_encode< ValueContainer, ComponentContainer>(
+    fn extend_with_encode<ValueContainer, ComponentContainer>(
         &self,
         input_vector: SparseVector1D<
             Self::InputComponentType,
             Self::InputValueType,
             impl AsRef<[Self::InputComponentType]>,
-            impl AsRef<[Self::InputValueType]>>,
+            impl AsRef<[Self::InputValueType]>,
+        >,
         components: &mut ComponentContainer,
         values: &mut ValueContainer,
     ) where

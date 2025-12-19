@@ -19,6 +19,8 @@ pub type DenseDataset<Q> = DenseDatasetGeneric<Q, Box<[<Q as Quantizer>::OutputV
 pub struct DenseDatasetGeneric<Q, Data>
 where
     Q: DenseQuantizer,
+    for<'a> Q::EncodedVector<'a>:
+        From<DenseVector1D<Q::OutputValueType, &'a [Q::OutputValueType]>>,
     Data: AsRef<[Q::OutputValueType]>,
 {
     n_vecs: usize,
@@ -29,6 +31,8 @@ where
 impl<Q, Data> SpaceUsage for DenseDatasetGeneric<Q, Data>
 where
     Q: DenseQuantizer + SpaceUsage,
+    for<'a> Q::EncodedVector<'a>:
+        From<DenseVector1D<Q::OutputValueType, &'a [Q::OutputValueType]>>,
     Data: AsRef<[Q::OutputValueType]> + SpaceUsage,
 {
     fn space_usage_byte(&self) -> usize {
@@ -43,6 +47,8 @@ where
 impl<Q, Data> DenseDatasetGeneric<Q, Data>
 where
     Q: DenseQuantizer,
+    for<'a> Q::EncodedVector<'a>:
+        From<DenseVector1D<Q::OutputValueType, &'a [Q::OutputValueType]>>,
     Data: AsRef<[Q::OutputValueType]>,
 {
     /// Creates a DenseDatasetGeneric from raw data.
@@ -92,6 +98,8 @@ where
 impl<Q, Data> Dataset<Q> for DenseDatasetGeneric<Q, Data>
 where
     Q: DenseQuantizer + SpaceUsage,
+    for<'a> Q::EncodedVector<'a>:
+        From<DenseVector1D<Q::OutputValueType, &'a [Q::OutputValueType]>>,
     Data: AsRef<[Q::OutputValueType]> + SpaceUsage,
     Q::OutputValueType: SpaceUsage,
 {
@@ -111,10 +119,7 @@ where
     }
 
     #[inline]
-    fn get(
-        &self,
-        key: VectorKey,
-    ) -> impl Vector1D<ComponentType = Q::OutputComponentType, ValueType = Q::OutputValueType> {
+    fn get<'a>(&'a self, key: VectorKey) -> Q::EncodedVector<'a> {
         let index = key as usize; // indexes and keys coincide in this implementation
 
         assert!(index < self.len(), "Index out of bounds.");
@@ -123,7 +128,7 @@ where
         let start = index * m;
         let end = start + m;
 
-        DenseVector1D::new(&self.data.as_ref()[start..end])
+        Q::EncodedVector::from(DenseVector1D::new(&self.data.as_ref()[start..end]))
     }
 
     #[inline]
@@ -139,17 +144,11 @@ where
     #[inline]
     fn prefetch(&self, key: VectorKey) {
         let m = self.quantizer.output_dim();
-        prefetch_read_slice(
-            &self.data.as_ref()[(key as usize) * m..(key as usize + 1) * m],
-        );
+        prefetch_read_slice(&self.data.as_ref()[(key as usize) * m..(key as usize + 1) * m]);
     }
 
     #[inline]
-    fn iter(
-        &self,
-    ) -> impl Iterator<
-        Item = impl Vector1D<ComponentType = Q::OutputComponentType, ValueType = Q::OutputValueType>,
-    > {
+    fn iter<'a>(&'a self) -> impl Iterator<Item = Q::EncodedVector<'a>> {
         DenseDatasetIter::new(self)
     }
 }
@@ -210,6 +209,8 @@ where
 impl<Q> GrowableDataset<Q> for DenseDatasetGeneric<Q, Vec<Q::OutputValueType>>
 where
     Q: DenseQuantizer + SpaceUsage,
+    for<'a> Q::EncodedVector<'a>:
+        From<DenseVector1D<Q::OutputValueType, &'a [Q::OutputValueType]>>,
     Q::OutputValueType: Default + SpaceUsage,
 {
     #[inline]
@@ -253,6 +254,8 @@ where
 impl<Q> From<DenseDatasetGrowable<Q>> for DenseDataset<Q>
 where
     Q: DenseQuantizer,
+    for<'a> Q::EncodedVector<'a>:
+        From<DenseVector1D<Q::OutputValueType, &'a [Q::OutputValueType]>>,
 {
     /// Converts a mutable dense dataset into an immutable one.
     ///
@@ -292,6 +295,8 @@ where
 impl<Q> From<DenseDataset<Q>> for DenseDatasetGrowable<Q>
 where
     Q: DenseQuantizer,
+    for<'a> Q::EncodedVector<'a>:
+        From<DenseVector1D<Q::OutputValueType, &'a [Q::OutputValueType]>>,
 {
     /// Converts an immutable sparse dataset into a mutable one.
     ///
@@ -347,6 +352,8 @@ where
 impl<Q, T> AsRef<[Q::OutputValueType]> for DenseDatasetGeneric<Q, T>
 where
     Q: DenseQuantizer,
+    for<'a> Q::EncodedVector<'a>:
+        From<DenseVector1D<Q::OutputValueType, &'a [Q::OutputValueType]>>,
     T: AsRef<[Q::OutputValueType]>,
 {
     fn as_ref(&self) -> &[Q::OutputValueType] {
@@ -358,6 +365,8 @@ where
 pub struct DenseDatasetIter<'a, Q>
 where
     Q: DenseQuantizer,
+    for<'b> Q::EncodedVector<'b>:
+        From<DenseVector1D<Q::OutputValueType, &'b [Q::OutputValueType]>>,
 {
     data: &'a [Q::OutputValueType],
     dim: usize,
@@ -367,6 +376,8 @@ where
 impl<'a, Q> DenseDatasetIter<'a, Q>
 where
     Q: DenseQuantizer,
+    for<'b> Q::EncodedVector<'b>:
+        From<DenseVector1D<Q::OutputValueType, &'b [Q::OutputValueType]>>,
 {
     pub fn new<Data>(dataset: &'a DenseDatasetGeneric<Q, Data>) -> Self
     where
@@ -384,9 +395,10 @@ where
 impl<'a, Q> Iterator for DenseDatasetIter<'a, Q>
 where
     Q: DenseQuantizer,
-    Q: Quantizer,
+    for<'b> Q::EncodedVector<'b>:
+        From<DenseVector1D<Q::OutputValueType, &'b [Q::OutputValueType]>>,
 {
-    type Item = DenseVector1D<Q::OutputValueType, &'a [Q::OutputValueType]>;
+    type Item = Q::EncodedVector<'a>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -398,7 +410,7 @@ where
         let end = std::cmp::min(start + self.dim, self.data.len());
         self.index = end;
 
-        Some(DenseVector1D::new(&self.data[start..end]))
+        Some(Q::EncodedVector::from(DenseVector1D::new(&self.data[start..end])))
     }
 }
 

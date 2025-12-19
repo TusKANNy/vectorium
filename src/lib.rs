@@ -83,7 +83,8 @@ pub trait ValueType = SpaceUsage
     + FromPrimitive
     + FromF32
     + SpaceUsage
-    + Default;
+    + Default
+    + 'static;
 
 pub trait ComponentType = AsPrimitive<usize>
     + FromPrimitive
@@ -94,4 +95,7 @@ pub trait ComponentType = AsPrimitive<usize>
     + std::hash::Hash
     + Eq
     + Ord
-    + std::convert::TryFrom<usize>;
+    + std::convert::TryFrom<usize>
+    + 'static;
+
+pub trait PackedType = SpaceUsage + Copy + Send + Sync + Default;
