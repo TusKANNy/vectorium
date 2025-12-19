@@ -80,7 +80,16 @@ pub trait Quantizer: Sized {
     /// Create a new quantizer for input vectors of the given dimensionality `input_dim` and number of components in the quantized vector `output_dim`.
     fn new(input_dim: usize, output_dim: usize) -> Self;
 
-    /// TODO: do we need fn train(data: Option<Dataset<Q>>) -> Self; ?
+    /// Train the quantizer on a (sub)set of the encoded dataset vectors.
+    ///
+    /// Some quantizers (e.g. k-means/PQ-like) need a training step before they
+    /// can be used effectively. This method exists to make that step explicit
+    /// and type-safe: the quantizer receives an iterator over its own
+    /// `EncodedVector` representation, typically coming from `Dataset::iter()`.
+    ///
+    /// Default implementation is a no-op for quantizers that do not require training.
+    #[inline]
+    fn train<'a>(&mut self, _training_data: impl Iterator<Item = Self::EncodedVector<'a>>) {}
 
     /// Get a query evaluator for the given distance type
     fn get_query_evaluator<'a, QueryVector>(
