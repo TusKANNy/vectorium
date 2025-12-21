@@ -1,5 +1,5 @@
 use crate::num_marker::DenseComponent;
-use crate::{ComponentType, PackedType, ValueType};
+use crate::{ComponentType, ValueType};
 
 pub trait Vector1D {
     type ComponentType;
@@ -69,6 +69,11 @@ where
             phantom: std::marker::PhantomData,
         }
     }
+
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = V> + '_ {
+        self.values.as_ref().iter().copied()
+    }
 }
 
 impl<V, AV> Vector1D for DenseVector1D<V, AV>
@@ -128,6 +133,15 @@ where
             values,
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = (C, V)> + '_ {
+        self.components
+            .as_ref()
+            .iter()
+            .copied()
+            .zip(self.values.as_ref().iter().copied())
     }
 }
 

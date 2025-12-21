@@ -4,14 +4,15 @@ use std::io::Write;
 use std::time::Instant;
 
 use half::{bf16, f16};
-use indicatif::{ParallelProgressIterator, ProgressStyle};
+use indicatif::{ParallelProgressIterator, ProgressIterator, ProgressStyle};
 use rayon::iter::ParallelIterator;
 
+use vectorium::Vector1D;
 use vectorium::datasets::Result as DatasetResult;
 use vectorium::distances;
 use vectorium::readers;
 use vectorium::{Dataset, FixedU8Q, FixedU16Q, PlainSparseDataset, ScalarDenseDataset, SpaceUsage};
-use vectorium::{DenseDataset, Float};
+use vectorium::{DenseDataset, Distance, Float};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -52,6 +53,11 @@ struct Args {
     #[clap(long, value_parser)]
     #[arg(default_value = "u32")]
     component_type: String,
+
+    /// Encoder: 'plain' or 'dotvbyte' (default: plain)
+    #[clap(long, value_parser)]
+    #[arg(default_value = "plain")]
+    encoder: String,
 }
 
 fn main() {
@@ -65,16 +71,32 @@ fn main() {
     let distance = args.distance.to_lowercase();
     let dataset_type = args.dataset_type.to_lowercase();
     let component_type = args.component_type.to_lowercase();
+    let encoder = args.encoder.to_lowercase();
 
     // Print chosen configuration
     println!("Dataset type: {}", dataset_type);
     println!("Value type: {}", value_type);
+    println!("Encoder: {}", encoder);
     if value_type != "f32" {
         println!("Converting from f32 to {}...", value_type);
+    }
+    if encoder == "dotvbyte" {
+        println!("Dotvbyte encoder: quantizing values using FixedU8Q.");
+    }
+    if encoder != "plain" && encoder != "dotvbyte" {
+        eprintln!(
+            "Unknown encoder='{}'. Use encoder='plain'|'dotvbyte'.",
+            encoder
+        );
+        return;
     }
 
     match dataset_type.as_str() {
         "dense" => {
+            if encoder != "plain" {
+                eprintln!("Encoder '{}' non supportato per dataset densi.", encoder);
+                return;
+            }
             // Dense dataset logic
             match (distance.as_str(), value_type.as_str()) {
                 ("euclidean", "f32") => compute_dense_groundtruth::<
@@ -141,6 +163,58 @@ fn main() {
         }
         "sparse" => {
             // Sparse dataset logic
+            if encoder == "dotvbyte" {
+                if component_type != "u16" {
+                    eprintln!(
+                        "Dotvbyte encoder requires component_type='u16' (found '{}').",
+                        component_type
+                    );
+                    return;
+                }
+                if distance != "dotproduct" {
+                    eprintln!("Dotvbyte encoder supports only distance='dotproduct'.");
+                    return;
+                }
+                match value_type.as_str() {
+                    "f32" => compute_sparse_groundtruth_dotvbyte::<f32>(
+                        input_path,
+                        query_path,
+                        output_path,
+                        k,
+                    ),
+                    "f16" => compute_sparse_groundtruth_dotvbyte::<f16>(
+                        input_path,
+                        query_path,
+                        output_path,
+                        k,
+                    ),
+                    "bf16" => compute_sparse_groundtruth_dotvbyte::<bf16>(
+                        input_path,
+                        query_path,
+                        output_path,
+                        k,
+                    ),
+                    "fixedu8" => compute_sparse_groundtruth_dotvbyte::<FixedU8Q>(
+                        input_path,
+                        query_path,
+                        output_path,
+                        k,
+                    ),
+                    "fixedu16" => compute_sparse_groundtruth_dotvbyte::<FixedU16Q>(
+                        input_path,
+                        query_path,
+                        output_path,
+                        k,
+                    ),
+                    _ => {
+                        eprintln!(
+                            "Unknown value_type='{}'. Use value_type='f32'|'f16'|'bf16'|'fixedu8'|'fixedu16'.",
+                            value_type
+                        );
+                    }
+                }
+                return;
+            }
             match (
                 component_type.as_str(),
                 distance.as_str(),
@@ -273,7 +347,7 @@ fn compute_dense_groundtruth<V, D>(
         .progress_chars("=>-");
 
     let results: Vec<Vec<(f32, u64)>> = queries
-        .par_iter()
+        .iter()
         .progress_count(queries.len() as u64)
         .with_style(pb_style)
         .map(|qvec| {
@@ -307,8 +381,8 @@ fn compute_sparse_groundtruth<C, V, D>(
     output_path: String,
     k: usize,
 ) where
-    C: vectorium::ComponentType,
-    V: vectorium::ValueType + Float,
+    C: vectorium::ComponentType + std::fmt::Debug,
+    V: vectorium::ValueType + Float + std::fmt::Debug,
     D: vectorium::ScalarSparseSupportedDistance,
 {
     // Read sparse dataset from seismic binary format
@@ -318,6 +392,13 @@ fn compute_sparse_groundtruth<C, V, D>(
     // Queries must use f32 value type for sparse quantizers
     let queries: PlainSparseDataset<C, f32, D> =
         readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
+
+    if queries.len() > 19 {
+        let key = queries.key_from_id(19);
+        let q = queries.get(key);
+        println!("Query 19 components: {:?}", q.components_as_slice());
+        println!("Query 19 values: {:?}", q.values_as_slice());
+    }
 
     // Print dataset info=
     let dataset_gib = dataset.space_usage_GiB();
@@ -367,4 +448,89 @@ fn compute_sparse_groundtruth<C, V, D>(
             .expect("failed to write result");
         }
     }
+}
+
+#[cfg(feature = "dotvbyte")]
+fn compute_sparse_groundtruth_dotvbyte<V>(
+    input_path: String,
+    query_path: String,
+    output_path: String,
+    k: usize,
+) where
+    V: vectorium::ValueType + Float,
+{
+    use vectorium::DotVByteFixedU8Quantizer;
+    use vectorium::PackedDataset;
+
+    let dataset_plain: PlainSparseDataset<u16, V, distances::DotProduct> =
+        readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
+    let queries: PlainSparseDataset<u16, f32, distances::DotProduct> =
+        readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
+
+    if queries.len() > 19 {
+        let key = queries.key_from_id(19);
+        let q = queries.get(key);
+        println!("Query 19 components: {:?}", q.components_as_slice());
+        println!("Query 19 values: {:?}", q.values_as_slice());
+    }
+
+    let dataset: PackedDataset<DotVByteFixedU8Quantizer> = dataset_plain.into();
+
+    let dataset_gib = dataset.space_usage_GiB();
+
+    println!("N documents: {}", dataset.len());
+    println!("N dims: {}", dataset.input_dim());
+    println!("N packed words: {}", dataset.nnz());
+    println!("N queries: {}", queries.len());
+    println!("N dims: {}", queries.input_dim());
+
+    println!("Dataset size: {:.3} GiB", dataset_gib);
+    println!("Computing ground truth for {} queries...", queries.len());
+
+    let start_time = Instant::now();
+
+    let pb_style = ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec}, ETA: {eta})")
+        .unwrap()
+        .progress_chars("=>-");
+
+    let results: Vec<Vec<(f32, u64)>> = queries
+        .par_iter()
+        .progress_count(queries.len() as u64)
+        .with_style(pb_style)
+        .map(|qvec| {
+            let res: Vec<DatasetResult<distances::DotProduct>> = dataset.search(qvec, k);
+            res.into_iter()
+                .map(|r| (r.distance.distance(), r.vector))
+                .collect()
+        })
+        .collect();
+
+    let elapsed = start_time.elapsed();
+    println!("Computation completed in {:.3}s", elapsed.as_secs_f64());
+
+    let mut output_file = File::create(output_path).expect("failed to create output file");
+
+    for (query_id, result) in results.iter().enumerate() {
+        for (idx, (score, doc_id)) in result.iter().enumerate() {
+            writeln!(
+                &mut output_file,
+                "{query_id}\t{doc_id}\t{}\t{score}",
+                idx + 1
+            )
+            .expect("failed to write result");
+        }
+    }
+}
+
+#[cfg(not(feature = "dotvbyte"))]
+fn compute_sparse_groundtruth_dotvbyte<V>(
+    _input_path: String,
+    _query_path: String,
+    _output_path: String,
+    _k: usize,
+) where
+    V: vectorium::ValueType + Float,
+{
+    eprintln!("Dotvbyte encoder requires the 'dotvbyte' feature.");
 }
