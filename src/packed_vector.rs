@@ -69,7 +69,7 @@ where
     }
 }
 
-impl<'a, T> sealed::Sealed for PackedVector<T, &'a [T]> where T: SpaceUsage + Copy {}
+impl<T> sealed::Sealed for PackedVector<T, &[T]> where T: SpaceUsage + Copy {}
 
 impl<'a, T> PackedEncoded<'a, T> for PackedVector<T, &'a [T]>
 where

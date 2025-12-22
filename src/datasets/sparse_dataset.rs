@@ -5,14 +5,10 @@ use crate::SpaceUsage;
 use crate::datasets::{Dataset, GrowableDataset};
 use crate::quantizers::{Quantizer, SparseQuantizer};
 use crate::utils::prefetch_read_slice;
-use crate::{ComponentType, ValueType, VectorId, VectorKey};
+use crate::{ComponentType, ValueType, VectorId};
 use crate::{SparseVector1D, Vector1D};
 
 use rayon::prelude::{IndexedParallelIterator, ParallelIterator, ParallelSlice};
-
-#[cfg(feature = "dotvbyte")]
-#[path = "sparse_dateset/sparse_dot_vbyte_dataset.rs"]
-pub mod sparse_dot_vbyte_dataset;
 
 type SparseEncodedVector<'a, Q> = SparseVector1D<
     <Q as Quantizer>::OutputComponentType,
@@ -22,7 +18,6 @@ type SparseEncodedVector<'a, Q> = SparseVector1D<
 >;
 
 /// A growable representation of a sparse dataset.
-
 ///
 /// # Examples
 ///
@@ -62,7 +57,6 @@ where
     AC: AsRef<[Q::OutputComponentType]>,
     AV: AsRef<[Q::OutputValueType]>,
 {
-    dim_bits: u32, // Number of bits required to represent input_dim. Needed to pack/unpack offset and length in VectorKey
     offsets: O,
     components: AC,
     values: AV,
@@ -77,21 +71,9 @@ where
     AC: AsRef<[Q::OutputComponentType]>,
     AV: AsRef<[Q::OutputValueType]>,
 {
-    fn key_to_range(&self, key: VectorKey) -> std::ops::Range<usize> {
-        let length = (key & ((1u64 << self.dim_bits) - 1)) as usize;
-        let offset = (key >> self.dim_bits) as usize;
-
-        std::ops::Range {
-            start: offset,
-            end: offset + length,
-        }
-    }
-
     /// Parallel iterator over all vectors as slice-backed `SparseVector1D`.
     #[inline]
-    pub fn par_iter(
-        &self,
-    ) -> impl IndexedParallelIterator<Item = SparseEncodedVector<'_, Q>> + '_ {
+    pub fn par_iter(&self) -> impl IndexedParallelIterator<Item = SparseEncodedVector<'_, Q>> + '_ {
         let offsets = self.offsets.as_ref();
         let components = self.components.as_ref();
         let values = self.values.as_ref();
@@ -138,21 +120,17 @@ where
     /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
     /// dataset.push(SparseVector1D::new(vec![1, 3], vec![4.0, 5.0]));
     ///
-    /// let key = dataset.key_from_id(1);
-    /// let v = dataset.get(key);
+    /// let range = dataset.range_from_id(1);
+    /// let v = dataset.get(range);
     /// assert_eq!(v.components_as_slice(), &[1, 3]);
     /// assert_eq!(v.values_as_slice(), &[4.0, 5.0]);
     /// ```
     #[inline]
-    fn get<'a>(&'a self, key: VectorKey) -> Q::EncodedVector<'a> {
-        let range = self.key_to_range(key);
-        let offset = range.start;
-        let len = range.end - range.start;
-
+    fn get<'a>(&'a self, range: std::ops::Range<usize>) -> Q::EncodedVector<'a> {
         unsafe { assert_unchecked(self.components.as_ref().len() == self.values.as_ref().len()) };
 
-        let v_components = &self.components.as_ref()[offset..offset + len];
-        let v_values = &self.values.as_ref()[offset..offset + len];
+        let v_components = &self.components.as_ref()[range.clone()];
+        let v_values = &self.values.as_ref()[range];
 
         SparseVector1D::new(v_components, v_values)
     }
@@ -168,10 +146,10 @@ where
     //     (v_components, v_values)
     // }
 
-    /// Returns the range of positions of the slice with the given `id`.
-    ///
-    /// ### Panics
-    /// Panics if the `id` is out of range.
+    // Returns the range of positions of the slice with the given `id`.
+    //
+    // ### Panics
+    // Panics if the `id` is out of range.
     // #[inline]
     // pub fn offset_range(&self, id: usize) -> Range<usize> {
     //     let offsets = self.offsets.as_ref();
@@ -192,19 +170,23 @@ where
     /// # Panics
     /// Panics if the `offset` is not the first position of a vector in the dataset.
     #[inline]
-    fn id_from_key(&self, key: VectorKey) -> VectorId {
-        let offset = self.key_to_range(key).start;
-        self.offsets.as_ref().binary_search(&offset).unwrap() as VectorId
+    fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId {
+        let offsets = self.offsets.as_ref();
+        let idx = offsets.binary_search(&range.start).unwrap();
+        assert_eq!(
+            offsets[idx + 1],
+            range.end,
+            "Range does not match vector boundaries."
+        );
+        idx as VectorId
     }
 
     #[inline]
-    fn key_from_id(&self, id: VectorId) -> VectorKey {
+    fn range_from_id(&self, id: VectorId) -> std::ops::Range<usize> {
         let offsets = self.offsets.as_ref();
-        let start = offsets[id as usize];
-        let end = offsets[id as usize + 1];
-        let length = end - start;
-
-        ((start as u64) << self.dim_bits) | (length as u64)
+        let index = id as usize;
+        assert!(index + 1 < offsets.len(), "Index out of bounds.");
+        offsets[index]..offsets[index + 1]
     }
 
     fn quantizer(&self) -> &Q {
@@ -224,12 +206,12 @@ where
     /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
     ///
-    /// let key = dataset.key_from_id(0);
-    /// dataset.prefetch(key);
+    /// let range = dataset.range_from_id(0);
+    /// dataset.prefetch(range);
     /// ```
     #[inline]
-    fn prefetch(&self, key: VectorKey) {
-        let sparse_vector = self.get(key);
+    fn prefetch(&self, range: std::ops::Range<usize>) {
+        let sparse_vector = self.get(range);
 
         prefetch_read_slice(sparse_vector.components_as_slice());
         prefetch_read_slice(sparse_vector.values_as_slice());
@@ -315,7 +297,7 @@ where
     /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
     /// assert_eq!(dataset.input_dim(), 5);
     /// ```
-
+    ///
     /// Returns the number of non-zero components in the dataset.
     ///
     /// This function returns the total count of non-zero components across all vectors
@@ -449,7 +431,6 @@ where
     /// ```
     fn from(dataset: SparseDatasetGrowable<Q>) -> Self {
         Self {
-            dim_bits: dataset.dim_bits,
             offsets: dataset.offsets.into(),
             components: dataset.components.into(),
             values: dataset.values.into(),
@@ -494,7 +475,6 @@ where
     /// ```
     fn from(dataset: SparseDataset<Q>) -> Self {
         Self {
-            dim_bits: dataset.dim_bits,
             offsets: dataset.offsets.into(),
             components: dataset.components.into(),
             values: dataset.values.into(),
@@ -551,9 +531,7 @@ where
 {
     /// For SparseDataset, thw dimensionality `d` may be 0 if unkwown when creating a new dataset.
     fn new(quantizer: Q) -> Self {
-        let dim = quantizer.input_dim();
         Self {
-            dim_bits: if dim == 0 { 0 } else { (dim - 1).ilog2() + 1 },
             offsets: vec![0; 1],
             components: Vec::new(),
             values: Vec::new(),

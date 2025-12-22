@@ -32,10 +32,6 @@ bytemuck = { version = "1.23", features = [
 ] }
 rusty-perm = "0.2.0"
 
-[features]
-dotvbyte = []
-
-
 [profile.release]
 opt-level = 3
 debug = true

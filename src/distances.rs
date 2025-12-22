@@ -70,7 +70,7 @@ impl PartialEq for EuclideanDistance {
 
 impl PartialOrd for EuclideanDistance {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.0.partial_cmp(&other.0)
+        Some(self.cmp(other))
     }
 }
 
@@ -116,8 +116,7 @@ impl PartialEq for DotProduct {
 
 impl PartialOrd for DotProduct {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        // Reverse the ordering so that larger dot product is considered "better".
-        other.0.partial_cmp(&self.0)
+        Some(self.cmp(other))
     }
 }
 

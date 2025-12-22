@@ -7,7 +7,6 @@ use half::{bf16, f16};
 use indicatif::{ParallelProgressIterator, ProgressIterator, ProgressStyle};
 use rayon::iter::ParallelIterator;
 
-use vectorium::Vector1D;
 use vectorium::datasets::Result as DatasetResult;
 use vectorium::distances;
 use vectorium::readers;
@@ -393,13 +392,6 @@ fn compute_sparse_groundtruth<C, V, D>(
     let queries: PlainSparseDataset<C, f32, D> =
         readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
 
-    if queries.len() > 19 {
-        let key = queries.key_from_id(19);
-        let q = queries.get(key);
-        println!("Query 19 components: {:?}", q.components_as_slice());
-        println!("Query 19 values: {:?}", q.values_as_slice());
-    }
-
     // Print dataset info=
     let dataset_gib = dataset.space_usage_GiB();
 
@@ -450,7 +442,6 @@ fn compute_sparse_groundtruth<C, V, D>(
     }
 }
 
-#[cfg(feature = "dotvbyte")]
 fn compute_sparse_groundtruth_dotvbyte<V>(
     input_path: String,
     query_path: String,
@@ -466,13 +457,6 @@ fn compute_sparse_groundtruth_dotvbyte<V>(
         readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
     let queries: PlainSparseDataset<u16, f32, distances::DotProduct> =
         readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
-
-    if queries.len() > 19 {
-        let key = queries.key_from_id(19);
-        let q = queries.get(key);
-        println!("Query 19 components: {:?}", q.components_as_slice());
-        println!("Query 19 values: {:?}", q.values_as_slice());
-    }
 
     let dataset: PackedDataset<DotVByteFixedU8Quantizer> = dataset_plain.into();
 
@@ -521,16 +505,4 @@ fn compute_sparse_groundtruth_dotvbyte<V>(
             .expect("failed to write result");
         }
     }
-}
-
-#[cfg(not(feature = "dotvbyte"))]
-fn compute_sparse_groundtruth_dotvbyte<V>(
-    _input_path: String,
-    _query_path: String,
-    _output_path: String,
-    _k: usize,
-) where
-    V: vectorium::ValueType + Float,
-{
-    eprintln!("Dotvbyte encoder requires the 'dotvbyte' feature.");
 }

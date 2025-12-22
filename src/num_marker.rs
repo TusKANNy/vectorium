@@ -97,9 +97,8 @@ impl FromPrimitive for DenseComponent {
     }
 }
 
-impl TryFrom<usize> for DenseComponent {
-    type Error = std::convert::Infallible;
-    fn try_from(_: usize) -> Result<Self, Self::Error> {
-        Ok(DenseComponent)
+impl From<usize> for DenseComponent {
+    fn from(_: usize) -> Self {
+        DenseComponent
     }
 }

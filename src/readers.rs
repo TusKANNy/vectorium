@@ -46,7 +46,6 @@ impl std::fmt::Display for ReaderError {
 impl std::error::Error for ReaderError {}
 
 /// TODO: make it generic over the AsRef(f32) to return a static dataset or a growable one dataset
-
 /// Reads a dense dataset from a `.npy` file containing f32 values.
 ///
 /// The file should contain a 2D array where:

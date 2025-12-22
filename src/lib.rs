@@ -47,13 +47,11 @@ pub use quantizers::sparse_scalar::{
     ScalarSparseQuantizerDotProduct, ScalarSparseQuantizerSame, ScalarSparseQueryEvaluator,
     ScalarSparseSupportedDistance,
 };
-#[cfg(feature = "dotvbyte")]
 pub use quantizers::dotvbyte_fixedu8::{DotVByteFixedU8Quantizer, DotVByteFixedU8QueryEvaluator};
 
 pub mod datasets;
 pub use datasets::Dataset;
 pub use datasets::VectorId;
-pub use datasets::VectorKey;
 pub use datasets::dense_dataset::{DenseDataset, DenseDatasetGeneric, DenseDatasetGrowable};
 pub use datasets::packed_dataset::{PackedDataset, PackedDatasetGeneric, PackedDatasetGrowable};
 pub use datasets::sparse_dataset::{SparseDataset, SparseDatasetGrowable};

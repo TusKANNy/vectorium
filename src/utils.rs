@@ -6,7 +6,7 @@ pub fn prefetch_read_slice<T>(data: &[T]) {
     // This is only a reasonable heuristic, not a strict guarantee.
     const CACHE_LINE: usize = 64;
 
-    let len = core::mem::size_of::<T>() * data.len();
+    let len = core::mem::size_of_val(data);
 
     // Looping with pointer arithmetic improves unrolling and avoids bounds checks.
     // Prefetching the first two cache lines only is faster in modern CPUs. TODO: experiment this more.

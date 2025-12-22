@@ -8,7 +8,6 @@ pub mod packed_dataset;
 pub mod sparse_dataset;
 
 pub type VectorId = u64;
-pub type VectorKey = u64;
 
 #[derive(Debug, PartialOrd, Eq, Ord, PartialEq, Copy, Clone)]
 pub struct ResultGeneric<D: Distance, T> {
@@ -17,7 +16,6 @@ pub struct ResultGeneric<D: Distance, T> {
 }
 
 pub type Result<D> = ResultGeneric<D, VectorId>;
-pub type ResultWithKey<D> = ResultGeneric<D, VectorKey>;
 
 /// A `Dataset` stores a collection of dense or sparse embedding vectors.
 ///
@@ -44,27 +42,15 @@ pub type ResultWithKey<D> = ResultGeneric<D, VectorKey>;
 /// This extra lookup can slow down accesses and reduce the effectiveness
 /// of software prefetching.
 ///
-/// To avoid this, datasets can also expose a `VectorKey` (an opaque `u64`)
-/// for each vector. A `VectorKey` uniquely identifies a vector *within a
-/// particular dataset implementation* and is chosen so that the dataset can
-/// locate and prefetch the vector without going through the offset table.
-/// For dense datasets, the `VectorKey` is typically equal to the `VectorId`.
-/// For sparse datasets, it may encode the vector’s offset and length in the
-/// underlying storage, so not all `u64` values are valid keys.
+/// To avoid this, datasets can also expose the underlying range of their
+/// packed storage for each vector. A `Range<usize>` identifies the slice
+/// containing the encoded vector in the dataset’s storage. For dense datasets,
+/// this is a fixed-size range derived from the vector index; for sparse and
+/// packed datasets it comes from the offsets table. Converting a range back
+/// to a `VectorId` may still be expensive (e.g., a binary search on offsets).
 ///
-/// The dataset provides conversion routines between `VectorId` and
-/// `VectorKey`. Index structures using the dataset can then choose:
-///
-/// - to store `VectorId`s, keeping a purely logical identifier but paying
-///   the extra indirection on each access; or
-/// - to store `VectorKey`s, allowing direct, more efficient access and
-///   prefetching at the cost of tying the index to this specific dataset
-///   representation.
-///
-/// Conversion between `VectorId` and `VectorKey` is provided by the dataset.
-/// However, conversion from `VectorKey` back to `VectorId` may be
-/// expensive (e.g., requiring a binary search), so it should be used sparingly.
-
+/// We recommend an indexing data structure (e.g., Seismic, IVF, HNSW) to
+/// store internally (a compact version) of ranges instead of VectorIds.
 pub trait Dataset<Q>: SpaceUsage
 where
     Q: Quantizer,
@@ -97,14 +83,14 @@ where
 
     fn nnz(&self) -> usize;
 
-    fn key_from_id(&self, id: VectorId) -> VectorKey;
+    fn range_from_id(&self, id: VectorId) -> std::ops::Range<usize>;
 
-    fn id_from_key(&self, key: VectorKey) -> VectorId;
+    fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId;
 
     /// Get the representation of the vector with the given key.
-    fn get<'a>(&'a self, key: VectorKey) -> Q::EncodedVector<'a>;
+    fn get<'a>(&'a self, range: std::ops::Range<usize>) -> Q::EncodedVector<'a>;
 
-    fn prefetch(&self, key: VectorKey);
+    fn prefetch(&self, range: std::ops::Range<usize>);
 
     /// Returns an iterator over all encoded vectors in the dataset.
     fn iter<'a>(&'a self) -> impl Iterator<Item = Q::EncodedVector<'a>>;

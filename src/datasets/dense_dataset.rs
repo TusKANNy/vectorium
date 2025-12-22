@@ -5,7 +5,7 @@ use crate::datasets::{Dataset, GrowableDataset};
 use crate::quantizers::{DenseQuantizer, Quantizer};
 use crate::utils::prefetch_read_slice;
 use crate::{DenseVector1D, Vector1D};
-use crate::{VectorId, VectorKey};
+use crate::VectorId;
 
 use rayon::prelude::*;
 
@@ -118,32 +118,34 @@ where
     }
 
     #[inline]
-    fn get<'a>(&'a self, key: VectorKey) -> Q::EncodedVector<'a> {
-        let index = key as usize; // indexes and keys coincide in this implementation
+    fn get<'a>(&'a self, range: std::ops::Range<usize>) -> Q::EncodedVector<'a> {
+        DenseVector1D::new(&self.data.as_ref()[range])
+    }
 
+    #[inline]
+    fn range_from_id(&self, id: VectorId) -> std::ops::Range<usize> {
+        let index = id as usize;
         assert!(index < self.len(), "Index out of bounds.");
 
         let m = self.quantizer.output_dim();
         let start = index * m;
         let end = start + m;
-
-        DenseVector1D::new(&self.data.as_ref()[start..end])
+        start..end
     }
 
     #[inline]
-    fn key_from_id(&self, id: VectorId) -> VectorKey {
-        id
-    }
-
-    #[inline]
-    fn id_from_key(&self, key: VectorKey) -> VectorId {
-        key
-    }
-
-    #[inline]
-    fn prefetch(&self, key: VectorKey) {
+    fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId {
         let m = self.quantizer.output_dim();
-        prefetch_read_slice(&self.data.as_ref()[(key as usize) * m..(key as usize + 1) * m]);
+        assert!(
+            range.start.is_multiple_of(m) && range.end == range.start + m,
+            "Range does not match vector boundaries."
+        );
+        (range.start / m) as VectorId
+    }
+
+    #[inline]
+    fn prefetch(&self, range: std::ops::Range<usize>) {
+        prefetch_read_slice(&self.data.as_ref()[range]);
     }
 
     #[inline]

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::SpaceUsage;
-use crate::datasets::{Dataset, VectorId, VectorKey};
+use crate::datasets::{Dataset, VectorId};
 use crate::packed_vector::PackedEncoded;
 use crate::quantizers::PackedQuantizer;
 use crate::utils::prefetch_read_slice;
@@ -43,7 +43,8 @@ where
     for<'a> Q::EncodedVector<'a>: PackedEncoded<'a, Q::EncodingType>,
 {
     #[inline]
-    pub fn from_raw(offsets: Offsets, data: Data, quantizer: Q) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn from_raw_parts(offsets: Offsets, data: Data, quantizer: Q) -> Self {
         let offsets_ref = offsets.as_ref();
         assert!(!offsets_ref.is_empty(), "offsets must contain at least [0]");
         assert_eq!(offsets_ref[0], 0, "offsets[0] must be 0");
@@ -154,36 +155,34 @@ where
     }
 
     #[inline]
-    fn key_from_id(&self, id: VectorId) -> VectorKey {
-        id
-    }
-
-    #[inline]
-    fn id_from_key(&self, key: VectorKey) -> VectorId {
-        key
-    }
-
-    #[inline]
-    fn get<'a>(&'a self, key: VectorKey) -> Q::EncodedVector<'a> {
-        let idx = key as usize;
+    fn range_from_id(&self, id: VectorId) -> std::ops::Range<usize> {
+        let index = id as usize;
         let offsets = self.offsets.as_ref();
-        assert!(idx + 1 < offsets.len(), "Index out of bounds.");
+        assert!(index + 1 < offsets.len(), "Index out of bounds.");
+        offsets[index]..offsets[index + 1]
+    }
 
-        let start = offsets[idx];
-        let end = offsets[idx + 1];
-        let slice = &self.data.as_ref()[start..end];
+    #[inline]
+    fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId {
+        let offsets = self.offsets.as_ref();
+        let idx = offsets.binary_search(&range.start).unwrap();
+        assert_eq!(
+            offsets[idx + 1],
+            range.end,
+            "Range does not match vector boundaries."
+        );
+        idx as VectorId
+    }
+
+    #[inline]
+    fn get<'a>(&'a self, range: std::ops::Range<usize>) -> Q::EncodedVector<'a> {
+        let slice = &self.data.as_ref()[range];
         Q::EncodedVector::from_slice(slice)
     }
 
     #[inline]
-    fn prefetch(&self, key: VectorKey) {
-        let idx = key as usize;
-        let offsets = self.offsets.as_ref();
-        assert!(idx + 1 < offsets.len(), "Index out of bounds.");
-
-        let start = offsets[idx];
-        let end = offsets[idx + 1];
-        prefetch_read_slice(&self.data.as_ref()[start..end]);
+    fn prefetch(&self, range: std::ops::Range<usize>) {
+        prefetch_read_slice(&self.data.as_ref()[range]);
     }
 
     fn iter<'a>(&'a self) -> impl Iterator<Item = Q::EncodedVector<'a>> {
@@ -223,10 +222,6 @@ where
     }
 }
 
-#[cfg(feature = "dotvbyte")]
-use crate::datasets::sparse_dataset::sparse_dot_vbyte_dataset::dot_vbyte_fixedu8::StreamVbyteFixedu8;
-
-#[cfg(feature = "dotvbyte")]
 impl<QIn> From<crate::datasets::sparse_dataset::SparseDataset<QIn>>
     for PackedDataset<crate::quantizers::dotvbyte_fixedu8::DotVByteFixedU8Quantizer>
 where
@@ -245,12 +240,10 @@ where
         use crate::quantizers::Quantizer;
         use crate::quantizers::SparseQuantizer;
         use crate::quantizers::sparse_scalar::ScalarSparseQuantizer;
-        use crate::{DotProduct, FixedU8Q, SparseVector1D, Vector1D};
-        use rusty_perm::PermApply as _;
-        use rusty_perm::PermFromSorting as _;
+        use crate::{DotProduct, FixedU8Q};
 
         let dim = dataset.output_dim();
-        let mut dotvbyte_quantizer =
+        let dotvbyte_quantizer =
             <crate::quantizers::dotvbyte_fixedu8::DotVByteFixedU8Quantizer as Quantizer>::new(
                 dim, dim,
             );
@@ -268,71 +261,31 @@ where
 
         let mut offsets: Vec<usize> = Vec::with_capacity(dataset.len() + 1);
         offsets.push(0);
-        let mut encoded_u8: Vec<u8> = Vec::new();
+        let mut data = Vec::with_capacity(dataset.nnz() / 3); // overallocate, estimated 21 bits per entry
 
-        // TODO: we have two datasets in parallel here. We could convert in place, but this is not easy with current API.
         for v in dataset.iter() {
-            let components: &[u16] = v.components_as_slice();
-            let values_in: &[QIn::OutputValueType] = v.values_as_slice();
+            let v_fixedu8 = scalar.quantize_vector(v); // convert to FixedU8Q representation
 
-            // Step 1: quantize sparse values to FixedU8Q (same components).
-            let mut q_components: Vec<u16> = Vec::with_capacity(components.len());
-            let mut q_values: Vec<FixedU8Q> = Vec::with_capacity(values_in.len());
-            scalar.extend_with_encode(
-                SparseVector1D::new(components, values_in),
-                &mut q_components,
-                &mut q_values,
-            );
+            dotvbyte_quantizer.extend_with_encode(v_fixedu8, &mut data);
 
-            // XXXXX_TODO: consider doing this directly in push_posting to avoid allocations
-            let mut q_values: Vec<_> = q_values.into_iter().map(|v| v.to_bits()).collect(); // comvert to u8 representation
-
-            // Step 2: If needed, remap components according to DotVByte quantizer mapping.
-            let mut q_components =
-                if let Some(component_mapping) = &dotvbyte_quantizer.component_mapping() {
-                    q_components
-                        .iter()
-                        .map(|&c| component_mapping[c as usize])
-                        .collect::<Vec<u16>>()
-                } else {
-                    q_components
-                };
-
-            //XXXXX_TODO: the permutation is applied inside push_posting now. move this code?
-            // if dotvbyte_quantizer.component_mapping().is_some() {
-            //     let permutation = rusty_perm::PermD::from_sort(q_components.as_slice());
-            //     permutation.apply(q_values.as_mut_slice()).unwrap();
-            //     permutation.apply(q_components.as_mut_slice()).unwrap();
-            // }
-
-            // Step 3: pack into DotVByteFixedU8 representation.
-            // dotvbyte_quantizer
-            //     .extend_with_encode(SparseVector1D::new(&q_components, &q_values), &mut data);
-
-            StreamVbyteFixedu8::push_posting(&mut encoded_u8, &mut q_components, &mut q_values);
-            assert!(
-                encoded_u8.len() % std::mem::size_of::<u64>() == 0,
-                "Encoded data length must be multiple of 8 bytes."
-            );
-
-            offsets.push(encoded_u8.len() / std::mem::size_of::<u64>());
+            offsets.push(data.len());
         }
 
-        // We have to reallocate to guarantee alignment, Rust is currently really bad at these kinds of things.
-        assert!(
-            encoded_u8.len() % std::mem::size_of::<u64>() == 0,
-            "Encoded data length must be multiple of 8 bytes."
-        );
-        let mut data = Vec::with_capacity(encoded_u8.len() / std::mem::size_of::<u64>());
+        // // We have to reallocate to guarantee alignment, Rust is currently really bad at these kinds of things.
+        // assert!(
+        //     data.len() % std::mem::size_of::<u64>() == 0,
+        //     "Encoded data length must be multiple of 8 bytes."
+        // );
+        // let mut data = Vec::with_capacity(encoded_u8.len() / std::mem::size_of::<u64>());
 
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                encoded_u8.as_mut_ptr(),
-                data.spare_capacity_mut().as_mut_ptr() as *mut u8,
-                encoded_u8.len(),
-            );
-            data.set_len(data.capacity());
-        };
+        // unsafe {
+        //     std::ptr::copy_nonoverlapping(
+        //         encoded_u8.as_mut_ptr(),
+        //         data.spare_capacity_mut().as_mut_ptr() as *mut u8,
+        //         encoded_u8.len(),
+        //     );
+        //     data.set_len(data.capacity());
+        // };
 
         Self {
             offsets: offsets.into_boxed_slice(),
@@ -410,14 +363,16 @@ mod tests {
         }
 
         let quantizer = <TestPackedQuantizer as crate::quantizers::Quantizer>::new(0, 0);
-        let dataset =
-            PackedDatasetGeneric::from_raw(vec![0_usize, 3, 5], vec![1_u64, 2, 3, 4, 5], quantizer);
+        let dataset = PackedDatasetGeneric::from_raw_parts(
+            vec![0_usize, 3, 5],
+            vec![1_u64, 2, 3, 4, 5],
+            quantizer,
+        );
         assert_eq!(dataset.len(), 2);
-        assert_eq!(dataset.get(0).as_slice(), &[1, 2, 3]);
-        assert_eq!(dataset.get(1).as_slice(), &[4, 5]);
+        assert_eq!(dataset.get(dataset.range_from_id(0)).as_slice(), &[1, 2, 3]);
+        assert_eq!(dataset.get(dataset.range_from_id(1)).as_slice(), &[4, 5]);
     }
 
-    #[cfg(feature = "dotvbyte")]
     #[test]
     fn conversion_and_dot_product() {
         use crate::datasets::GrowableDataset;
@@ -456,8 +411,12 @@ mod tests {
         let query = SparseVector1D::new(vec![1_u16, 10, 11], vec![2.0_f32, 3.0, 4.0]);
         let evaluator = dataset.quantizer().get_query_evaluator(&query);
 
-        let d0 = evaluator.compute_distance(dataset.get(0)).distance();
-        let d1 = evaluator.compute_distance(dataset.get(1)).distance();
+        let d0 = evaluator
+            .compute_distance(dataset.get(dataset.range_from_id(0)))
+            .distance();
+        let d1 = evaluator
+            .compute_distance(dataset.get(dataset.range_from_id(1)))
+            .distance();
 
         let expected0 = FixedU8Q::from_f32_saturating(1.5).to_f32().unwrap() * 2.0
             + FixedU8Q::from_f32_saturating(2.0).to_f32().unwrap() * 3.0;

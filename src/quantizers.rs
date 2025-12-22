@@ -6,7 +6,6 @@ use crate::{DenseVector1D, SparseVector1D, Vector1D, distances::Distance};
 
 pub mod dense_scalar;
 pub mod sparse_scalar;
-#[cfg(feature = "dotvbyte")]
 pub mod dotvbyte_fixedu8;
 
 /// Marker trait for types that are valid query vectors for a given quantizer `Q`.
@@ -35,7 +34,7 @@ where
 {
 }
 
-impl<'a, Q, T> QueryVectorFor<Q> for &'a T
+impl<Q, T> QueryVectorFor<Q> for &T
 where
     Q: Quantizer,
     T: QueryVectorFor<Q> + ?Sized,
@@ -57,8 +56,7 @@ pub trait Quantizer: Sized {
     type OutputValueType: ValueTypeTrait;
     type OutputComponentType: ComponentTypeTrait;
 
-    /// TODO: Do we need these associated types for input and query vector types as a shorthand?
-
+    // TODO: Do we need these associated types for input and query vector types as a shorthand?
     // type InputVectorType: Vector1D<ValueType = Self::InputValueType, ComponentType = Self::InputComponentType>;
     // type QueryVectorType: Vector1D<ValueType = Self::QueryValueType, ComponentType = Self::QueryComponentType>;
 
@@ -138,6 +136,23 @@ pub trait DenseQuantizer:
         values: &mut ValueContainer,
     ) where
         ValueContainer: Extend<Self::OutputValueType>;
+
+    /// Quantize an input dense vector into owned output values.
+    #[inline]
+    fn quantize_vector<AV>(
+        &self,
+        input_vector: DenseVector1D<Self::InputValueType, AV>,
+    ) -> DenseVector1D<Self::OutputValueType, Vec<Self::OutputValueType>>
+    where
+        AV: AsRef<[Self::InputValueType]>,
+    {
+        let values = input_vector.values_as_slice();
+        let mut out_values = Vec::with_capacity(values.len());
+
+        self.extend_with_encode(DenseVector1D::new(values), &mut out_values);
+
+        DenseVector1D::new(out_values)
+    }
 }
 
 pub trait SparseQuantizer: Quantizer {
@@ -155,4 +170,39 @@ pub trait SparseQuantizer: Quantizer {
     ) where
         ValueContainer: Extend<Self::OutputValueType>,
         ComponentContainer: Extend<Self::OutputComponentType>;
+
+    /// Quantize an input sparse vector into owned output components/values.
+    #[inline]
+    fn quantize_vector<AC, AV>(
+        &self,
+        input_vector: SparseVector1D<
+            Self::InputComponentType,
+            Self::InputValueType,
+            AC,
+            AV,
+        >,
+    ) -> SparseVector1D<
+        Self::OutputComponentType,
+        Self::OutputValueType,
+        Vec<Self::OutputComponentType>,
+        Vec<Self::OutputValueType>,
+    >
+    where
+        AC: AsRef<[Self::InputComponentType]>,
+        AV: AsRef<[Self::InputValueType]>,
+    {
+        let components = input_vector.components_as_slice();
+        let values = input_vector.values_as_slice();
+
+        let mut out_components = Vec::with_capacity(components.len());
+        let mut out_values = Vec::with_capacity(values.len());
+
+        self.extend_with_encode(
+            SparseVector1D::new(components, values),
+            &mut out_components,
+            &mut out_values,
+        );
+
+        SparseVector1D::new(out_components, out_values)
+    }
 }
