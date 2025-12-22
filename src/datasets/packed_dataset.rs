@@ -22,6 +22,24 @@ pub type PackedDataset<Q> =
 /// - `offsets.len() == len() + 1`
 /// - `offsets[0] == 0`
 /// - vector `i` lives in `data[offsets[i]..offsets[i+1]]`
+/// Packed dataset storing variable-length encodings with offsets.
+///
+/// # Example
+/// ```
+/// use crate::{
+///     Dataset, DotProduct, DotVByteFixedU8Quantizer, PackedDataset, PlainSparseDatasetGrowable,
+///     PlainSparseQuantizer, SparseVector1D,
+/// };
+///
+/// let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);
+/// let mut sparse = PlainSparseDatasetGrowable::new(quantizer);
+/// sparse.push(SparseVector1D::new(vec![1_u16, 3], vec![1.0, 2.0]));
+///
+/// let packed: PackedDataset<DotVByteFixedU8Quantizer> = sparse.into();
+/// let range = packed.range_from_id(0);
+/// let v = packed.get_by_range(range);
+/// assert!(!v.as_slice().is_empty());
+/// ```
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct PackedDatasetGeneric<Q, Offsets, Data>
 where
@@ -175,7 +193,7 @@ where
     }
 
     #[inline]
-    fn get<'a>(&'a self, range: std::ops::Range<usize>) -> Q::EncodedVector<'a> {
+    fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> Q::EncodedVector<'a> {
         let slice = &self.data.as_ref()[range];
         Q::EncodedVector::from_slice(slice)
     }
@@ -369,8 +387,8 @@ mod tests {
             quantizer,
         );
         assert_eq!(dataset.len(), 2);
-        assert_eq!(dataset.get(dataset.range_from_id(0)).as_slice(), &[1, 2, 3]);
-        assert_eq!(dataset.get(dataset.range_from_id(1)).as_slice(), &[4, 5]);
+        assert_eq!(dataset.get(0).as_slice(), &[1, 2, 3]);
+        assert_eq!(dataset.get(1).as_slice(), &[4, 5]);
     }
 
     #[test]
@@ -412,10 +430,10 @@ mod tests {
         let evaluator = dataset.quantizer().get_query_evaluator(&query);
 
         let d0 = evaluator
-            .compute_distance(dataset.get(dataset.range_from_id(0)))
+            .compute_distance(dataset.get(0))
             .distance();
         let d1 = evaluator
-            .compute_distance(dataset.get(dataset.range_from_id(1)))
+            .compute_distance(dataset.get(1))
             .distance();
 
         let expected0 = FixedU8Q::from_f32_saturating(1.5).to_f32().unwrap() * 2.0

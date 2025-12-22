@@ -18,6 +18,22 @@ pub type DenseDatasetGrowable<Q> = DenseDatasetGeneric<Q, Vec<<Q as Quantizer>::
 // Implementation of a (immutable) sparse dataset.
 pub type DenseDataset<Q> = DenseDatasetGeneric<Q, Box<[<Q as Quantizer>::OutputValueType]>>;
 
+/// Dense dataset storing fixed-length vectors in a flat array.
+///
+/// # Example
+/// ```
+/// use crate::{Dataset, DenseDataset, DenseVector1D, DotProduct, GrowableDataset, PlainDenseQuantizer};
+/// use crate::dense_dataset::DenseDatasetGrowable;
+///
+/// let quantizer = PlainDenseQuantizer::<f32, DotProduct>::new(3);
+/// let mut dataset = DenseDatasetGrowable::new(quantizer);
+/// dataset.push(DenseVector1D::new(vec![1.0, 0.0, 2.0]));
+///
+/// let frozen: DenseDataset<_> = dataset.into();
+/// let range = frozen.range_from_id(0);
+/// let v = frozen.get_by_range(range);
+/// assert_eq!(v.values_as_slice(), &[1.0, 0.0, 2.0]);
+/// ```
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct DenseDatasetGeneric<Q, Data>
 where
@@ -118,7 +134,7 @@ where
     }
 
     #[inline]
-    fn get<'a>(&'a self, range: std::ops::Range<usize>) -> Q::EncodedVector<'a> {
+    fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> Q::EncodedVector<'a> {
         DenseVector1D::new(&self.data.as_ref()[range])
     }
 

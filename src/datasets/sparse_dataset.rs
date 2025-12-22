@@ -48,6 +48,23 @@ pub type SparseDataset<Q> = SparseDatasetGeneric<
     Box<[<Q as Quantizer>::OutputValueType]>,
 >;
 
+/// Sparse dataset storing variable-length vectors with offsets.
+///
+/// # Example
+/// ```
+/// use crate::{Dataset, DotProduct, GrowableDataset, PlainSparseDataset, PlainSparseQuantizer, SparseVector1D};
+/// use crate::sparse_dataset::SparseDatasetGrowable;
+///
+/// let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);
+/// let mut dataset = SparseDatasetGrowable::new(quantizer);
+/// dataset.push(SparseVector1D::new(vec![1_u16, 3], vec![1.0, 2.0]));
+///
+/// let frozen: PlainSparseDataset<u16, f32, DotProduct> = dataset.into();
+/// let range = frozen.range_from_id(0);
+/// let v = frozen.get_by_range(range);
+/// assert_eq!(v.components_as_slice(), &[1_u16, 3]);
+/// assert_eq!(v.values_as_slice(), &[1.0, 2.0]);
+/// ```
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct SparseDatasetGeneric<Q, O, AC, AV>
 where
@@ -120,13 +137,12 @@ where
     /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
     /// dataset.push(SparseVector1D::new(vec![1, 3], vec![4.0, 5.0]));
     ///
-    /// let range = dataset.range_from_id(1);
-    /// let v = dataset.get(range);
+    /// let v = dataset.get(1);
     /// assert_eq!(v.components_as_slice(), &[1, 3]);
     /// assert_eq!(v.values_as_slice(), &[4.0, 5.0]);
     /// ```
     #[inline]
-    fn get<'a>(&'a self, range: std::ops::Range<usize>) -> Q::EncodedVector<'a> {
+    fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> Q::EncodedVector<'a> {
         unsafe { assert_unchecked(self.components.as_ref().len() == self.values.as_ref().len()) };
 
         let v_components = &self.components.as_ref()[range.clone()];
@@ -206,12 +222,11 @@ where
     /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
     ///
-    /// let range = dataset.range_from_id(0);
-    /// dataset.prefetch(range);
+    /// dataset.prefetch(dataset.range_from_id(0));
     /// ```
     #[inline]
     fn prefetch(&self, range: std::ops::Range<usize>) {
-        let sparse_vector = self.get(range);
+        let sparse_vector = self.get_by_range(range);
 
         prefetch_read_slice(sparse_vector.components_as_slice());
         prefetch_read_slice(sparse_vector.values_as_slice());

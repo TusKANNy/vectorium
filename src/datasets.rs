@@ -51,6 +51,21 @@ pub type Result<D> = ResultGeneric<D, VectorId>;
 ///
 /// We recommend an indexing data structure (e.g., Seismic, IVF, HNSW) to
 /// store internally (a compact version) of ranges instead of VectorIds.
+///
+/// # Example
+/// ```
+/// use crate::{
+///     Dataset, DenseVector1D, DotProduct, GrowableDataset, PlainDenseDatasetGrowable,
+///     PlainDenseQuantizer,
+/// };
+///
+/// let quantizer = PlainDenseQuantizer::<f32, DotProduct>::new(3);
+/// let mut dataset = PlainDenseDatasetGrowable::new(quantizer);
+/// dataset.push(DenseVector1D::new(vec![1.0, 0.0, 2.0]));
+///
+/// let v = dataset.get(0);
+/// assert_eq!(v.values_as_slice(), &[1.0, 0.0, 2.0]);
+/// ```
 pub trait Dataset<Q>: SpaceUsage
 where
     Q: Quantizer,
@@ -87,8 +102,15 @@ where
 
     fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId;
 
-    /// Get the representation of the vector with the given key.
-    fn get<'a>(&'a self, range: std::ops::Range<usize>) -> Q::EncodedVector<'a>;
+    /// Get the representation of the vector with the given id.
+    #[inline]
+    fn get<'a>(&'a self, id: VectorId) -> Q::EncodedVector<'a> {
+        let range = self.range_from_id(id);
+        self.get_by_range(range)
+    }
+
+    /// Get the representation of the vector with the given range.
+    fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> Q::EncodedVector<'a>;
 
     fn prefetch(&self, range: std::ops::Range<usize>);
 
@@ -128,6 +150,20 @@ pub trait GrowableDataset<Q>: Dataset<Q>
 where
     Q: Quantizer,
 {
+    /// Growable dataset API.
+    ///
+    /// # Example
+    /// ```
+    /// use crate::{
+    ///     DenseVector1D, DotProduct, GrowableDataset, PlainDenseDatasetGrowable, PlainDenseQuantizer,
+    /// };
+    ///
+    /// let quantizer = PlainDenseQuantizer::<f32, DotProduct>::new(2);
+    /// let mut dataset = PlainDenseDatasetGrowable::new(quantizer);
+    /// dataset.push(DenseVector1D::new(vec![1.0, 2.0]));
+    /// dataset.push(DenseVector1D::new(vec![3.0, 4.0]));
+    /// assert_eq!(dataset.len(), 2);
+    /// ```
     /// Create a new growable dataset with the given quantizer and dimensionality.
     fn new(quantizer: Q) -> Self;
 

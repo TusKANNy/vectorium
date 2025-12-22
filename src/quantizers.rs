@@ -5,8 +5,8 @@ use crate::num_marker::DenseComponent;
 use crate::{DenseVector1D, SparseVector1D, Vector1D, distances::Distance};
 
 pub mod dense_scalar;
-pub mod sparse_scalar;
 pub mod dotvbyte_fixedu8;
+pub mod sparse_scalar;
 
 /// Marker trait for types that are valid query vectors for a given quantizer `Q`.
 ///
@@ -55,10 +55,6 @@ pub trait Quantizer: Sized {
     type InputComponentType: ComponentTypeTrait;
     type OutputValueType: ValueTypeTrait;
     type OutputComponentType: ComponentTypeTrait;
-
-    // TODO: Do we need these associated types for input and query vector types as a shorthand?
-    // type InputVectorType: Vector1D<ValueType = Self::InputValueType, ComponentType = Self::InputComponentType>;
-    // type QueryVectorType: Vector1D<ValueType = Self::QueryValueType, ComponentType = Self::QueryComponentType>;
 
     /// The query evaluator type for this quantizer and distance.
     ///
@@ -138,6 +134,17 @@ pub trait DenseQuantizer:
         ValueContainer: Extend<Self::OutputValueType>;
 
     /// Quantize an input dense vector into owned output values.
+    ///
+    /// # Example
+    /// ```
+    /// use crate::quantizers::DenseQuantizer;
+    /// use crate::{DenseVector1D, DotProduct, PlainDenseQuantizer};
+    ///
+    /// let quantizer = PlainDenseQuantizer::<half::f16, DotProduct>::new(3);
+    /// let v = DenseVector1D::new(vec![1.0_f32, 0.0, 2.0]);
+    /// let q = quantizer.quantize_vector(v);
+    /// assert_eq!(q.values_as_slice().len(), 3);
+    /// ```
     #[inline]
     fn quantize_vector<AV>(
         &self,
@@ -172,15 +179,22 @@ pub trait SparseQuantizer: Quantizer {
         ComponentContainer: Extend<Self::OutputComponentType>;
 
     /// Quantize an input sparse vector into owned output components/values.
+    ///
+    /// # Example
+    /// ```
+    /// use crate::quantizers::SparseQuantizer;
+    /// use crate::{DotProduct, PlainSparseQuantizer, SparseVector1D};
+    ///
+    /// let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);
+    /// let v = SparseVector1D::new(vec![1_u16, 3], vec![1.0, 2.0]);
+    /// let q = quantizer.quantize_vector(v);
+    /// assert_eq!(q.components_as_slice(), &[1_u16, 3]);
+    /// assert_eq!(q.values_as_slice(), &[1.0, 2.0]);
+    /// ```
     #[inline]
     fn quantize_vector<AC, AV>(
         &self,
-        input_vector: SparseVector1D<
-            Self::InputComponentType,
-            Self::InputValueType,
-            AC,
-            AV,
-        >,
+        input_vector: SparseVector1D<Self::InputComponentType, Self::InputValueType, AC, AV>,
     ) -> SparseVector1D<
         Self::OutputComponentType,
         Self::OutputValueType,
