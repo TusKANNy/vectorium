@@ -1,3 +1,6 @@
+use crate::{ComponentType, ValueType, Vector1D};
+use rgb::forward::Doc;
+
 #[inline]
 pub fn prefetch_read_slice<T>(data: &[T]) {
     let ptr = data.as_ptr() as *const u8;
@@ -31,3 +34,59 @@ pub fn prefetch_read_slice<T>(data: &[T]) {
 //         core::intrinsics::prefetch_read_data::<_, 1>(ptr.wrapping_add(i));
 //     }
 // }
+
+/// Compute a permutation of components using recursive graph bisection.
+/// Components that often appear together in documents will be grouped close together.
+pub fn permute_graph_bisection<C, V, InputVector>(
+    dim: usize,
+    vectors: impl Iterator<Item = InputVector>,
+) -> Box<[usize]>
+where
+    InputVector: Vector1D<ComponentType = C, ValueType = V>,
+    C: ComponentType,
+    V: ValueType,
+{
+    // One Doc for each component. RGB's terminology is the opposite of what we need for SparseVectors.
+    let mut components = Vec::with_capacity(dim);
+    for component_id in 0..dim {
+        components.push(Doc {
+            terms: Vec::with_capacity(256), // initial estimate for uniq terms in doc
+            org_id: component_id as u32,
+            gain: 0.0,
+            leaf_id: -1,
+        });
+    }
+
+    let mut doc_count = 0;
+    for (doc_id, vector) in vectors.enumerate() {
+        doc_count = doc_id + 1;
+        for &component_id in vector.components_as_slice().iter() {
+            let component_idx: usize = component_id.as_();
+            components[component_idx].terms.push(doc_id as u32);
+        }
+    }
+
+    const ITERATIONS: usize = 20;
+    const MIN_PARTITION_SIZE: usize = 16;
+    const MAX_DEPTH: usize = 100;
+    const PARALLEL_SWITCH: usize = 10;
+
+    rgb::recursive_graph_bisection(
+        &mut components,
+        doc_count,
+        ITERATIONS,
+        MIN_PARTITION_SIZE,
+        MAX_DEPTH,
+        PARALLEL_SWITCH,
+        1,
+        true,
+        1,
+    );
+
+    let mut perm = vec![0usize; components.len()];
+    for (new_id, comp) in components.iter().enumerate() {
+        perm[comp.org_id as usize] = new_id;
+    }
+
+    perm.into_boxed_slice()
+}

@@ -6,12 +6,13 @@ mod swizzle;
 use crate::distances::DotProduct;
 use crate::packed_vector::PackedVector;
 use crate::quantizers::{PackedQuantizer, Quantizer, QueryEvaluator, QueryVectorFor};
-use crate::{FixedU8Q, SpaceUsage, SparseVector1D, Vector1D};
+use crate::{ComponentType, FixedU8Q, SpaceUsage, SparseVector1D, ValueType, Vector1D};
 
 use rusty_perm::PermApply as _;
 use rusty_perm::PermFromSorting as _;
 
 use crate::quantizers::dotvbyte_fixedu8::swizzle::*;
+use crate::utils::permute_graph_bisection;
 use std::simd::StdFloat;
 use std::simd::num::{SimdFloat, SimdUint};
 
@@ -21,7 +22,6 @@ use std::{
 };
 
 use bytemuck::try_cast_slice;
-use num_traits::ToPrimitive;
 use rusty_perm::*;
 
 /// Quantizer for DotVByte-packed sparse vectors with `FixedU8Q` values.
@@ -145,8 +145,15 @@ impl Quantizer for DotVByteFixedU8Quantizer {
         self.dim
     }
 
-    fn train<'a>(&mut self, _training_data: impl Iterator<Item = Self::EncodedVector<'a>>) {
-        todo!("learn optional component remapping to improve dotvbyte compression");
+    fn train<InputVector>(&mut self, training_data: impl Iterator<Item = InputVector>)
+    where
+        InputVector: Vector1D,
+        InputVector::ComponentType: ComponentType,
+        InputVector::ValueType: ValueType,
+    {
+        let permutation = permute_graph_bisection(self.input_dim(), training_data);
+        let component_mapping: Vec<u16> = permutation.iter().map(|i| *i as u16).collect();
+        self.component_mapping = Some(component_mapping.into_boxed_slice());
     }
 }
 
@@ -196,7 +203,6 @@ impl QueryEvaluator<DotVByteFixedU8Quantizer> for DotVByteFixedU8QueryEvaluator<
         &self,
         vector: <DotVByteFixedU8Quantizer as Quantizer>::EncodedVector<'_>,
     ) -> <DotVByteFixedU8Quantizer as Quantizer>::Distance {
-        let _packed_words: &[u64] = vector.as_slice();
         let dotvbyte_view = unsafe { DotVbyteFixedu8::from_unchecked_slice(vector.as_slice()) };
         DotProduct::from(dotvbyte_view.dot_product(&self.dense_query))
     }

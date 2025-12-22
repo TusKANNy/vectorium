@@ -72,6 +72,18 @@ where
 {
     fn quantizer(&self) -> &Q;
 
+    /// Get a query evaluator for the given query vector.
+    #[inline]
+    fn get_query_evaluator<'a, QueryVector>(
+        &'a self,
+        query: &'a QueryVector,
+    ) -> Q::Evaluator<'a>
+    where
+        QueryVector: QueryVectorFor<Q> + ?Sized,
+    {
+        self.quantizer().get_query_evaluator(query)
+    }
+
     fn shape(&self) -> (usize, usize) {
         (self.len(), self.output_dim())
     }

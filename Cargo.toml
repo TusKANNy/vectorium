@@ -31,6 +31,7 @@ bytemuck = { version = "1.23", features = [
     "nightly_portable_simd",
 ] }
 rusty-perm = "0.2.0"
+rgb = { git = "https://github.com/rossanoventurini/enhanced-graph-bisection.git" } 
 
 [profile.release]
 opt-level = 3

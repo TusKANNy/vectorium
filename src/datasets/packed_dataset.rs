@@ -51,6 +51,7 @@ where
     offsets: Offsets,
     data: Data,
     quantizer: Q,
+    nnz: usize,
 }
 
 impl<Q, Offsets, Data> PackedDatasetGeneric<Q, Offsets, Data>
@@ -60,30 +61,6 @@ where
     Data: AsRef<[Q::EncodingType]>,
     for<'a> Q::EncodedVector<'a>: PackedEncoded<'a, Q::EncodingType>,
 {
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn from_raw_parts(offsets: Offsets, data: Data, quantizer: Q) -> Self {
-        let offsets_ref = offsets.as_ref();
-        assert!(!offsets_ref.is_empty(), "offsets must contain at least [0]");
-        assert_eq!(offsets_ref[0], 0, "offsets[0] must be 0");
-        assert!(
-            offsets_ref.windows(2).all(|w| w[0] <= w[1]),
-            "offsets must be non-decreasing"
-        );
-        let total = *offsets_ref.last().unwrap();
-        assert_eq!(
-            total,
-            data.as_ref().len(),
-            "last offset must equal data length"
-        );
-
-        Self {
-            offsets,
-            data,
-            quantizer,
-        }
-    }
-
     #[inline]
     pub fn offsets(&self) -> &[usize] {
         self.offsets.as_ref()
@@ -111,28 +88,30 @@ where
     }
 }
 
-impl<Q> PackedDatasetGeneric<Q, Vec<usize>, Vec<Q::EncodingType>>
-where
-    Q: PackedQuantizer,
-    for<'a> Q::EncodedVector<'a>: PackedEncoded<'a, Q::EncodingType>,
-{
-    #[inline]
-    pub fn new_growable(quantizer: Q) -> Self {
-        Self {
-            offsets: vec![0],
-            data: Vec::new(),
-            quantizer,
-        }
-    }
+// impl<Q> PackedDatasetGeneric<Q, Vec<usize>, Vec<Q::EncodingType>>
+// where
+//     Q: PackedQuantizer,
+//     for<'a> Q::EncodedVector<'a>: PackedEncoded<'a, Q::EncodingType>,
+// {
+//     #[inline]
+//     pub fn new_growable(quantizer: Q) -> Self {
+//         Self {
+//             offsets: vec![0],
+//             data: Vec::new(),
+//             quantizer,
+//             nnz: 0,
+//         }
+//     }
 
-    /// Push an already-packed representation.
-    #[inline]
-    pub fn push_encoded(&mut self, encoded: impl AsRef<[Q::EncodingType]>) {
-        let encoded = encoded.as_ref();
-        self.data.extend_from_slice(encoded);
-        self.offsets.push(self.data.len());
-    }
-}
+//     /// Push an already-packed representation.
+//     #[inline]
+//     pub fn push_encoded(&mut self, encoded: impl AsRef<[Q::EncodingType]>) {
+//         let encoded = encoded.as_ref();
+//         self.data.extend_from_slice(encoded);
+//         self.offsets.push(self.data.len());
+//         self.nnz += XXX; (how to compute nnz?)
+//     }
+// }
 
 impl<Q, Offsets, Data> SpaceUsage for PackedDatasetGeneric<Q, Offsets, Data>
 where
@@ -169,7 +148,7 @@ where
 
     #[inline]
     fn nnz(&self) -> usize {
-        self.data.as_ref().len()
+        self.nnz
     }
 
     #[inline]
@@ -222,6 +201,7 @@ where
             offsets: dataset.offsets.into_boxed_slice(),
             data: dataset.data.into_boxed_slice(),
             quantizer: dataset.quantizer,
+            nnz: dataset.nnz,
         }
     }
 }
@@ -236,6 +216,7 @@ where
             offsets: dataset.offsets.to_vec(),
             data: dataset.data.to_vec(),
             quantizer: dataset.quantizer,
+            nnz: dataset.nnz,
         }
     }
 }
@@ -261,15 +242,15 @@ where
         use crate::{DotProduct, FixedU8Q};
 
         let dim = dataset.output_dim();
-        let dotvbyte_quantizer =
+        let mut dotvbyte_quantizer =
             <crate::quantizers::dotvbyte_fixedu8::DotVByteFixedU8Quantizer as Quantizer>::new(
                 dim, dim,
             );
 
-        // NOTE: `Quantizer::train` consumes `Self::EncodedVector` items. Training a DotVByte
-        // quantizer on a sparse dataset requires a (potentially) two-pass conversion (or a
+        // NOTE: `Quantizer::train` consumes input vectors. Training a DotVByte quantizer on a
+        // sparse dataset requires a (potentially) two-pass conversion (or a
         // dedicated training iterator) and is left for later.
-        // TODO! dotvbyte_quantizer.train(std::iter::empty());
+        dotvbyte_quantizer.train(dataset.iter());
 
         // Use a scalar quantizer to map values from `QIn::OutputValueType` into `FixedU8Q`.
         let scalar =
@@ -289,26 +270,11 @@ where
             offsets.push(data.len());
         }
 
-        // // We have to reallocate to guarantee alignment, Rust is currently really bad at these kinds of things.
-        // assert!(
-        //     data.len() % std::mem::size_of::<u64>() == 0,
-        //     "Encoded data length must be multiple of 8 bytes."
-        // );
-        // let mut data = Vec::with_capacity(encoded_u8.len() / std::mem::size_of::<u64>());
-
-        // unsafe {
-        //     std::ptr::copy_nonoverlapping(
-        //         encoded_u8.as_mut_ptr(),
-        //         data.spare_capacity_mut().as_mut_ptr() as *mut u8,
-        //         encoded_u8.len(),
-        //     );
-        //     data.set_len(data.capacity());
-        // };
-
         Self {
             offsets: offsets.into_boxed_slice(),
             data: data.into_boxed_slice(),
             quantizer: dotvbyte_quantizer,
+            nnz: dataset.nnz(),
         }
     }
 }
@@ -429,12 +395,8 @@ mod tests {
         let query = SparseVector1D::new(vec![1_u16, 10, 11], vec![2.0_f32, 3.0, 4.0]);
         let evaluator = dataset.quantizer().get_query_evaluator(&query);
 
-        let d0 = evaluator
-            .compute_distance(dataset.get(0))
-            .distance();
-        let d1 = evaluator
-            .compute_distance(dataset.get(1))
-            .distance();
+        let d0 = evaluator.compute_distance(dataset.get(0)).distance();
+        let d1 = evaluator.compute_distance(dataset.get(1)).distance();
 
         let expected0 = FixedU8Q::from_f32_saturating(1.5).to_f32().unwrap() * 2.0
             + FixedU8Q::from_f32_saturating(2.0).to_f32().unwrap() * 3.0;
