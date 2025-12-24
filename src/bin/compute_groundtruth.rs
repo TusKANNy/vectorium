@@ -7,7 +7,7 @@ use half::{bf16, f16};
 use indicatif::{ParallelProgressIterator, ProgressIterator, ProgressStyle};
 use rayon::iter::ParallelIterator;
 
-use vectorium::datasets::Result as DatasetResult;
+use vectorium::dataset::Result as DatasetResult;
 use vectorium::distances;
 use vectorium::readers;
 use vectorium::{Dataset, FixedU8Q, FixedU16Q, PlainSparseDataset, ScalarDenseDataset, SpaceUsage};

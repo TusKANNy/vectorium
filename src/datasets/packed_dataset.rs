@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+use crate::PackedQuantizer;
 use crate::SpaceUsage;
-use crate::datasets::{Dataset, VectorId};
 use crate::packed_vector::PackedEncoded;
-use crate::quantizers::PackedQuantizer;
 use crate::utils::prefetch_read_slice;
+use crate::{Dataset, VectorId};
 
 use rayon::prelude::*;
 
@@ -222,39 +222,37 @@ where
 }
 
 impl<QIn> From<crate::datasets::sparse_dataset::SparseDataset<QIn>>
-    for PackedDataset<crate::quantizers::dotvbyte_fixedu8::DotVByteFixedU8Quantizer>
+    for PackedDataset<crate::DotVByteFixedU8Quantizer>
 where
-    QIn: crate::quantizers::SparseQuantizer<OutputComponentType = u16> + SpaceUsage,
-    <QIn as crate::quantizers::Quantizer>::OutputValueType: crate::ValueType + crate::Float,
-    for<'a> QIn: crate::quantizers::Quantizer<
+    QIn: crate::SparseQuantizer<OutputComponentType = u16> + SpaceUsage,
+    <QIn as crate::VectorEncoder>::OutputValueType: crate::ValueType + crate::Float,
+    for<'a> QIn: crate::VectorEncoder<
             EncodedVector<'a> = crate::SparseVector1D<
                 u16,
-                <QIn as crate::quantizers::Quantizer>::OutputValueType,
+                <QIn as crate::VectorEncoder>::OutputValueType,
                 &'a [u16],
-                &'a [<QIn as crate::quantizers::Quantizer>::OutputValueType],
+                &'a [<QIn as crate::VectorEncoder>::OutputValueType],
             >,
         >,
 {
     fn from(dataset: crate::datasets::sparse_dataset::SparseDataset<QIn>) -> Self {
-        use crate::quantizers::Quantizer;
-        use crate::quantizers::SparseQuantizer;
-        use crate::quantizers::sparse_scalar::ScalarSparseQuantizer;
+        use crate::SparseQuantizer;
+        use crate::VectorEncoder;
+        use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
         use crate::{DotProduct, FixedU8Q};
 
         let dim = dataset.output_dim();
         let mut dotvbyte_quantizer =
-            <crate::quantizers::dotvbyte_fixedu8::DotVByteFixedU8Quantizer as Quantizer>::new(
-                dim, dim,
-            );
+            <crate::DotVByteFixedU8Quantizer as VectorEncoder>::new(dim, dim);
 
-        // NOTE: `Quantizer::train` consumes input vectors. Training a DotVByte quantizer on a
+        // NOTE: `VectorEncoder::train` consumes input vectors. Training a DotVByte quantizer on a
         // sparse dataset requires a (potentially) two-pass conversion (or a
         // dedicated training iterator) and is left for later.
         dotvbyte_quantizer.train(dataset.iter());
 
         // Use a scalar quantizer to map values from `QIn::OutputValueType` into `FixedU8Q`.
         let scalar =
-            <ScalarSparseQuantizer<u16, QIn::OutputValueType, FixedU8Q, DotProduct> as Quantizer>::new(
+            <ScalarSparseQuantizer<u16, QIn::OutputValueType, FixedU8Q, DotProduct> as VectorEncoder>::new(
                 dim, dim,
             );
 
@@ -288,18 +286,18 @@ mod tests {
         #[derive(Clone, Debug)]
         struct TestPackedQuantizer;
 
-        impl crate::quantizers::PackedQuantizer for TestPackedQuantizer {
+        impl crate::PackedQuantizer for TestPackedQuantizer {
             type EncodingType = u64;
         }
 
-        impl crate::quantizers::Quantizer for TestPackedQuantizer {
+        impl crate::VectorEncoder for TestPackedQuantizer {
             type Distance = crate::DotProduct;
             type QueryValueType = f32;
-            type QueryComponentType = crate::num_marker::DenseComponent;
+            type QueryComponentType = crate::numeric_markers::DenseComponent;
             type InputValueType = f32;
-            type InputComponentType = crate::num_marker::DenseComponent;
+            type InputComponentType = crate::numeric_markers::DenseComponent;
             type OutputValueType = f32;
-            type OutputComponentType = crate::num_marker::DenseComponent;
+            type OutputComponentType = crate::numeric_markers::DenseComponent;
             type Evaluator<'a>
                 = DummyEvaluator
             where
@@ -315,7 +313,7 @@ mod tests {
                 _query: &'a QueryVector,
             ) -> Self::Evaluator<'a>
             where
-                QueryVector: crate::quantizers::QueryVectorFor<Self> + ?Sized,
+                QueryVector: crate::QueryVectorFor<Self> + ?Sized,
             {
                 DummyEvaluator
             }
@@ -337,16 +335,16 @@ mod tests {
 
         struct DummyEvaluator;
 
-        impl crate::quantizers::QueryEvaluator<TestPackedQuantizer> for DummyEvaluator {
+        impl crate::QueryEvaluator<TestPackedQuantizer> for DummyEvaluator {
             fn compute_distance(
                 &self,
-                _vector: <TestPackedQuantizer as crate::quantizers::Quantizer>::EncodedVector<'_>,
+                _vector: <TestPackedQuantizer as crate::VectorEncoder>::EncodedVector<'_>,
             ) -> crate::DotProduct {
                 0.0f32.into()
             }
         }
 
-        let quantizer = <TestPackedQuantizer as crate::quantizers::Quantizer>::new(0, 0);
+        let quantizer = <TestPackedQuantizer as crate::VectorEncoder>::new(0, 0);
         let dataset = PackedDatasetGeneric::from_raw_parts(
             vec![0_usize, 3, 5],
             vec![1_u64, 2, 3, 4, 5],
@@ -359,10 +357,10 @@ mod tests {
 
     #[test]
     fn conversion_and_dot_product() {
-        use crate::datasets::GrowableDataset;
+        use crate::GrowableDataset;
+        use crate::QueryEvaluator as _;
+        use crate::VectorEncoder as _;
         use crate::distances::Distance as _;
-        use crate::quantizers::Quantizer as _;
-        use crate::quantizers::QueryEvaluator as _;
         use crate::{
             DotProduct, DotVByteFixedU8Quantizer, FixedU8Q, FromF32 as _, PlainSparseDataset,
             PlainSparseDatasetGrowable, SparseVector1D,
@@ -373,7 +371,7 @@ mod tests {
 
         let mut growable: PlainSparseDatasetGrowable<u16, f32, DotProduct> =
             PlainSparseDatasetGrowable::new(
-                <crate::PlainSparseQuantizer<u16, f32, DotProduct> as crate::quantizers::Quantizer>::new(
+                <crate::PlainSparseQuantizer<u16, f32, DotProduct> as crate::VectorEncoder>::new(
                     dim, dim,
                 ),
             );

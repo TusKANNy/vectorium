@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::SpaceUsage;
-use crate::datasets::{Dataset, GrowableDataset};
-use crate::quantizers::{DenseQuantizer, Quantizer};
+use crate::{Dataset, GrowableDataset};
+use crate::{DenseQuantizer, VectorEncoder};
 use crate::utils::prefetch_read_slice;
 use crate::{DenseVector1D, Vector1D};
 use crate::VectorId;
@@ -10,13 +10,13 @@ use crate::VectorId;
 use rayon::prelude::*;
 
 type DenseEncodedVector<'a, Q> =
-    DenseVector1D<<Q as Quantizer>::OutputValueType, &'a [<Q as Quantizer>::OutputValueType]>;
+    DenseVector1D<<Q as VectorEncoder>::OutputValueType, &'a [<Q as VectorEncoder>::OutputValueType]>;
 
 // Implementation of a growable dense dataset.
-pub type DenseDatasetGrowable<Q> = DenseDatasetGeneric<Q, Vec<<Q as Quantizer>::OutputValueType>>;
+pub type DenseDatasetGrowable<Q> = DenseDatasetGeneric<Q, Vec<<Q as VectorEncoder>::OutputValueType>>;
 
 // Implementation of a (immutable) sparse dataset.
-pub type DenseDataset<Q> = DenseDatasetGeneric<Q, Box<[<Q as Quantizer>::OutputValueType]>>;
+pub type DenseDataset<Q> = DenseDatasetGeneric<Q, Box<[<Q as VectorEncoder>::OutputValueType]>>;
 
 /// Dense dataset storing fixed-length vectors in a flat array.
 ///
@@ -38,7 +38,7 @@ pub type DenseDataset<Q> = DenseDatasetGeneric<Q, Box<[<Q as Quantizer>::OutputV
 pub struct DenseDatasetGeneric<Q, Data>
 where
     Q: DenseQuantizer,
-    for<'a> Q: Quantizer<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
+    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
     Data: AsRef<[Q::OutputValueType]>,
 {
     n_vecs: usize,
@@ -49,11 +49,11 @@ where
 impl<Q, Data> SpaceUsage for DenseDatasetGeneric<Q, Data>
 where
     Q: DenseQuantizer + SpaceUsage,
-    for<'a> Q: Quantizer<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
+    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
     Data: AsRef<[Q::OutputValueType]> + SpaceUsage,
 {
     fn space_usage_byte(&self) -> usize {
-        // Use size_of for the quantizer to avoid requiring every Quantizer to
+        // Use size_of for the quantizer to avoid requiring every VectorEncoder to
         // implement `SpaceUsage`.
         std::mem::size_of::<Self>()
             + self.quantizer.space_usage_byte()
@@ -64,7 +64,7 @@ where
 impl<Q, Data> DenseDatasetGeneric<Q, Data>
 where
     Q: DenseQuantizer,
-    for<'a> Q: Quantizer<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
+    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
     Data: AsRef<[Q::OutputValueType]>,
 {
     /// Creates a DenseDatasetGeneric from raw data.
@@ -114,7 +114,7 @@ where
 impl<Q, Data> Dataset<Q> for DenseDatasetGeneric<Q, Data>
 where
     Q: DenseQuantizer + SpaceUsage,
-    for<'a> Q: Quantizer<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
+    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
     Data: AsRef<[Q::OutputValueType]> + SpaceUsage,
     Q::OutputValueType: SpaceUsage,
 {
@@ -172,7 +172,7 @@ where
 
 // impl<'a, Q, B> DenseDatasetGeneric<Q, B>
 // where
-//     Q: Quantizer,
+//     Q: VectorEncoder,
 //     B: AsRef<[Q::OutputItem]>,
 // {
 //     #[inline]
@@ -183,7 +183,7 @@ where
 
 // impl<'a, Q> DenseDatasetGeneric<Q, Vec<Q::OutputItem>>
 // where
-//     Q: Quantizer,
+//     Q: VectorEncoder,
 // {
 //     #[inline]
 //     pub fn with_capacity(quantizer: Q, d: usize, capacity: usize) -> Self {
@@ -226,7 +226,7 @@ where
 impl<Q> GrowableDataset<Q> for DenseDatasetGeneric<Q, Vec<Q::OutputValueType>>
 where
     Q: DenseQuantizer + SpaceUsage,
-    for<'a> Q: Quantizer<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
+    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
     Q::OutputValueType: Default + SpaceUsage,
 {
     #[inline]
@@ -257,7 +257,7 @@ where
 
 // impl<Q> Extend<Q::OutputItem> for DenseDatasetGeneric<Q, Vec<Q::OutputItem>>
 // where
-//     Q: Quantizer,
+//     Q: VectorEncoder,
 // {
 //     fn extend<I: IntoIterator<Item = Q::OutputItem>>(&mut self, iter: I) {
 //         for item in iter {
@@ -270,7 +270,7 @@ where
 impl<Q> From<DenseDatasetGrowable<Q>> for DenseDataset<Q>
 where
     Q: DenseQuantizer,
-    for<'a> Q: Quantizer<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
+    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
 {
     /// Converts a mutable dense dataset into an immutable one.
     ///
@@ -282,7 +282,7 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, GrowableDataset};
     /// use vectorium::{DenseDataset, PlainDenseDatasetGrowable};
     /// use vectorium::{DenseVector1D, EuclideanDistance, PlainDenseQuantizer};
     ///
@@ -310,7 +310,7 @@ where
 impl<Q> From<DenseDataset<Q>> for DenseDatasetGrowable<Q>
 where
     Q: DenseQuantizer,
-    for<'a> Q: Quantizer<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
+    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
 {
     /// Converts an immutable sparse dataset into a mutable one.
     ///
@@ -322,7 +322,7 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, GrowableDataset};
     /// use vectorium::{DenseVector1D, EuclideanDistance, PlainDenseDataset, PlainDenseDatasetGrowable, PlainDenseQuantizer};
     ///
     /// let quantizer = PlainDenseQuantizer::<f32, EuclideanDistance>::new(4);
@@ -352,7 +352,7 @@ where
 
 // impl<'a, Q, B> IntoIterator for &'a DenseDataset<Q, B>
 // where
-//     Q: Quantizer<DatasetType = DenseDataset<Q, B>>,
+//     Q: VectorEncoder<DatasetType = DenseDataset<Q, B>>,
 //     B: AsRef<[Q::OutputItem]> + Default,
 // {
 //     type Item = DenseVector1D<&'a [Q::OutputItem]>;
@@ -366,7 +366,7 @@ where
 impl<Q, T> AsRef<[Q::OutputValueType]> for DenseDatasetGeneric<Q, T>
 where
     Q: DenseQuantizer,
-    for<'a> Q: Quantizer<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
+    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
     T: AsRef<[Q::OutputValueType]>,
 {
     fn as_ref(&self) -> &[Q::OutputValueType] {
@@ -378,7 +378,7 @@ where
 pub struct DenseDatasetIter<'a, Q>
 where
     Q: DenseQuantizer,
-    for<'b> Q: Quantizer<EncodedVector<'b> = DenseEncodedVector<'b, Q>>,
+    for<'b> Q: VectorEncoder<EncodedVector<'b> = DenseEncodedVector<'b, Q>>,
 {
     data: &'a [Q::OutputValueType],
     dim: usize,
@@ -388,7 +388,7 @@ where
 impl<'a, Q> DenseDatasetIter<'a, Q>
 where
     Q: DenseQuantizer,
-    for<'b> Q: Quantizer<EncodedVector<'b> = DenseEncodedVector<'b, Q>>,
+    for<'b> Q: VectorEncoder<EncodedVector<'b> = DenseEncodedVector<'b, Q>>,
 {
     pub fn new<Data>(dataset: &'a DenseDatasetGeneric<Q, Data>) -> Self
     where
@@ -406,7 +406,7 @@ where
 impl<'a, Q> Iterator for DenseDatasetIter<'a, Q>
 where
     Q: DenseQuantizer,
-    for<'b> Q: Quantizer<EncodedVector<'b> = DenseEncodedVector<'b, Q>>,
+    for<'b> Q: VectorEncoder<EncodedVector<'b> = DenseEncodedVector<'b, Q>>,
 {
     type Item = Q::EncodedVector<'a>;
 
@@ -424,7 +424,7 @@ where
     }
 }
 
-use crate::quantizers::dense_scalar::{ScalarDenseQuantizer, ScalarDenseSupportedDistance};
+use crate::encoders::dense_scalar::{ScalarDenseQuantizer, ScalarDenseSupportedDistance};
 use crate::{Float, ValueType};
 
 /// Conversion methods for DenseDataset

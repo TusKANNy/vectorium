@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::hint::assert_unchecked;
 
 use crate::SpaceUsage;
-use crate::datasets::{Dataset, GrowableDataset};
-use crate::quantizers::{Quantizer, SparseQuantizer};
+use crate::{Dataset, GrowableDataset};
+use crate::{VectorEncoder, SparseQuantizer};
 use crate::utils::prefetch_read_slice;
 use crate::{ComponentType, ValueType, VectorId};
 use crate::{SparseVector1D, Vector1D};
@@ -11,10 +11,10 @@ use crate::{SparseVector1D, Vector1D};
 use rayon::prelude::{IndexedParallelIterator, ParallelIterator, ParallelSlice};
 
 type SparseEncodedVector<'a, Q> = SparseVector1D<
-    <Q as Quantizer>::OutputComponentType,
-    <Q as Quantizer>::OutputValueType,
-    &'a [<Q as Quantizer>::OutputComponentType],
-    &'a [<Q as Quantizer>::OutputValueType],
+    <Q as VectorEncoder>::OutputComponentType,
+    <Q as VectorEncoder>::OutputValueType,
+    &'a [<Q as VectorEncoder>::OutputComponentType],
+    &'a [<Q as VectorEncoder>::OutputValueType],
 >;
 
 /// A growable representation of a sparse dataset.
@@ -22,11 +22,11 @@ type SparseEncodedVector<'a, Q> = SparseVector1D<
 /// # Examples
 ///
 /// ```rust
-/// use vectorium::datasets::{Dataset, GrowableDataset};
+/// use vectorium::{Dataset, GrowableDataset};
 /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer};
 ///
 /// // Create a new empty dataset
-/// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(0, 0);
+/// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::VectorEncoder>::new(0, 0);
 /// let dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
 /// assert_eq!(dataset.len(), 0);
 /// assert_eq!(dataset.nnz(), 0);
@@ -36,16 +36,16 @@ type SparseEncodedVector<'a, Q> = SparseVector1D<
 pub type SparseDatasetGrowable<Q> = SparseDatasetGeneric<
     Q,
     Vec<usize>,
-    Vec<<Q as Quantizer>::OutputComponentType>,
-    Vec<<Q as Quantizer>::OutputValueType>,
+    Vec<<Q as VectorEncoder>::OutputComponentType>,
+    Vec<<Q as VectorEncoder>::OutputValueType>,
 >;
 
 // Implementation of a (immutable) sparse dataset.
 pub type SparseDataset<Q> = SparseDatasetGeneric<
     Q,
     Box<[usize]>,
-    Box<[<Q as Quantizer>::OutputComponentType]>,
-    Box<[<Q as Quantizer>::OutputValueType]>,
+    Box<[<Q as VectorEncoder>::OutputComponentType]>,
+    Box<[<Q as VectorEncoder>::OutputValueType]>,
 >;
 
 /// Sparse dataset storing variable-length vectors with offsets.
@@ -69,7 +69,7 @@ pub type SparseDataset<Q> = SparseDatasetGeneric<
 pub struct SparseDatasetGeneric<Q, O, AC, AV>
 where
     Q: SparseQuantizer,
-    for<'a> Q: Quantizer<EncodedVector<'a> = SparseEncodedVector<'a, Q>>,
+    for<'a> Q: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, Q>>,
     O: AsRef<[usize]>,
     AC: AsRef<[Q::OutputComponentType]>,
     AV: AsRef<[Q::OutputValueType]>,
@@ -83,7 +83,7 @@ where
 impl<Q, O, AC, AV> SparseDatasetGeneric<Q, O, AC, AV>
 where
     Q: SparseQuantizer,
-    for<'a> Q: Quantizer<EncodedVector<'a> = SparseEncodedVector<'a, Q>>,
+    for<'a> Q: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, Q>>,
     O: AsRef<[usize]>,
     AC: AsRef<[Q::OutputComponentType]>,
     AV: AsRef<[Q::OutputValueType]>,
@@ -108,7 +108,7 @@ where
 impl<Q, O, AC, AV> Dataset<Q> for SparseDatasetGeneric<Q, O, AC, AV>
 where
     Q: SparseQuantizer + SpaceUsage,
-    for<'a> Q: Quantizer<EncodedVector<'a> = SparseEncodedVector<'a, Q>>,
+    for<'a> Q: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, Q>>,
     O: AsRef<[usize]> + SpaceUsage,
     AC: AsRef<[Q::OutputComponentType]> + SpaceUsage,
     AV: AsRef<[Q::OutputValueType]> + SpaceUsage,
@@ -127,11 +127,11 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, GrowableDataset};
     /// use vectorium::Vector1D;
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
-    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::VectorEncoder>::new(5, 5);
     /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     ///
     /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
@@ -214,11 +214,11 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, GrowableDataset};
     /// use vectorium::Vector1D;
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
-    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::VectorEncoder>::new(5, 5);
     /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
     ///
@@ -239,7 +239,7 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, GrowableDataset};
     /// use vectorium::Vector1D;
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
@@ -249,7 +249,7 @@ where
     ///     (vec![0_u32, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0]),
     /// ];
     ///
-    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::VectorEncoder>::new(5, 5);
     /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     /// for (c, v) in data.iter() {
     ///     dataset.push(SparseVector1D::new(c.clone(), v.clone()));
@@ -282,10 +282,10 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, GrowableDataset};
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
-    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::VectorEncoder>::new(5, 5);
     /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     ///
     /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
@@ -303,10 +303,10 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, GrowableDataset};
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
-    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::VectorEncoder>::new(5, 5);
     /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     ///
     /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
@@ -321,10 +321,10 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, GrowableDataset};
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
-    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::VectorEncoder>::new(5, 5);
     /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     ///
     /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
@@ -417,7 +417,7 @@ where
 impl<Q> From<SparseDatasetGrowable<Q>> for SparseDataset<Q>
 where
     Q: SparseQuantizer + SpaceUsage,
-    for<'a> Q: Quantizer<EncodedVector<'a> = SparseEncodedVector<'a, Q>>,
+    for<'a> Q: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, Q>>,
     Q::OutputComponentType: SpaceUsage,
     Q::OutputValueType: SpaceUsage,
 {
@@ -431,10 +431,10 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, GrowableDataset};
     /// use vectorium::{DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
-    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::VectorEncoder>::new(5, 5);
     /// let mut growable_dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     ///
     /// growable_dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
@@ -457,7 +457,7 @@ where
 impl<Q> From<SparseDataset<Q>> for SparseDatasetGrowable<Q>
 where
     Q: SparseQuantizer + SpaceUsage,
-    for<'a> Q: Quantizer<EncodedVector<'a> = SparseEncodedVector<'a, Q>>,
+    for<'a> Q: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, Q>>,
     Q::OutputComponentType: SpaceUsage,
     Q::OutputValueType: SpaceUsage,
 {
@@ -471,10 +471,10 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, GrowableDataset};
     /// use vectorium::{DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
-    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::VectorEncoder>::new(5, 5);
     /// let mut growable_dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     ///
     /// growable_dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
@@ -523,7 +523,7 @@ where
     pub fn new<Q, O, AC, AV>(dataset: &'a SparseDatasetGeneric<Q, O, AC, AV>) -> Self
     where
         Q: SparseQuantizer<OutputComponentType = C, OutputValueType = V>,
-        for<'b> Q: Quantizer<EncodedVector<'b> = SparseEncodedVector<'b, Q>>,
+        for<'b> Q: VectorEncoder<EncodedVector<'b> = SparseEncodedVector<'b, Q>>,
         O: AsRef<[usize]>,
         AC: AsRef<[C]>,
         AV: AsRef<[V]>,
@@ -540,7 +540,7 @@ where
 impl<Q> GrowableDataset<Q> for SparseDatasetGrowable<Q>
 where
     Q: SparseQuantizer + SpaceUsage,
-    for<'a> Q: Quantizer<EncodedVector<'a> = SparseEncodedVector<'a, Q>>,
+    for<'a> Q: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, Q>>,
     Q::OutputComponentType: SpaceUsage,
     Q::OutputValueType: SpaceUsage,
 {
@@ -577,10 +577,10 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, GrowableDataset};
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
     ///
-    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::VectorEncoder>::new(5, 5);
     /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     /// dataset.push(SparseVector1D::new(vec![0, 2, 4], vec![1.0, 2.0, 3.0]));
     ///
@@ -675,7 +675,7 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::datasets::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, GrowableDataset};
     /// use vectorium::datasets::sparse_dataset::SparseDatasetIter;
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D, Vector1D};
     ///
@@ -685,7 +685,7 @@ where
     ///     (vec![0_u32, 1, 2, 3], vec![1.0, 2.0, 3.0, 4.0]),
     /// ];
     ///
-    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::Quantizer>::new(5, 5);
+    /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::VectorEncoder>::new(5, 5);
     /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     /// for (c, v) in data.iter() {
     ///     dataset.push(SparseVector1D::new(c.clone(), v.clone()));
@@ -718,7 +718,7 @@ where
 impl<Q, O, AC, AV> SpaceUsage for SparseDatasetGeneric<Q, O, AC, AV>
 where
     Q: SparseQuantizer + SpaceUsage,
-    for<'a> Q: Quantizer<EncodedVector<'a> = SparseEncodedVector<'a, Q>>,
+    for<'a> Q: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, Q>>,
     O: AsRef<[usize]> + SpaceUsage,
     AC: AsRef<[Q::OutputComponentType]> + SpaceUsage,
     AV: AsRef<[Q::OutputValueType]> + SpaceUsage,

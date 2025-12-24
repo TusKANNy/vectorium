@@ -18,40 +18,46 @@ use fixed::types::extra::U8;
 pub type FixedU8Q = FixedU8<U6>;
 pub type FixedU16Q = FixedU16<U8>;
 
-pub mod space_usage;
-pub use space_usage::SpaceUsage;
+pub mod core;
+pub mod datasets;
+pub mod encoders;
+pub mod utils;
 
-pub mod num_marker;
-pub use num_marker::{Float, FromF32};
+pub use core::distances;
+pub use core::dataset as dataset;
+pub use core::packed_vector;
+pub use core::vector1d;
+pub use core::vector_encoder;
+pub use utils::numeric_markers;
+pub use utils::space_usage;
+
+pub use utils::space_usage::SpaceUsage;
+pub use utils::numeric_markers::{Float, FromF32};
 
 #[allow(non_snake_case)]
-pub mod vector1d;
-pub use vector1d::{DenseVector1D, MutableVector1D, SparseVector1D, Vector1D};
+pub use core::vector1d::{DenseVector1D, MutableVector1D, SparseVector1D, Vector1D};
 
-pub mod packed_vector;
-pub use packed_vector::{PackedEncoded, PackedVector};
+pub use core::packed_vector::{PackedEncoded, PackedVector};
 
-pub mod distances;
-pub use distances::{Distance, DotProduct, EuclideanDistance};
+pub use core::distances::{Distance, DotProduct, EuclideanDistance};
 
-pub mod quantizers;
-pub use quantizers::Quantizer;
-pub use quantizers::QueryEvaluator;
-pub use quantizers::dense_scalar::{
+pub use core::vector_encoder::{
+    DenseQuantizer, PackedQuantizer, QueryEvaluator, QueryVectorFor, SparseQuantizer, VectorEncoder,
+};
+
+pub use encoders::dense_scalar::{
     PlainDenseQuantizer, PlainDenseQuantizerDotProduct, PlainDenseQuantizerEuclidean,
     ScalarDenseQuantizer, ScalarDenseQuantizerDotProduct, ScalarDenseQuantizerEuclidean,
     ScalarDenseQuantizerSame, ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
 };
-pub use quantizers::sparse_scalar::{
+pub use encoders::sparse_scalar::{
     PlainSparseQuantizer, PlainSparseQuantizerDotProduct, ScalarSparseQuantizer,
     ScalarSparseQuantizerDotProduct, ScalarSparseQuantizerSame, ScalarSparseQueryEvaluator,
     ScalarSparseSupportedDistance,
 };
-pub use quantizers::dotvbyte_fixedu8::{DotVByteFixedU8Quantizer, DotVByteFixedU8QueryEvaluator};
+pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Quantizer, DotVByteFixedU8QueryEvaluator};
 
-pub mod datasets;
-pub use datasets::Dataset;
-pub use datasets::VectorId;
+pub use core::dataset::{Dataset, GrowableDataset, VectorId};
 pub use datasets::dense_dataset::{DenseDataset, DenseDatasetGeneric, DenseDatasetGrowable};
 pub use datasets::packed_dataset::{PackedDataset, PackedDatasetGeneric, PackedDatasetGrowable};
 pub use datasets::sparse_dataset::{SparseDataset, SparseDatasetGrowable};
@@ -72,11 +78,8 @@ pub type ScalarSparseDatasetGrowable<C, V, D> =
 pub type PlainSparseDataset<C, V, D> = SparseDataset<PlainSparseQuantizer<C, V, D>>;
 pub type PlainSparseDatasetGrowable<C, V, D> = SparseDatasetGrowable<PlainSparseQuantizer<C, V, D>>;
 
-pub mod readers;
-pub use readers::read_npy_f32;
-pub use readers::read_seismic_format;
-
-pub mod utils;
+pub use datasets::readers::{read_npy_f32, read_seismic_format};
+pub use datasets::readers as readers;
 
 /// Marker for types used as values in a dataset
 pub trait ValueType = SpaceUsage
