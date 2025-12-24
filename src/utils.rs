@@ -57,14 +57,15 @@ where
         });
     }
 
-    let mut doc_count = 0;
+
     for (doc_id, vector) in vectors.enumerate() {
-        doc_count = doc_id + 1;
         for &component_id in vector.components_as_slice().iter() {
             let component_idx: usize = component_id.as_();
             components[component_idx].terms.push(doc_id as u32);
         }
     }
+
+    let doc_count = vectors.len();
 
     const ITERATIONS: usize = 20;
     const MIN_PARTITION_SIZE: usize = 16;
@@ -83,10 +84,10 @@ where
         1,
     );
 
-    let mut perm = vec![0usize; components.len()];
+    let mut permutation = vec![0usize; components.len()];
     for (new_id, comp) in components.iter().enumerate() {
-        perm[comp.org_id as usize] = new_id;
+        permutation[comp.org_id as usize] = new_id;
     }
 
-    perm.into_boxed_slice()
+    permutation.into_boxed_slice()
 }

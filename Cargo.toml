@@ -2,6 +2,9 @@
 name = "vectorium"
 version = "0.1.0"
 edition = "2024"
+authors = [
+    "Rossano Venturini <rossano.venturini@unipi.it>"]
+readme = "README.md"
 
 [dependencies]
 indicatif = {version = "0.17.11", features = ["rayon"]}
