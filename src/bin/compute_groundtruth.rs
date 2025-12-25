@@ -4,7 +4,7 @@ use std::io::Write;
 use std::time::Instant;
 
 use half::{bf16, f16};
-use indicatif::{ParallelProgressIterator, ProgressIterator, ProgressStyle};
+use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::iter::ParallelIterator;
 
 use vectorium::dataset::Result as DatasetResult;
@@ -346,7 +346,7 @@ fn compute_dense_groundtruth<V, D>(
         .progress_chars("=>-");
 
     let results: Vec<Vec<(f32, u64)>> = queries
-        .iter()
+        .par_iter()
         .progress_count(queries.len() as u64)
         .with_style(pb_style)
         .map(|qvec| {
