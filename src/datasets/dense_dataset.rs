@@ -9,14 +9,14 @@ use crate::VectorId;
 
 use rayon::prelude::*;
 
-type DenseEncodedVector<'a, Q> =
-    DenseVector1D<<Q as VectorEncoder>::OutputValueType, &'a [<Q as VectorEncoder>::OutputValueType]>;
+type DenseEncodedVector<'a, E> =
+    DenseVector1D<<E as VectorEncoder>::OutputValueType, &'a [<E as VectorEncoder>::OutputValueType]>;
 
 // Implementation of a growable dense dataset.
-pub type DenseDatasetGrowable<Q> = DenseDatasetGeneric<Q, Vec<<Q as VectorEncoder>::OutputValueType>>;
+pub type DenseDatasetGrowable<E> = DenseDatasetGeneric<E, Vec<<E as VectorEncoder>::OutputValueType>>;
 
 // Implementation of a (immutable) sparse dataset.
-pub type DenseDataset<Q> = DenseDatasetGeneric<Q, Box<[<Q as VectorEncoder>::OutputValueType]>>;
+pub type DenseDataset<E> = DenseDatasetGeneric<E, Box<[<E as VectorEncoder>::OutputValueType]>>;
 
 /// Dense dataset storing fixed-length vectors in a flat array.
 ///
@@ -35,22 +35,22 @@ pub type DenseDataset<Q> = DenseDatasetGeneric<Q, Box<[<Q as VectorEncoder>::Out
 /// assert_eq!(v.values_as_slice(), &[1.0, 0.0, 2.0]);
 /// ```
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
-pub struct DenseDatasetGeneric<Q, Data>
+pub struct DenseDatasetGeneric<E, Data>
 where
-    Q: DenseQuantizer,
-    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
-    Data: AsRef<[Q::OutputValueType]>,
+    E: DenseQuantizer,
+    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
+    Data: AsRef<[E::OutputValueType]>,
 {
     n_vecs: usize,
     data: Data,
-    quantizer: Q,
+    quantizer: E,
 }
 
-impl<Q, Data> SpaceUsage for DenseDatasetGeneric<Q, Data>
+impl<E, Data> SpaceUsage for DenseDatasetGeneric<E, Data>
 where
-    Q: DenseQuantizer + SpaceUsage,
-    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
-    Data: AsRef<[Q::OutputValueType]> + SpaceUsage,
+    E: DenseQuantizer + SpaceUsage,
+    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
+    Data: AsRef<[E::OutputValueType]> + SpaceUsage,
 {
     fn space_usage_byte(&self) -> usize {
         // Use size_of for the quantizer to avoid requiring every VectorEncoder to
@@ -61,11 +61,11 @@ where
     }
 }
 
-impl<Q, Data> DenseDatasetGeneric<Q, Data>
+impl<E, Data> DenseDatasetGeneric<E, Data>
 where
-    Q: DenseQuantizer,
-    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
-    Data: AsRef<[Q::OutputValueType]>,
+    E: DenseQuantizer,
+    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
+    Data: AsRef<[E::OutputValueType]>,
 {
     /// Creates a DenseDatasetGeneric from raw data.
     ///
@@ -74,7 +74,7 @@ where
     /// * `n_vecs` - Number of vectors
     /// * `quantizer` - The quantizer to use
     #[inline]
-    pub fn from_raw(data: Data, n_vecs: usize, quantizer: Q) -> Self {
+    pub fn from_raw(data: Data, n_vecs: usize, quantizer: E) -> Self {
         assert_eq!(
             data.as_ref().len(),
             n_vecs * quantizer.output_dim(),
@@ -88,7 +88,7 @@ where
     }
 
     #[inline]
-    pub fn values(&self) -> &[Q::OutputValueType] {
+    pub fn values(&self) -> &[E::OutputValueType] {
         self.data.as_ref()
     }
 
@@ -96,7 +96,7 @@ where
     #[inline]
     pub fn par_iter(
         &self,
-    ) -> impl ParallelIterator<Item = DenseVector1D<Q::OutputValueType, &'_ [Q::OutputValueType]>>
+    ) -> impl ParallelIterator<Item = DenseVector1D<E::OutputValueType, &'_ [E::OutputValueType]>>
     {
         let m = self.quantizer.output_dim();
         let data = self.data.as_ref();
@@ -111,15 +111,15 @@ where
 }
 
 /// immutable
-impl<Q, Data> Dataset<Q> for DenseDatasetGeneric<Q, Data>
+impl<E, Data> Dataset<E> for DenseDatasetGeneric<E, Data>
 where
-    Q: DenseQuantizer + SpaceUsage,
-    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
-    Data: AsRef<[Q::OutputValueType]> + SpaceUsage,
-    Q::OutputValueType: SpaceUsage,
+    E: DenseQuantizer + SpaceUsage,
+    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
+    Data: AsRef<[E::OutputValueType]> + SpaceUsage,
+    E::OutputValueType: SpaceUsage,
 {
     #[inline]
-    fn quantizer(&self) -> &Q {
+    fn quantizer(&self) -> &E {
         &self.quantizer
     }
 
@@ -134,7 +134,7 @@ where
     }
 
     #[inline]
-    fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> Q::EncodedVector<'a> {
+    fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> E::EncodedVector<'a> {
         DenseVector1D::new(&self.data.as_ref()[range])
     }
 
@@ -165,28 +165,28 @@ where
     }
 
     #[inline]
-    fn iter<'a>(&'a self) -> impl Iterator<Item = Q::EncodedVector<'a>> {
+    fn iter<'a>(&'a self) -> impl Iterator<Item = E::EncodedVector<'a>> {
         DenseDatasetIter::new(self)
     }
 }
 
-// impl<'a, Q, B> DenseDatasetGeneric<Q, B>
+// impl<'a, E, B> DenseDatasetGeneric<E, B>
 // where
-//     Q: VectorEncoder,
-//     B: AsRef<[Q::OutputItem]>,
+//     E: VectorEncoder,
+//     B: AsRef<[E::OutputItem]>,
 // {
 //     #[inline]
-//     pub fn values(&self) -> &[Q::OutputItem] {
+//     pub fn values(&self) -> &[E::OutputItem] {
 //         self.data.as_ref()
 //     }
 // }
 
-// impl<'a, Q> DenseDatasetGeneric<Q, Vec<Q::OutputItem>>
+// impl<'a, E> DenseDatasetGeneric<E, Vec<E::OutputItem>>
 // where
-//     Q: VectorEncoder,
+//     E: VectorEncoder,
 // {
 //     #[inline]
-//     pub fn with_capacity(quantizer: Q, d: usize, capacity: usize) -> Self {
+//     pub fn with_capacity(quantizer: E, d: usize, capacity: usize) -> Self {
 //         Self {
 //             data: Vec::with_capacity(capacity * d),
 //             n_vecs: 0,
@@ -196,7 +196,7 @@ where
 //     }
 
 //     #[inline]
-//     pub fn with_dim(quantizer: Q, d: usize) -> Self {
+//     pub fn with_dim(quantizer: E, d: usize) -> Self {
 //         Self {
 //             data: Vec::new(),
 //             n_vecs: 0,
@@ -206,7 +206,7 @@ where
 //     }
 
 //     #[inline]
-//     pub fn from_vec(data: Vec<Q::OutputItem>, d: usize, quantizer: Q) -> Self {
+//     pub fn from_vec(data: Vec<E::OutputItem>, d: usize, quantizer: E) -> Self {
 //         let n_components = data.len();
 //         Self {
 //             data,
@@ -223,14 +223,14 @@ where
 // }
 
 // Growable dataset implementation
-impl<Q> GrowableDataset<Q> for DenseDatasetGeneric<Q, Vec<Q::OutputValueType>>
+impl<E> GrowableDataset<E> for DenseDatasetGeneric<E, Vec<E::OutputValueType>>
 where
-    Q: DenseQuantizer + SpaceUsage,
-    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
-    Q::OutputValueType: Default + SpaceUsage,
+    E: DenseQuantizer + SpaceUsage,
+    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
+    E::OutputValueType: Default + SpaceUsage,
 {
     #[inline]
-    fn new(quantizer: Q) -> Self {
+    fn new(quantizer: E) -> Self {
         Self {
             data: Vec::new(),
             n_vecs: 0,
@@ -241,7 +241,7 @@ where
     #[inline]
     fn push(
         &mut self,
-        vec: impl Vector1D<ComponentType = Q::InputComponentType, ValueType = Q::InputValueType>,
+        vec: impl Vector1D<ComponentType = E::InputComponentType, ValueType = E::InputValueType>,
     ) {
         assert!(
             vec.len() == self.quantizer.input_dim(),
@@ -255,11 +255,11 @@ where
     }
 }
 
-// impl<Q> Extend<Q::OutputItem> for DenseDatasetGeneric<Q, Vec<Q::OutputItem>>
+// impl<E> Extend<E::OutputItem> for DenseDatasetGeneric<E, Vec<E::OutputItem>>
 // where
-//     Q: VectorEncoder,
+//     E: VectorEncoder,
 // {
-//     fn extend<I: IntoIterator<Item = Q::OutputItem>>(&mut self, iter: I) {
+//     fn extend<I: IntoIterator<Item = E::OutputItem>>(&mut self, iter: I) {
 //         for item in iter {
 //             self.data.push(item);
 //         }
@@ -267,10 +267,10 @@ where
 //     }
 // }
 
-impl<Q> From<DenseDatasetGrowable<Q>> for DenseDataset<Q>
+impl<E> From<DenseDatasetGrowable<E>> for DenseDataset<E>
 where
-    Q: DenseQuantizer,
-    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
+    E: DenseQuantizer,
+    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
 {
     /// Converts a mutable dense dataset into an immutable one.
     ///
@@ -298,7 +298,7 @@ where
     /// assert_eq!(immutable_dataset.len(), 3);
     /// assert_eq!(immutable_dataset.nnz(), 12);
     /// ```
-    fn from(dataset: DenseDatasetGrowable<Q>) -> Self {
+    fn from(dataset: DenseDatasetGrowable<E>) -> Self {
         Self {
             n_vecs: dataset.n_vecs,
             data: dataset.data.into_boxed_slice(),
@@ -307,10 +307,10 @@ where
     }
 }
 
-impl<Q> From<DenseDataset<Q>> for DenseDatasetGrowable<Q>
+impl<E> From<DenseDataset<E>> for DenseDatasetGrowable<E>
 where
-    Q: DenseQuantizer,
-    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
+    E: DenseQuantizer,
+    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
 {
     /// Converts an immutable sparse dataset into a mutable one.
     ///
@@ -341,7 +341,7 @@ where
     /// assert_eq!(growable_dataset_again.len(), 4);
     /// assert_eq!(growable_dataset_again.nnz(), 16);
     /// ```
-    fn from(dataset: DenseDataset<Q>) -> Self {
+    fn from(dataset: DenseDataset<E>) -> Self {
         Self {
             data: dataset.data.to_vec(),
             n_vecs: dataset.n_vecs,
@@ -350,50 +350,50 @@ where
     }
 }
 
-// impl<'a, Q, B> IntoIterator for &'a DenseDataset<Q, B>
+// impl<'a, E, B> IntoIterator for &'a DenseDataset<E, B>
 // where
-//     Q: VectorEncoder<DatasetType = DenseDataset<Q, B>>,
-//     B: AsRef<[Q::OutputItem]> + Default,
+//     E: VectorEncoder<DatasetType = DenseDataset<E, B>>,
+//     B: AsRef<[E::OutputItem]> + Default,
 // {
-//     type Item = DenseVector1D<&'a [Q::OutputItem]>;
-//     type IntoIter = DenseDatasetIter<'a, Q>;
+//     type Item = DenseVector1D<&'a [E::OutputItem]>;
+//     type IntoIter = DenseDatasetIter<'a, E>;
 
 //     fn into_iter(self) -> Self::IntoIter {
 //         DenseDatasetIter::new(self, 1)
 //     }
 // }
 
-impl<Q, T> AsRef<[Q::OutputValueType]> for DenseDatasetGeneric<Q, T>
+impl<E, T> AsRef<[E::OutputValueType]> for DenseDatasetGeneric<E, T>
 where
-    Q: DenseQuantizer,
-    for<'a> Q: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, Q>>,
-    T: AsRef<[Q::OutputValueType]>,
+    E: DenseQuantizer,
+    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
+    T: AsRef<[E::OutputValueType]>,
 {
-    fn as_ref(&self) -> &[Q::OutputValueType] {
+    fn as_ref(&self) -> &[E::OutputValueType] {
         self.data.as_ref()
     }
 }
 
 /// densedataset iterator
-pub struct DenseDatasetIter<'a, Q>
+pub struct DenseDatasetIter<'a, E>
 where
-    Q: DenseQuantizer,
-    for<'b> Q: VectorEncoder<EncodedVector<'b> = DenseEncodedVector<'b, Q>>,
+    E: DenseQuantizer,
+    for<'b> E: VectorEncoder<EncodedVector<'b> = DenseEncodedVector<'b, E>>,
 {
-    data: &'a [Q::OutputValueType],
+    data: &'a [E::OutputValueType],
     dim: usize,
     index: usize,
 }
 
-impl<'a, Q> DenseDatasetIter<'a, Q>
+impl<'a, E> DenseDatasetIter<'a, E>
 where
-    Q: DenseQuantizer,
-    for<'b> Q: VectorEncoder<EncodedVector<'b> = DenseEncodedVector<'b, Q>>,
+    E: DenseQuantizer,
+    for<'b> E: VectorEncoder<EncodedVector<'b> = DenseEncodedVector<'b, E>>,
 {
-    pub fn new<Data>(dataset: &'a DenseDatasetGeneric<Q, Data>) -> Self
+    pub fn new<Data>(dataset: &'a DenseDatasetGeneric<E, Data>) -> Self
     where
-        Data: AsRef<[Q::OutputValueType]> + SpaceUsage,
-        Q: SpaceUsage,
+        Data: AsRef<[E::OutputValueType]> + SpaceUsage,
+        E: SpaceUsage,
     {
         Self {
             data: dataset.values(),
@@ -403,12 +403,12 @@ where
     }
 }
 
-impl<'a, Q> Iterator for DenseDatasetIter<'a, Q>
+impl<'a, E> Iterator for DenseDatasetIter<'a, E>
 where
-    Q: DenseQuantizer,
-    for<'b> Q: VectorEncoder<EncodedVector<'b> = DenseEncodedVector<'b, Q>>,
+    E: DenseQuantizer,
+    for<'b> E: VectorEncoder<EncodedVector<'b> = DenseEncodedVector<'b, E>>,
 {
-    type Item = Q::EncodedVector<'a>;
+    type Item = E::EncodedVector<'a>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
