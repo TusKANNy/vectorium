@@ -4,10 +4,10 @@ use std::marker::PhantomData;
 use crate::distances::{
     Distance, DotProduct, dot_product_dense_sparse, dot_product_sparse_with_merge,
 };
-use crate::{QueryEvaluator, QueryVectorFor, SparseQuantizer, VectorEncoder};
 use crate::{
     ComponentType, DenseVector1D, Float, FromF32, SpaceUsage, SparseVector1D, ValueType, Vector1D,
 };
+use crate::{QueryEvaluator, QueryVectorFor, SparseQuantizer, VectorEncoder};
 
 /// Marker trait for distance types supported by scalar sparse quantizers.
 /// Provides the computation method specific to sparse vectors.
@@ -107,15 +107,15 @@ where
     type QueryComponentType = C;
     type InputValueType = InValue;
     type InputComponentType = C;
-	type OutputValueType = OutValue;
-	type OutputComponentType = C;
+    type OutputValueType = OutValue;
+    type OutputComponentType = C;
 
-	type Evaluator<'a>
-	    = ScalarSparseQueryEvaluator<'a, C, OutValue, D>
-	where
-	    Self: 'a;
+    type Evaluator<'a>
+        = ScalarSparseQueryEvaluator<'a, C, OutValue, D>
+    where
+        Self: 'a;
 
-	type EncodedVector<'a> = SparseVector1D<C, OutValue, &'a [C], &'a [OutValue]>;
+    type EncodedVector<'a> = SparseVector1D<C, OutValue, &'a [C], &'a [OutValue]>;
 
     #[inline]
     fn new(input_dim: usize, output_dim: usize) -> Self {
@@ -188,7 +188,13 @@ where
             }
             Some(DenseVector1D::new(dense_query))
         } else {
-            // For large dimensions, keep sparse representation and do merge based dot product computation
+            // For large dimensions, keep sparse representation and do merge based dot product computation. But first check that components are sorted.
+            let query_components = query.components_as_slice();
+            assert!(
+                query_components.is_sorted(),
+                "Query components must be sorted in ascending order."
+            );
+
             None
         };
 
@@ -212,7 +218,9 @@ where
     #[inline]
     fn compute_distance(
         &self,
-        vector: <ScalarSparseQuantizer<C, InValue, OutValue, D> as VectorEncoder>::EncodedVector<'_>,
+        vector: <ScalarSparseQuantizer<C, InValue, OutValue, D> as VectorEncoder>::EncodedVector<
+            '_,
+        >,
     ) -> <ScalarSparseQuantizer<C, InValue, OutValue, D> as VectorEncoder>::Distance {
         let query_sparse = SparseVector1D::new(self.query_components, self.query_values);
         D::compute_sparse(&self.dense_query, &query_sparse, &vector)
