@@ -1,17 +1,18 @@
-use crate::{QueryEvaluator, QueryVectorFor, VectorEncoder};
 use crate::{Distance, SpaceUsage, Vector1D};
+use crate::{QueryEvaluator, QueryVectorFor, VectorEncoder};
 
 use itertools::Itertools;
 
 pub type VectorId = u64;
 
 #[derive(Debug, PartialOrd, Eq, Ord, PartialEq, Copy, Clone)]
-pub struct ResultGeneric<D: Distance, T> {
+pub struct ScoredVectorGeneric<D: Distance, T> {
     pub distance: D,
     pub vector: T,
 }
 
-pub type Result<D> = ResultGeneric<D, VectorId>;
+pub type ScoredVector<D> = ScoredVectorGeneric<D, VectorId>;
+pub type ScoredRange<D> = ScoredVectorGeneric<D, std::ops::Range<usize>>;
 
 /// A `Dataset` stores a collection of dense or sparse embedding vectors.
 ///
@@ -50,9 +51,9 @@ pub type Result<D> = ResultGeneric<D, VectorId>;
 ///
 /// # Example
 /// ```
-/// use crate::{
+/// use vectorium::{
 ///     Dataset, DenseVector1D, DotProduct, GrowableDataset, PlainDenseDatasetGrowable,
-///     PlainDenseQuantizer,
+///     PlainDenseQuantizer, Vector1D, VectorEncoder,
 /// };
 ///
 /// let quantizer = PlainDenseQuantizer::<f32, DotProduct>::new(3);
@@ -70,10 +71,7 @@ where
 
     /// Get a query evaluator for the given query vector.
     #[inline]
-    fn get_query_evaluator<'a, QueryVector>(
-        &'a self,
-        query: &'a QueryVector,
-    ) -> Q::Evaluator<'a>
+    fn get_query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Q::Evaluator<'a>
     where
         QueryVector: QueryVectorFor<Q> + ?Sized,
     {
@@ -136,7 +134,7 @@ where
         &self,
         query: impl QueryVectorFor<Q>,
         k: usize,
-    ) -> Vec<Result<<Q as VectorEncoder>::Distance>> {
+    ) -> Vec<ScoredVector<<Q as VectorEncoder>::Distance>> {
         if k == 0 {
             return Vec::new();
         }
@@ -145,7 +143,7 @@ where
 
         self.iter()
             .enumerate()
-            .map(|(i, vector)| Result {
+            .map(|(i, vector)| ScoredVector {
                 distance: evaluator.compute_distance(vector),
                 vector: i as u64,
             })
@@ -162,8 +160,9 @@ where
     ///
     /// # Example
     /// ```
-    /// use crate::{
-    ///     DenseVector1D, DotProduct, GrowableDataset, PlainDenseDatasetGrowable, PlainDenseQuantizer,
+    /// use vectorium::{
+    ///     Dataset, DenseVector1D, DotProduct, GrowableDataset, PlainDenseDatasetGrowable,
+    ///     PlainDenseQuantizer, VectorEncoder,
     /// };
     ///
     /// let quantizer = PlainDenseQuantizer::<f32, DotProduct>::new(2);

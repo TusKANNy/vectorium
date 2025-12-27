@@ -143,10 +143,10 @@ pub trait DenseQuantizer:
     ///
     /// # Example
     /// ```
-    /// use crate::DenseQuantizer;
-    /// use crate::{DenseVector1D, DotProduct, PlainDenseQuantizer};
+    /// use vectorium::{DenseQuantizer, DenseVector1D, DotProduct, PlainDenseQuantizer};
+    /// use vectorium::{Vector1D, VectorEncoder};
     ///
-    /// let quantizer = PlainDenseQuantizer::<half::f16, DotProduct>::new(3);
+    /// let quantizer = PlainDenseQuantizer::<f32, DotProduct>::new(3);
     /// let v = DenseVector1D::new(vec![1.0_f32, 0.0, 2.0]);
     /// let q = quantizer.quantize_vector(v);
     /// assert_eq!(q.values_as_slice().len(), 3);
@@ -188,8 +188,8 @@ pub trait SparseQuantizer: VectorEncoder {
     ///
     /// # Example
     /// ```
-    /// use crate::SparseQuantizer;
-    /// use crate::{DotProduct, PlainSparseQuantizer, SparseVector1D};
+    /// use vectorium::{DotProduct, PlainSparseQuantizer, SparseQuantizer, SparseVector1D};
+    /// use vectorium::{Vector1D, VectorEncoder};
     ///
     /// let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);
     /// let v = SparseVector1D::new(vec![1_u16, 3], vec![1.0, 2.0]);

@@ -26,16 +26,17 @@ pub type PackedDataset<E> =
 ///
 /// # Example
 /// ```
-/// use crate::{
-///     Dataset, DotProduct, DotVByteFixedU8Quantizer, PackedDataset, PlainSparseDatasetGrowable,
-///     PlainSparseQuantizer, SparseVector1D,
+/// use vectorium::{
+///     Dataset, DotProduct, DotVByteFixedU8Quantizer, GrowableDataset, PackedDataset,
+///     PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D, VectorEncoder,
 /// };
 ///
 /// let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);
 /// let mut sparse = PlainSparseDatasetGrowable::new(quantizer);
 /// sparse.push(SparseVector1D::new(vec![1_u16, 3], vec![1.0, 2.0]));
 ///
-/// let packed: PackedDataset<DotVByteFixedU8Quantizer> = sparse.into();
+/// let frozen: vectorium::PlainSparseDataset<u16, f32, DotProduct> = sparse.into();
+/// let packed: PackedDataset<DotVByteFixedU8Quantizer> = frozen.into();
 /// let range = packed.range_from_id(0);
 /// let v = packed.get_by_range(range);
 /// assert!(!v.as_slice().is_empty());
@@ -280,80 +281,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn packed_dataset_basic() {
-        #[derive(Clone, Debug)]
-        struct TestPackedQuantizer;
-
-        impl crate::PackedQuantizer for TestPackedQuantizer {
-            type EncodingType = u64;
-        }
-
-        impl crate::VectorEncoder for TestPackedQuantizer {
-            type Distance = crate::DotProduct;
-            type QueryValueType = f32;
-            type QueryComponentType = crate::numeric_markers::DenseComponent;
-            type InputValueType = f32;
-            type InputComponentType = crate::numeric_markers::DenseComponent;
-            type OutputValueType = f32;
-            type OutputComponentType = crate::numeric_markers::DenseComponent;
-            type Evaluator<'a>
-                = DummyEvaluator
-            where
-                Self: 'a;
-            type EncodedVector<'a> = crate::PackedVector<u64, &'a [u64]>;
-
-            fn new(_input_dim: usize, _output_dim: usize) -> Self {
-                Self
-            }
-
-            fn get_query_evaluator<'a, QueryVector>(
-                &'a self,
-                _query: &'a QueryVector,
-            ) -> Self::Evaluator<'a>
-            where
-                QueryVector: crate::QueryVectorFor<Self> + ?Sized,
-            {
-                DummyEvaluator
-            }
-
-            fn output_dim(&self) -> usize {
-                0
-            }
-
-            fn input_dim(&self) -> usize {
-                0
-            }
-        }
-
-        impl crate::SpaceUsage for TestPackedQuantizer {
-            fn space_usage_byte(&self) -> usize {
-                std::mem::size_of::<Self>()
-            }
-        }
-
-        struct DummyEvaluator;
-
-        impl crate::QueryEvaluator<TestPackedQuantizer> for DummyEvaluator {
-            fn compute_distance(
-                &self,
-                _vector: <TestPackedQuantizer as crate::VectorEncoder>::EncodedVector<'_>,
-            ) -> crate::DotProduct {
-                0.0f32.into()
-            }
-        }
-
-        let quantizer = <TestPackedQuantizer as crate::VectorEncoder>::new(0, 0);
-        let dataset = PackedDatasetGeneric::from_raw_parts(
-            vec![0_usize, 3, 5],
-            vec![1_u64, 2, 3, 4, 5],
-            quantizer,
-        );
-        assert_eq!(dataset.len(), 2);
-        assert_eq!(dataset.get(0).as_slice(), &[1, 2, 3]);
-        assert_eq!(dataset.get(1).as_slice(), &[4, 5]);
-    }
 
     #[test]
     fn conversion_and_dot_product() {

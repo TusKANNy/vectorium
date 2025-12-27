@@ -9,7 +9,7 @@ Vectorium is a Rust library for storing, compressing, and searching dense and sp
 ```rust
 use vectorium::{
     Dataset, DenseDataset, DenseVector1D, DotProduct, GrowableDataset, PlainDenseDatasetGrowable,
-    PlainDenseQuantizer,
+    PlainDenseQuantizer, Vector1D, VectorEncoder,
 };
 
 let encoder = PlainDenseQuantizer::<f32, DotProduct>::new(3);
@@ -31,7 +31,7 @@ assert_eq!(v.values_as_slice(), &[0.5, 1.5, 0.0]);
 ```rust
 use vectorium::{
     Dataset, DotProduct, GrowableDataset, PlainSparseDataset, PlainSparseDatasetGrowable,
-    PlainSparseQuantizer, SparseVector1D,
+    PlainSparseQuantizer, SparseVector1D, Vector1D, VectorEncoder,
 };
 
 let encoder = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);

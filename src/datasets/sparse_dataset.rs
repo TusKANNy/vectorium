@@ -52,8 +52,10 @@ pub type SparseDataset<E> = SparseDatasetGeneric<
 ///
 /// # Example
 /// ```
-/// use crate::{Dataset, DotProduct, GrowableDataset, PlainSparseDataset, PlainSparseQuantizer, SparseVector1D};
-/// use crate::sparse_dataset::SparseDatasetGrowable;
+/// use vectorium::{
+///     Dataset, DotProduct, GrowableDataset, PlainSparseDataset, PlainSparseQuantizer,
+///     SparseDatasetGrowable, SparseVector1D, Vector1D, VectorEncoder,
+/// };
 ///
 /// let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);
 /// let mut dataset = SparseDatasetGrowable::new(quantizer);

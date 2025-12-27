@@ -22,8 +22,10 @@ pub type DenseDataset<E> = DenseDatasetGeneric<E, Box<[<E as VectorEncoder>::Out
 ///
 /// # Example
 /// ```
-/// use crate::{Dataset, DenseDataset, DenseVector1D, DotProduct, GrowableDataset, PlainDenseQuantizer};
-/// use crate::dense_dataset::DenseDatasetGrowable;
+/// use vectorium::{
+///     Dataset, DenseDataset, DenseDatasetGrowable, DenseVector1D, DotProduct, GrowableDataset,
+///     PlainDenseQuantizer, Vector1D, VectorEncoder,
+/// };
 ///
 /// let quantizer = PlainDenseQuantizer::<f32, DotProduct>::new(3);
 /// let mut dataset = DenseDatasetGrowable::new(quantizer);
