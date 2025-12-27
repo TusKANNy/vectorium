@@ -6,13 +6,39 @@ use itertools::Itertools;
 pub type VectorId = u64;
 
 #[derive(Debug, PartialOrd, Eq, Ord, PartialEq, Copy, Clone)]
-pub struct ScoredVectorGeneric<D: Distance, T> {
+pub struct ScoredItemGeneric<D: Distance, T> {
     pub distance: D,
     pub vector: T,
 }
 
-pub type ScoredVector<D> = ScoredVectorGeneric<D, VectorId>;
-pub type ScoredRange<D> = ScoredVectorGeneric<D, std::ops::Range<usize>>;
+// We are not using ScoredItemGeneric here because Range does not implement Ord.
+// So, we have to implement PartialOrd and Ord manually.
+#[derive(Debug, PartialEq, Clone)]
+pub struct ScoredRange<D: Distance> {
+    pub distance: D,
+    pub range: std::ops::Range<usize>,
+}
+
+impl<D: Distance> Eq for ScoredRange<D> {}
+
+impl<D: Distance> PartialOrd for ScoredRange<D> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<D: Distance> Ord for ScoredRange<D> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Note: for our use, equal starts should imply equal ends, but we compare
+        // by end as a defensive tie-breaker.
+        self.distance
+            .cmp(&other.distance)
+            .then_with(|| self.range.start.cmp(&other.range.start))
+            .then_with(|| self.range.end.cmp(&other.range.end))
+    }
+}
+
+pub type ScoredVector<D> = ScoredItemGeneric<D, VectorId>;
 pub type ScoredVectorDotProduct = ScoredVector<crate::core::distances::DotProduct>;
 pub type ScoredRangeDotProduct = ScoredRange<crate::core::distances::DotProduct>;
 pub type ScoredVectorEuclidean = ScoredVector<crate::core::distances::EuclideanDistance>;
