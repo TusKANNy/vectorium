@@ -13,6 +13,10 @@ pub struct ScoredVectorGeneric<D: Distance, T> {
 
 pub type ScoredVector<D> = ScoredVectorGeneric<D, VectorId>;
 pub type ScoredRange<D> = ScoredVectorGeneric<D, std::ops::Range<usize>>;
+pub type ScoredVectorDotProduct = ScoredVector<crate::core::distances::DotProduct>;
+pub type ScoredRangeDotProduct = ScoredRange<crate::core::distances::DotProduct>;
+pub type ScoredVectorEuclidean = ScoredVector<crate::core::distances::EuclideanDistance>;
+pub type ScoredRangeEuclidean = ScoredRange<crate::core::distances::EuclideanDistance>;
 
 /// A `Dataset` stores a collection of dense or sparse embedding vectors.
 ///
