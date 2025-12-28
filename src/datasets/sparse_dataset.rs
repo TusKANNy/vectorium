@@ -70,7 +70,7 @@ pub type SparseDataset<E> = SparseDatasetGeneric<E, ImmutableSparseStorage<E>>;
 pub struct SparseDatasetGeneric<E, S = GrowableSparseStorage<E>>
 where
     E: SparseQuantizer,
-    for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
+    for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>, // Ensure that the encoded vector is a sparse vector
     S: SparseStorage<E>,
 {
     storage: S,
@@ -102,11 +102,9 @@ where
 
 impl<E, S> Dataset<E> for SparseDatasetGeneric<E, S>
 where
-    E: SparseQuantizer + SpaceUsage,
+    E: SparseQuantizer,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
     S: SparseStorage<E>,
-    E::OutputComponentType: SpaceUsage,
-    E::OutputValueType: SpaceUsage,
 {
     /// Retrieves the components and values of the sparse vector at the specified index.
     ///
@@ -411,10 +409,8 @@ where
 
 impl<E> From<SparseDatasetGrowable<E>> for SparseDataset<E>
 where
-    E: SparseQuantizer + SpaceUsage,
+    E: SparseQuantizer,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
-    E::OutputComponentType: SpaceUsage + Copy,
-    E::OutputValueType: SpaceUsage + Copy,
 {
     /// Converts a mutable sparse dataset into an immutable one.
     ///
@@ -449,10 +445,8 @@ where
 
 impl<E> From<SparseDataset<E>> for SparseDatasetGrowable<E>
 where
-    E: SparseQuantizer + SpaceUsage,
+    E: SparseQuantizer,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
-    E::OutputComponentType: SpaceUsage + Copy,
-    E::OutputValueType: SpaceUsage + Copy,
 {
     /// Converts an immutable sparse dataset into a mutable one.
     ///
@@ -528,10 +522,8 @@ where
 
 impl<E> GrowableDataset<E> for SparseDatasetGrowable<E>
 where
-    E: SparseQuantizer + SpaceUsage,
+    E: SparseQuantizer,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
-    E::OutputComponentType: SpaceUsage + Copy,
-    E::OutputValueType: SpaceUsage + Copy,
 {
     /// For SparseDataset, the dimensionality `d` may be 0 if unknown when creating a new dataset.
     fn new(quantizer: E) -> Self {
@@ -704,7 +696,7 @@ where
 
 impl<E, S> SpaceUsage for SparseDatasetGeneric<E, S>
 where
-    E: SparseQuantizer + SpaceUsage,
+    E: SparseQuantizer,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
     S: SparseStorage<E>,
 {

@@ -2,10 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
 use crate::distances::{
-    Distance, DotProduct, dot_product_dense_sparse, dot_product_sparse_with_merge,
+    Distance, DotProduct, dot_product_dense_sparse_unchecked,
+    dot_product_sparse_with_merge_unchecked,
 };
 use crate::{
-    ComponentType, DenseVector1D, Float, FromF32, SpaceUsage, SparseVector1D, ValueType, Vector1D,
+    ComponentType, DenseVector1D, Float, SpaceUsage, SparseVector1D, ValueType, Vector1D,
 };
 use crate::{QueryEvaluator, QueryVectorFor, SparseQuantizer, VectorEncoder};
 
@@ -30,9 +31,15 @@ impl ScalarSparseSupportedDistance for DotProduct {
         vector_sparse: &SparseVector1D<C, V, impl AsRef<[C]>, impl AsRef<[V]>>,
     ) -> Self {
         if dense_query.is_none() {
-            unsafe { dot_product_sparse_with_merge(query, vector_sparse) }
+            // SAFETY: Query evaluator construction ensures query components are sorted.
+            // Dataset vectors are assumed to be correctly formed.
+            unsafe { dot_product_sparse_with_merge_unchecked(query, vector_sparse) }
         } else {
-            unsafe { dot_product_dense_sparse(dense_query.as_ref().unwrap(), vector_sparse) }
+            // SAFETY: dense_query is built with sufficient dimension in query evaluator.
+            // Dataset vector components are assumed to be within bounds.
+            unsafe {
+                dot_product_dense_sparse_unchecked(dense_query.as_ref().unwrap(), vector_sparse)
+            }
         }
     }
 }
@@ -42,7 +49,7 @@ impl ScalarSparseSupportedDistance for DotProduct {
 ///
 /// - `C`: Component type (input = output)
 /// - `InValue`: Input value type (to be encoded, must be ValueType + Float)
-/// - `OutValue`: Output value type (quantized, must be ValueType + Float + FromF32)
+/// - `OutValue`: Output value type (quantized, must be ValueType + Float)
 /// - `D`: Distance type (must implement ScalarSparseSupportedDistance)
 ///
 /// Query value type is always f32.
@@ -66,7 +73,7 @@ impl<C, InValue, OutValue, D> SparseQuantizer for ScalarSparseQuantizer<C, InVal
 where
     C: ComponentType,
     InValue: ValueType + Float,
-    OutValue: ValueType + Float + FromF32,
+    OutValue: ValueType + Float,
     D: ScalarSparseSupportedDistance,
 {
     fn extend_with_encode<ValueContainer, ComponentContainer>(
@@ -98,7 +105,7 @@ impl<C, InValue, OutValue, D> VectorEncoder for ScalarSparseQuantizer<C, InValue
 where
     C: ComponentType,
     InValue: ValueType + Float,
-    OutValue: ValueType + Float + FromF32,
+    OutValue: ValueType + Float,
     D: ScalarSparseSupportedDistance,
 {
     type Distance = D;
@@ -177,6 +184,17 @@ where
         QueryVector: Vector1D<Value = f32, Component = C> + ?Sized,
         InValue: ValueType + Float,
     {
+        assert!(
+            query.len() <= quantizer.input_dim(),
+            "Query vector length exceeds quantizer input dimension."
+        );
+
+        assert_eq!(
+            query.components_as_slice().len(),
+            query.values_as_slice().len(),
+            "Query vector components and values length mismatch."
+        );
+
         let dense_query = if quantizer.input_dim() < 2_usize.pow(20) {
             // For small dimensions, create a dense representation
             let mut dense_query = vec![0.0; quantizer.input_dim()];
@@ -213,7 +231,7 @@ impl<'a, C, InValue, OutValue, D> QueryEvaluator<ScalarSparseQuantizer<C, InValu
 where
     C: ComponentType,
     InValue: ValueType + Float,
-    OutValue: ValueType + Float + FromF32,
+    OutValue: ValueType + Float,
     D: ScalarSparseSupportedDistance,
 {
     #[inline]

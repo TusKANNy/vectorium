@@ -53,7 +53,7 @@ where
 
 impl<E, Data> SpaceUsage for DenseDatasetGeneric<E, Data>
 where
-    E: DenseQuantizer + SpaceUsage,
+    E: DenseQuantizer,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     Data: AsRef<[E::OutputValueType]> + SpaceUsage,
 {
@@ -118,10 +118,9 @@ where
 /// immutable
 impl<E, Data> Dataset<E> for DenseDatasetGeneric<E, Data>
 where
-    E: DenseQuantizer + SpaceUsage,
+    E: DenseQuantizer,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     Data: AsRef<[E::OutputValueType]> + SpaceUsage,
-    E::OutputValueType: SpaceUsage,
 {
     #[inline]
     fn quantizer(&self) -> &E {
@@ -230,9 +229,9 @@ where
 // Growable dataset implementation
 impl<E> GrowableDataset<E> for DenseDatasetGeneric<E, Vec<E::OutputValueType>>
 where
-    E: DenseQuantizer + SpaceUsage,
+    E: DenseQuantizer,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
-    E::OutputValueType: Default + SpaceUsage,
+    E::OutputValueType: Default,
 {
     #[inline]
     fn new(quantizer: E) -> Self {
@@ -398,7 +397,6 @@ where
     pub fn new<Data>(dataset: &'a DenseDatasetGeneric<E, Data>) -> Self
     where
         Data: AsRef<[E::OutputValueType]> + SpaceUsage,
-        E: SpaceUsage,
     {
         Self {
             data: dataset.values(),
@@ -442,7 +440,7 @@ use crate::{Float, ValueType};
 impl<In, Out, D, AVOut> DenseDatasetGeneric<ScalarDenseQuantizer<In, Out, D>, AVOut>
 where
     In: ValueType + Float,
-    Out: ValueType + Float + crate::FromF32,
+    Out: ValueType + Float,
     AVOut: AsRef<[Out]> + crate::SpaceUsage + From<Vec<Out>>,
     D: ScalarDenseSupportedDistance,
 {

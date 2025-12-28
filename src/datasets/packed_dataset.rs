@@ -116,7 +116,7 @@ where
 
 impl<E, Offsets, Data> SpaceUsage for PackedDatasetGeneric<E, Offsets, Data>
 where
-    E: PackedQuantizer + SpaceUsage,
+    E: PackedQuantizer,
     Offsets: AsRef<[usize]> + SpaceUsage,
     Data: AsRef<[E::EncodingType]> + SpaceUsage,
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
@@ -131,10 +131,9 @@ where
 
 impl<E, Offsets, Data> Dataset<E> for PackedDatasetGeneric<E, Offsets, Data>
 where
-    E: PackedQuantizer + SpaceUsage,
+    E: PackedQuantizer,
     Offsets: AsRef<[usize]> + SpaceUsage,
     Data: AsRef<[E::EncodingType]> + SpaceUsage,
-    E::EncodingType: SpaceUsage,
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     #[inline]
@@ -225,7 +224,7 @@ where
 impl<QIn> From<crate::datasets::sparse_dataset::SparseDataset<QIn>>
     for PackedDataset<crate::DotVByteFixedU8Quantizer>
 where
-    QIn: crate::SparseQuantizer<OutputComponentType = u16> + SpaceUsage,
+    QIn: crate::SparseQuantizer<OutputComponentType = u16>,
     <QIn as crate::VectorEncoder>::OutputValueType: crate::ValueType + crate::Float,
     for<'a> QIn: crate::VectorEncoder<
             EncodedVector<'a> = crate::SparseVector1D<

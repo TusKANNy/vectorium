@@ -2,12 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
 use crate::distances::{
-    Distance, DotProduct, SquaredEuclideanDistance, dot_product_dense,
-    squared_euclidean_distance_dense,
+    Distance, DotProduct, SquaredEuclideanDistance, dot_product_dense_unchecked,
+    squared_euclidean_distance_dense_unchecked,
 };
 use crate::numeric_markers::DenseComponent;
 use crate::{DenseQuantizer, QueryEvaluator, QueryVectorFor, VectorEncoder};
-use crate::{DenseVector1D, Float, FromF32, SpaceUsage, ValueType, Vector1D};
+use crate::{DenseVector1D, Float, SpaceUsage, ValueType, Vector1D};
 
 /// Marker trait for distance types supported by scalar dense quantizers.
 /// Provides the computation method specific to dense vectors.
@@ -27,7 +27,8 @@ impl ScalarDenseSupportedDistance for SquaredEuclideanDistance {
         let q_len = query.len();
         let v_len = vector.len();
         assert_eq!(q_len, v_len, "Dense vectors must have the same length");
-        unsafe { squared_euclidean_distance_dense(query, vector) }
+        // SAFETY: We just validated that lengths are equal.
+        unsafe { squared_euclidean_distance_dense_unchecked(query, vector) }
     }
 }
 
@@ -39,7 +40,8 @@ impl ScalarDenseSupportedDistance for DotProduct {
         let q_len = query.len();
         let v_len = vector.len();
         assert_eq!(q_len, v_len, "Dense vectors must have the same length");
-        unsafe { dot_product_dense(query, vector) }
+        // SAFETY: We just validated that lengths are equal.
+        unsafe { dot_product_dense_unchecked(query, vector) }
     }
 }
 
@@ -94,7 +96,7 @@ impl<In, Out, D> ScalarDenseQuantizer<In, Out, D> {
 impl<In, Out, D> DenseQuantizer for ScalarDenseQuantizer<In, Out, D>
 where
     In: ValueType + Float,
-    Out: ValueType + Float + FromF32,
+    Out: ValueType + Float,
     D: ScalarDenseSupportedDistance,
 {
     fn extend_with_encode<ValueContainer>(
@@ -115,7 +117,7 @@ where
 impl<In, Out, D> VectorEncoder for ScalarDenseQuantizer<In, Out, D>
 where
     In: ValueType + Float,
-    Out: ValueType + Float + FromF32,
+    Out: ValueType + Float,
     D: ScalarDenseSupportedDistance,
 {
     type Distance = D;
@@ -147,6 +149,11 @@ where
     where
         QueryVector: QueryVectorFor<Self> + ?Sized,
     {
+        assert_eq!(
+            query.len(),
+            self.input_dim(),
+            "Query vector length exceeds quantizer input dimension."
+        );
         ScalarDenseQueryEvaluator::from_query(query)
     }
 
@@ -192,7 +199,7 @@ where
 impl<In, Out, D> SpaceUsage for ScalarDenseQuantizer<In, Out, D>
 where
     In: ValueType + Float,
-    Out: ValueType + Float + FromF32,
+    Out: ValueType + Float,
     D: ScalarDenseSupportedDistance,
 {
     fn space_usage_bytes(&self) -> usize {
@@ -204,7 +211,7 @@ impl<In, Out, D> QueryEvaluator<ScalarDenseQuantizer<In, Out, D>>
     for ScalarDenseQueryEvaluator<Out, D>
 where
     In: ValueType + Float,
-    Out: ValueType + Float + FromF32,
+    Out: ValueType + Float,
     D: ScalarDenseSupportedDistance,
 {
     #[inline]

@@ -147,9 +147,10 @@ impl Ord for DotProduct {
 }
 
 /// Computes the dot product between a dense query and a sparse vector.
-/// Before using this function, the query must be made dense. In some cases,
-/// especially when queries have many non-zero components, this is faster
-/// than computing the dot product with a "merge" style.
+///
+/// This is the safe version that validates preconditions at runtime.
+/// For hot paths where preconditions are already guaranteed, use
+/// [`dot_product_dense_sparse_unchecked`].
 ///
 /// # Arguments
 ///
@@ -160,27 +161,27 @@ impl Ord for DotProduct {
 ///
 /// The dot product between the query and the vector.
 ///
+/// # Panics
+///
+/// Panics if any component `c` in `vector.components_as_slice()` satisfies `c >= query.len()`.
+///
 /// # Examples
 ///
 /// ```rust
 /// use vectorium::distances::dot_product_dense_sparse;
 /// use vectorium::{DenseVector1D, SparseVector1D};
 ///
-/// // Create a dense query and a sparse vector and compute the dot product.
 /// let query = DenseVector1D::new(&[1.0f32, 2.0, 3.0]);
 /// let comps = &[0usize, 2usize];
 /// let vals = &[1.0f32, 1.0f32];
 /// let v = SparseVector1D::new(comps, vals);
 ///
-/// let result = unsafe { dot_product_dense_sparse(&query, &v) };
+/// let result = dot_product_dense_sparse(&query, &v);
 /// assert_eq!(result, vectorium::distances::DotProduct::from(4.0f32));
 /// ```
-///
-/// # Safety
-/// - All components `c` in `vector.components_as_slice()` must satisfy `c.as_() < query.len()`.
 #[inline]
 #[must_use]
-pub unsafe fn dot_product_dense_sparse<C, Q, V>(
+pub fn dot_product_dense_sparse<C, Q, V>(
     query: &DenseVector1D<Q, impl AsRef<[Q]>>,
     vector: &SparseVector1D<C, V, impl AsRef<[C]>, impl AsRef<[V]>>,
 ) -> DotProduct
@@ -189,13 +190,59 @@ where
     Q: ValueType,
     V: ValueType,
 {
+    let query_len = query.len();
+    for &c in vector.components_as_slice() {
+        assert!(
+            c.as_() < query_len,
+            "sparse vector component {} is out of bounds for query of length {}",
+            c.as_(),
+            query_len
+        );
+    }
+    // SAFETY: We just validated that all components are within bounds.
+    unsafe { dot_product_dense_sparse_unchecked(query, vector) }
+}
+
+/// Computes the dot product between a dense query and a sparse vector (unchecked).
+///
+/// This is the unchecked version for hot paths. Prefer [`dot_product_dense_sparse`]
+/// unless you have already validated the preconditions.
+///
+/// # Arguments
+///
+/// * `query` - The dense query vector.
+/// * `vector` - The sparse vector.
+///
+/// # Returns
+///
+/// The dot product between the query and the vector.
+///
+/// # Safety
+///
+/// Caller must ensure:
+/// - All components `c` in `vector.components_as_slice()` satisfy `c.as_() < query.len()`.
+///
+/// Violating this invariant causes undefined behavior (out-of-bounds read).
+#[inline]
+#[must_use]
+pub unsafe fn dot_product_dense_sparse_unchecked<C, Q, V>(
+    query: &DenseVector1D<Q, impl AsRef<[Q]>>,
+    vector: &SparseVector1D<C, V, impl AsRef<[C]>, impl AsRef<[V]>>,
+) -> DotProduct
+where
+    C: ComponentType,
+    Q: ValueType,
+    V: ValueType,
+{
+
+
     let query = query.values_as_slice();
     vector
         .components_as_slice()
         .iter()
         .zip(vector.values_as_slice())
         .map(|(&c, &v): (&C, &V)| {
-            // SAFETY: il chiamante garantisce che `c.as_() < query.len()`.
+            // SAFETY: Caller guarantees that `c.as_() < query.len()`.
             unsafe { *query.get_unchecked(c.as_()) }
                 .to_f32()
                 .unwrap()
@@ -205,9 +252,13 @@ where
         .into()
 }
 
-/// Computes the dot product between a query and a vector using merge style.
-/// This function should be used when the query has just a few components.
-/// Both the query's and vector's terms must be sorted by id.
+/// Computes the dot product between two sparse vectors using merge style.
+///
+/// This is the safe version that validates preconditions at runtime.
+/// For hot paths where preconditions are already guaranteed, use
+/// [`dot_product_sparse_with_merge_unchecked`].
+///
+/// Both vectors' components must be sorted in ascending order.
 ///
 /// # Arguments
 ///
@@ -217,6 +268,12 @@ where
 /// # Returns
 ///
 /// The dot product between the query and the vector.
+///
+/// # Panics
+///
+/// Panics if:
+/// - Component and value slices have different lengths for either vector.
+/// - Components are not sorted in ascending order.
 ///
 /// # Examples
 ///
@@ -230,17 +287,12 @@ where
 ///
 /// let query = vectorium::SparseVector1D::new(&query_components, &query_values);
 /// let vector = vectorium::SparseVector1D::new(&v_components, &v_values);
-/// let result = unsafe { dot_product_sparse_with_merge(&query, &vector) };
+/// let result = dot_product_sparse_with_merge(&query, &vector);
 /// assert_eq!(result, vectorium::distances::DotProduct::from(2.0));
 /// ```
-///
-/// # Safety
-/// - `query.components_as_slice().len() == query.values_as_slice().len()`.
-/// - `vector.components_as_slice().len() == vector.values_as_slice().len()`.
-/// - Entrambe le liste di componenti devono essere ordinate (crescente).
 #[inline]
 #[must_use]
-pub unsafe fn dot_product_sparse_with_merge<C, Q, V>(
+pub fn dot_product_sparse_with_merge<C, Q, V>(
     query: &SparseVector1D<C, Q, impl AsRef<[C]>, impl AsRef<[Q]>>,
     vector: &SparseVector1D<C, V, impl AsRef<[C]>, impl AsRef<[V]>>,
 ) -> DotProduct
@@ -249,6 +301,70 @@ where
     Q: ValueType,
     V: ValueType,
 {
+    assert_eq!(
+        query.components_as_slice().len(),
+        query.values_as_slice().len(),
+        "query components and values must have the same length"
+    );
+    assert_eq!(
+        vector.components_as_slice().len(),
+        vector.values_as_slice().len(),
+        "vector components and values must have the same length"
+    );
+    assert!(
+        query.components_as_slice().is_sorted(),
+        "query components must be sorted in strictly ascending order"
+    );
+    assert!(
+        vector.components_as_slice().is_sorted(),
+        "vector components must be sorted in strictly ascending order"
+    );
+    // SAFETY: We just validated the preconditions.
+    unsafe { dot_product_sparse_with_merge_unchecked(query, vector) }
+}
+
+/// Computes the dot product between two sparse vectors using merge style (unchecked).
+///
+/// This is the unchecked version for hot paths. Prefer [`dot_product_sparse_with_merge`]
+/// unless you have already validated the preconditions.
+///
+/// # Arguments
+///
+/// * `query` - Sparse query vector.
+/// * `vector` - Sparse vector.
+///
+/// # Returns
+///
+/// The dot product between the query and the vector.
+///
+/// # Safety
+///
+/// Caller must ensure:
+/// - `query.components_as_slice().len() == query.values_as_slice().len()`.
+/// - `vector.components_as_slice().len() == vector.values_as_slice().len()`.
+/// - Both component lists are sorted in strictly ascending order.
+///
+/// Violating these invariants may cause incorrect results or undefined behavior.
+#[inline]
+#[must_use]
+pub unsafe fn dot_product_sparse_with_merge_unchecked<C, Q, V>(
+    query: &SparseVector1D<C, Q, impl AsRef<[C]>, impl AsRef<[Q]>>,
+    vector: &SparseVector1D<C, V, impl AsRef<[C]>, impl AsRef<[V]>>,
+) -> DotProduct
+where
+    C: ComponentType,
+    Q: ValueType,
+    V: ValueType,
+{
+        debug_assert!(
+        query.components_as_slice().is_sorted(),
+        "query components must be sorted in strictly ascending order"
+    );
+    debug_assert!(
+        vector.components_as_slice().is_sorted(),
+        "vector components must be sorted in strictly ascending order"
+    );
+    
     let v_components = vector.components_as_slice();
     let v_values = vector.values_as_slice();
     let query_components = query.components_as_slice();
@@ -291,7 +407,24 @@ where
 
 /// Computes the dot product between two dense vectors.
 ///
-/// The function accepts `DenseVector1D`.
+/// This is the safe version that validates preconditions at runtime.
+/// For hot paths where preconditions are already guaranteed, use
+/// [`dot_product_dense_unchecked`].
+///
+/// # Arguments
+///
+/// * `query` - The first dense vector.
+/// * `vector` - The second dense vector.
+///
+/// # Returns
+///
+/// The dot product between the two vectors.
+///
+/// # Panics
+///
+/// Panics if `query.len() != vector.len()`.
+///
+/// # Examples
 ///
 /// ```rust
 /// use vectorium::distances::dot_product_dense;
@@ -300,15 +433,65 @@ where
 ///
 /// let a = DenseVector1D::new(&[1.0f32, 2.0]);
 /// let b = DenseVector1D::new(&[3.0f32, 4.0]);
-/// let result = unsafe { dot_product_dense(a, b) };
+/// let result = dot_product_dense(a, b);
 /// assert_eq!(result, DotProduct::from(11.0f32));
 /// ```
-///
-/// # Safety
-/// - `query.len() == vector.len()`.
 #[inline]
 #[must_use]
-pub unsafe fn dot_product_dense<Q, V>(
+pub fn dot_product_dense<Q, V>(
+    query: DenseVector1D<Q, impl AsRef<[Q]>>,
+    vector: DenseVector1D<V, impl AsRef<[V]>>,
+) -> DotProduct
+where
+    Q: ValueType,
+    V: ValueType,
+{
+    assert_eq!(
+        query.len(),
+        vector.len(),
+        "query and vector must have the same length"
+    );
+    // SAFETY: We just validated that lengths are equal.
+    unsafe { dot_product_dense_unchecked(query, vector) }
+}
+
+/// Computes the dot product between two dense vectors (unchecked).
+///
+/// This is the unchecked version for hot paths. Prefer [`dot_product_dense`]
+/// unless you have already validated the preconditions.
+///
+/// # Arguments
+///
+/// * `query` - The first dense vector.
+/// * `vector` - The second dense vector.
+///
+/// # Returns
+///
+/// The dot product between the two vectors.
+///
+/// # Safety
+///
+/// Caller must ensure:
+/// - `query.len() == vector.len()`.
+///
+/// Violating this invariant causes undefined behavior (out-of-bounds read via zip assumption).
+///
+/// # Examples
+///
+/// ```rust
+/// use vectorium::distances::dot_product_dense_unchecked;
+/// use vectorium::DotProduct;
+/// use vectorium::DenseVector1D;
+///
+/// let a = DenseVector1D::new(&[1.0f32, 2.0]);
+/// let b = DenseVector1D::new(&[3.0f32, 4.0]);
+/// // SAFETY: Both vectors have the same length (2).
+/// let result = unsafe { dot_product_dense_unchecked(a, b) };
+/// assert_eq!(result, DotProduct::from(11.0f32));
+/// ```
+#[inline]
+#[must_use]
+pub unsafe fn dot_product_dense_unchecked<Q, V>(
     query: DenseVector1D<Q, impl AsRef<[Q]>>,
     vector: DenseVector1D<V, impl AsRef<[V]>>,
 ) -> DotProduct
@@ -329,11 +512,78 @@ where
 
 /// Computes the squared Euclidean distance between two dense vectors.
 ///
-/// # Safety
-/// - `query.len() == vector.len()`.
+/// This is the safe version that validates preconditions at runtime.
+/// For hot paths where preconditions are already guaranteed, use
+/// [`squared_euclidean_distance_dense_unchecked`].
+///
+/// # Arguments
+///
+/// * `query` - The first dense vector.
+/// * `vector` - The second dense vector.
+///
+/// # Returns
+///
+/// The squared Euclidean distance between the two vectors.
+///
+/// # Panics
+///
+/// Panics if `query.len() != vector.len()`.
+///
+/// # Examples
+///
+/// ```rust
+/// use vectorium::distances::{squared_euclidean_distance_dense, Distance};
+/// use vectorium::SquaredEuclideanDistance;
+/// use vectorium::DenseVector1D;
+///
+/// let a = DenseVector1D::new(&[1.0f32, 2.0]);
+/// let b = DenseVector1D::new(&[4.0f32, 6.0]);
+/// let result = squared_euclidean_distance_dense(a, b);
+/// // (4-1)^2 + (6-2)^2 = 9 + 16 = 25
+/// assert_eq!(result.distance(), 25.0f32);
+/// ```
 #[inline]
 #[must_use]
-pub unsafe fn squared_euclidean_distance_dense<Q, V>(
+pub fn squared_euclidean_distance_dense<Q, V>(
+    query: DenseVector1D<Q, impl AsRef<[Q]>>,
+    vector: DenseVector1D<V, impl AsRef<[V]>>,
+) -> SquaredEuclideanDistance
+where
+    Q: ValueType,
+    V: ValueType,
+{
+    assert_eq!(
+        query.len(),
+        vector.len(),
+        "query and vector must have the same length"
+    );
+    // SAFETY: We just validated that lengths are equal.
+    unsafe { squared_euclidean_distance_dense_unchecked(query, vector) }
+}
+
+/// Computes the squared Euclidean distance between two dense vectors (unchecked).
+///
+/// This is the unchecked version for hot paths. Prefer [`squared_euclidean_distance_dense`]
+/// unless you have already validated the preconditions.
+///
+/// # Arguments
+///
+/// * `query` - The first dense vector.
+/// * `vector` - The second dense vector.
+///
+/// # Returns
+///
+/// The squared Euclidean distance between the two vectors.
+///
+/// # Safety
+///
+/// Caller must ensure:
+/// - `query.len() == vector.len()`.
+///
+/// Violating this invariant causes undefined behavior (out-of-bounds read via zip assumption).
+#[inline]
+#[must_use]
+pub unsafe fn squared_euclidean_distance_dense_unchecked<Q, V>(
     query: DenseVector1D<Q, impl AsRef<[Q]>>,
     vector: DenseVector1D<V, impl AsRef<[V]>>,
 ) -> SquaredEuclideanDistance
@@ -375,7 +625,7 @@ mod tests {
         let vals: &[f32] = &[1.0f32, 1.0f32];
         let v = SparseVector1D::new(comps, vals);
 
-        let result = unsafe { dot_product_dense_sparse(&query, &v) };
+        let result = dot_product_dense_sparse(&query, &v);
         assert_eq!(result, DotProduct::from(4.0f32));
     }
 
@@ -399,7 +649,7 @@ mod tests {
     fn dot_product_dense_slice_slice() {
         let q = DenseVector1D::new(&[1.0f32, 2.0, 3.0]);
         let v = DenseVector1D::new(&[4.0f32, 5.0, 6.0]);
-        let res = unsafe { dot_product_dense(q, v) };
+        let res = dot_product_dense(q, v);
         // 1*4 + 2*5 + 3*6 = 32
         assert_eq!(res, DotProduct::from(32.0f32));
     }
@@ -408,7 +658,7 @@ mod tests {
     fn dot_product_dense_vec_vec() {
         let q = DenseVector1D::new(vec![1.0f32, 2.0, 3.0]);
         let v = DenseVector1D::new(vec![4.0f32, 5.0, 6.0]);
-        let res = unsafe { dot_product_dense(q, v) };
+        let res = dot_product_dense(q, v);
         assert_eq!(res, DotProduct::from(32.0f32));
     }
 
@@ -416,7 +666,7 @@ mod tests {
     fn dot_product_dense_vec_slice() {
         let q = DenseVector1D::new(vec![1.0f32, 2.0, 3.0]);
         let v = DenseVector1D::new(&[4.0f32, 5.0, 6.0]);
-        let res = unsafe { dot_product_dense(q, v) };
+        let res = dot_product_dense(q, v);
         assert_eq!(res, DotProduct::from(32.0f32));
     }
 }
