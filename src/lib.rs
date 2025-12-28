@@ -26,6 +26,7 @@ pub mod utils;
 pub use core::dataset;
 pub use core::distances;
 pub use core::packed_vector;
+pub use core::storage;
 pub use core::vector_encoder;
 pub use core::vector1d;
 pub use utils::numeric_markers;
@@ -64,6 +65,9 @@ pub use encoders::sparse_scalar::{
 };
 
 pub use core::dataset::{Dataset, GrowableDataset, VectorId};
+pub use core::storage::{
+    GrowableSparseStorage, ImmutableSparseStorage, SparseStorage, SparseStorageMut,
+};
 pub use datasets::dense_dataset::{DenseDataset, DenseDatasetGeneric, DenseDatasetGrowable};
 pub use datasets::packed_dataset::{PackedDataset, PackedDatasetGeneric, PackedDatasetGrowable};
 pub use datasets::sparse_dataset::{SparseDataset, SparseDatasetGrowable};

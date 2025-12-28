@@ -207,6 +207,7 @@ where
     Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
 {
+    #[inline]
     fn compute_distance(
         &self,
         vector: <ScalarDenseQuantizer<In, Out, D> as VectorEncoder>::EncodedVector<'_>,
