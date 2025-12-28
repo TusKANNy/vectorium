@@ -1,7 +1,6 @@
-use crate::ComponentType as ComponentTypeTrait;
 use crate::SpaceUsage;
-use crate::ValueType as ValueTypeTrait;
 use crate::numeric_markers::DenseComponent;
+use crate::{ComponentType, ValueType};
 use crate::{DenseVector1D, SparseVector1D, Vector1D, distances::Distance};
 
 /// Marker trait for types that are valid query vectors for a given quantizer `Q`.
@@ -10,7 +9,7 @@ use crate::{DenseVector1D, SparseVector1D, Vector1D, distances::Distance};
 /// still enforcing that dense/sparse quantizers only accept the corresponding
 /// concrete vector representations.
 pub trait QueryVectorFor<Q: VectorEncoder>:
-    Vector1D<ValueType = Q::QueryValueType, ComponentType = Q::QueryComponentType>
+    Vector1D<Value = Q::QueryValueType, Component = Q::QueryComponentType>
 {
 }
 
@@ -45,12 +44,12 @@ pub trait QueryEvaluator<Q: VectorEncoder>: Sized {
 pub trait VectorEncoder: Sized {
     type Distance: Distance;
 
-    type QueryValueType: ValueTypeTrait;
-    type QueryComponentType: ComponentTypeTrait;
-    type InputValueType: ValueTypeTrait;
-    type InputComponentType: ComponentTypeTrait;
-    type OutputValueType: ValueTypeTrait;
-    type OutputComponentType: ComponentTypeTrait;
+    type QueryValueType: ValueType;
+    type QueryComponentType: ComponentType;
+    type InputValueType: ValueType;
+    type InputComponentType: ComponentType;
+    type OutputValueType: ValueType;
+    type OutputComponentType: ComponentType;
 
     /// The query evaluator type for this quantizer and distance.
     ///
@@ -86,16 +85,11 @@ pub trait VectorEncoder: Sized {
     fn train<InputVector>(&mut self, _training_data: impl Iterator<Item = InputVector>)
     where
         InputVector: Vector1D,
-        InputVector::ComponentType: ComponentTypeTrait,
-        InputVector::ValueType: ValueTypeTrait,
     {
     }
 
     /// Get a query evaluator for the given distance type
-    fn query_evaluator<'a, QueryVector>(
-        &'a self,
-        query: &'a QueryVector,
-    ) -> Self::Evaluator<'a>
+    fn query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Self::Evaluator<'a>
     where
         QueryVector: QueryVectorFor<Self> + ?Sized;
 

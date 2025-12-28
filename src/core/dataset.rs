@@ -218,6 +218,6 @@ where
     /// The encoding defined by the quantizer is applied to the input vector before storing it in the dataset.
     fn push(
         &mut self,
-        vec: impl Vector1D<ComponentType = Q::InputComponentType, ValueType = Q::InputValueType>,
+        vec: impl Vector1D<Component = Q::InputComponentType, Value = Q::InputValueType>,
     );
 }

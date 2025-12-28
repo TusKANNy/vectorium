@@ -42,7 +42,7 @@ pub fn permute_graph_bisection<C, V, InputVector>(
     vectors: impl Iterator<Item = InputVector>,
 ) -> Box<[usize]>
 where
-    InputVector: Vector1D<ComponentType = C, ValueType = V>,
+    InputVector: Vector1D<Component = C, Value = V>,
     C: ComponentType,
     V: ValueType,
 {

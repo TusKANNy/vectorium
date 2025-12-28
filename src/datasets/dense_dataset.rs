@@ -246,7 +246,7 @@ where
     #[inline]
     fn push(
         &mut self,
-        vec: impl Vector1D<ComponentType = E::InputComponentType, ValueType = E::InputValueType>,
+        vec: impl Vector1D<Component = E::InputComponentType, Value = E::InputValueType>,
     ) {
         assert!(
             vec.len() == self.quantizer.input_dim(),

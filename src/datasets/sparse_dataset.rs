@@ -574,7 +574,7 @@ where
     /// ```
     fn push(
         &mut self,
-        vec: impl Vector1D<ComponentType = E::InputComponentType, ValueType = E::InputValueType>,
+        vec: impl Vector1D<Component = E::InputComponentType, Value = E::InputValueType>,
     ) {
         let components = vec.components_as_slice();
         let values = vec.values_as_slice();

@@ -2,8 +2,8 @@ use crate::numeric_markers::DenseComponent;
 use crate::{ComponentType, ValueType};
 
 pub trait Vector1D {
-    type ComponentType;
-    type ValueType;
+    type Component: ComponentType;
+    type Value: ValueType;
 
     fn len(&self) -> usize;
 
@@ -12,16 +12,16 @@ pub trait Vector1D {
         self.len() == 0
     }
 
-    fn components_as_slice(&self) -> &[Self::ComponentType];
-    fn values_as_slice(&self) -> &[Self::ValueType];
+    fn components_as_slice(&self) -> &[Self::Component];
+    fn values_as_slice(&self) -> &[Self::Value];
 }
 
 impl<T> Vector1D for &T
 where
     T: Vector1D + ?Sized,
 {
-    type ComponentType = T::ComponentType;
-    type ValueType = T::ValueType;
+    type Component = T::Component;
+    type Value = T::Value;
 
     #[inline]
     fn len(&self) -> usize {
@@ -29,12 +29,12 @@ where
     }
 
     #[inline]
-    fn components_as_slice(&self) -> &[Self::ComponentType] {
+    fn components_as_slice(&self) -> &[Self::Component] {
         (**self).components_as_slice()
     }
 
     #[inline]
-    fn values_as_slice(&self) -> &[Self::ValueType] {
+    fn values_as_slice(&self) -> &[Self::Value] {
         (**self).values_as_slice()
     }
 }
@@ -73,8 +73,8 @@ where
     V: ValueType,
     AV: AsRef<[V]>,
 {
-    type ComponentType = DenseComponent;
-    type ValueType = V;
+    type Component = DenseComponent;
+    type Value = V;
 
     #[inline]
     fn len(&self) -> usize {
@@ -82,12 +82,12 @@ where
     }
 
     #[inline]
-    fn values_as_slice(&self) -> &[Self::ValueType] {
+    fn values_as_slice(&self) -> &[Self::Value] {
         self.values.as_ref()
     }
 
     #[inline(always)]
-    fn components_as_slice(&self) -> &[Self::ComponentType] {
+    fn components_as_slice(&self) -> &[Self::Component] {
         // DenseComponent is a zero-sized type; return empty slice
         &[]
     }
@@ -144,8 +144,8 @@ where
     AC: AsRef<[C]>,
     AV: AsRef<[V]>,
 {
-    type ComponentType = C;
-    type ValueType = V;
+    type Component = C;
+    type Value = V;
 
     /// Returns the length of the sparse array.
     #[inline(always)]
@@ -154,12 +154,12 @@ where
     }
 
     #[inline(always)]
-    fn components_as_slice(&self) -> &[Self::ComponentType] {
+    fn components_as_slice(&self) -> &[Self::Component] {
         self.components.as_ref()
     }
 
     #[inline(always)]
-    fn values_as_slice(&self) -> &[Self::ValueType] {
+    fn values_as_slice(&self) -> &[Self::Value] {
         self.values.as_ref()
     }
 }

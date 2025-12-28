@@ -148,8 +148,8 @@ impl VectorEncoder for DotVByteFixedU8Quantizer {
     fn train<InputVector>(&mut self, training_data: impl Iterator<Item = InputVector>)
     where
         InputVector: Vector1D,
-        InputVector::ComponentType: ComponentType,
-        InputVector::ValueType: ValueType,
+        InputVector::Component: ComponentType,
+        InputVector::Value: ValueType,
     {
         let permutation = permute_graph_bisection(self.input_dim(), training_data);
         let component_mapping: Vec<u16> = permutation.iter().map(|i| *i as u16).collect();
@@ -175,7 +175,7 @@ impl<'a> DotVByteFixedU8QueryEvaluator<'a> {
     #[inline]
     pub fn new<QueryVector>(query: &'a QueryVector, quantizer: &DotVByteFixedU8Quantizer) -> Self
     where
-        QueryVector: Vector1D<ComponentType = u16, ValueType = f32> + ?Sized,
+        QueryVector: Vector1D<Component = u16, Value = f32> + ?Sized,
     {
         // Densify the remapped query vector
         let mut vec = vec![0.0; quantizer.dim];

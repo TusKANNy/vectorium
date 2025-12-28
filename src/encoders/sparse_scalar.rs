@@ -174,7 +174,7 @@ where
         quantizer: &ScalarSparseQuantizer<C, InValue, OutValue, D>,
     ) -> Self
     where
-        QueryVector: Vector1D<ValueType = f32, ComponentType = C> + ?Sized,
+        QueryVector: Vector1D<Value = f32, Component = C> + ?Sized,
         InValue: ValueType + Float,
     {
         let dense_query = if quantizer.input_dim() < 2_usize.pow(20) {

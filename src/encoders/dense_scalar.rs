@@ -180,7 +180,7 @@ where
 {
     pub fn from_query<QueryVector>(query: QueryVector) -> Self
     where
-        QueryVector: Vector1D<ValueType = f32, ComponentType = DenseComponent>,
+        QueryVector: Vector1D<Value = f32, Component = DenseComponent>,
     {
         Self {
             query: query.values_as_slice().to_vec(),
