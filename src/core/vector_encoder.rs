@@ -113,7 +113,7 @@ pub trait VectorEncoder: Sized {
 /// A quantizer whose encoded representation is a packed slice of fixed-width elements.
 ///
 /// This is meant to be used together with a `PackedDataset` (variable-length by offsets).
-pub trait PackedQuantizer: VectorEncoder {
+pub trait PackedQuantizer: VectorEncoder + SpaceUsage {
     /// Element type stored in the dataset backing array (e.g. `u64` for word-packed encodings).
     type EncodingType: SpaceUsage + Copy + Send + Sync + 'static;
 }
@@ -123,7 +123,7 @@ pub trait DenseQuantizer:
         QueryComponentType = DenseComponent,
         InputComponentType = DenseComponent,
         OutputComponentType = DenseComponent,
-    >
+    > + SpaceUsage
 {
     /// Encode input vectors into quantized output vectors
     fn extend_with_encode<ValueContainer>(
@@ -162,7 +162,7 @@ pub trait DenseQuantizer:
     }
 }
 
-pub trait SparseQuantizer: VectorEncoder {
+pub trait SparseQuantizer: VectorEncoder + SpaceUsage {
     /// Encode input vectors into quantized output vectors
     fn extend_with_encode<ValueContainer, ComponentContainer>(
         &self,

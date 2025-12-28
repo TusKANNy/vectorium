@@ -28,12 +28,11 @@ type SparseEncodedVector<'a, E> = SparseVector1D<
 ///
 /// // Create a new empty dataset
 /// let quantizer = <PlainSparseQuantizer<u32, f32, DotProduct> as vectorium::VectorEncoder>::new(0, 0);
-/// let dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
+/// let dataset = PlainSparseDatasetGrowable::new(quantizer);
 /// assert_eq!(dataset.len(), 0);
 /// assert_eq!(dataset.nnz(), 0);
 /// ```
 ///
-// TODO: decidere se vogliamo growable dataset solo per plain o sparse o anche per quantizzati
 pub type SparseDatasetGrowable<E> = SparseDatasetGeneric<E, GrowableSparseStorage<E>>;
 
 // Implementation of a (immutable) sparse dataset.
@@ -58,6 +57,10 @@ pub type SparseDataset<E> = SparseDatasetGeneric<E, ImmutableSparseStorage<E>>;
 /// dataset.push(SparseVector1D::new(vec![1_u16, 3], vec![1.0, 2.0]));
 ///
 /// let frozen: PlainSparseDataset<u16, f32, DotProduct> = dataset.into();
+/// let v = frozen.get(0);
+/// assert_eq!(v.components_as_slice(), &[1_u16, 3]);
+/// assert_eq!(v.values_as_slice(), &[1.0, 2.0]);
+///
 /// let range = frozen.range_from_id(0);
 /// let v = frozen.get_by_range(range);
 /// assert_eq!(v.components_as_slice(), &[1_u16, 3]);
