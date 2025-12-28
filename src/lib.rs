@@ -3,8 +3,6 @@
 #![allow(internal_features)]
 #![feature(core_intrinsics)]
 #![feature(float_algebraic)]
-#![feature(gen_blocks)]
-#![feature(yield_expr)]
 #![doc = include_str!("../README.md")]
 
 use fixed::FixedU8;
@@ -23,46 +21,52 @@ pub mod datasets;
 pub mod encoders;
 pub mod utils;
 
+pub use core::dataset;
 pub use core::distances;
-pub use core::dataset as dataset;
 pub use core::packed_vector;
-pub use core::vector1d;
 pub use core::vector_encoder;
+pub use core::vector1d;
 pub use utils::numeric_markers;
 pub use utils::space_usage;
 
-pub use utils::space_usage::SpaceUsage;
 pub use utils::numeric_markers::{Float, FromF32};
+pub use utils::space_usage::SpaceUsage;
 
 #[allow(non_snake_case)]
 pub use core::vector1d::{DenseVector1D, MutableVector1D, SparseVector1D, Vector1D};
 
 pub use core::packed_vector::{PackedEncoded, PackedVector};
 
-pub use core::distances::{Distance, DotProduct, EuclideanDistance};
+pub use core::distances::{Distance, DotProduct, SquaredEuclideanDistance};
+
+/// Deprecated alias for backwards compatibility.
+#[deprecated(since = "0.2.0", note = "Use SquaredEuclideanDistance instead")]
+pub type EuclideanDistance = SquaredEuclideanDistance;
 
 pub use core::vector_encoder::{
     DenseQuantizer, PackedQuantizer, QueryEvaluator, QueryVectorFor, SparseQuantizer, VectorEncoder,
 };
 
+#[allow(deprecated)]
 pub use encoders::dense_scalar::{
     PlainDenseQuantizer, PlainDenseQuantizerDotProduct, PlainDenseQuantizerEuclidean,
-    ScalarDenseQuantizer, ScalarDenseQuantizerDotProduct, ScalarDenseQuantizerEuclidean,
-    ScalarDenseQuantizerSame, ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
+    PlainDenseQuantizerSquaredEuclidean, ScalarDenseQuantizer, ScalarDenseQuantizerDotProduct,
+    ScalarDenseQuantizerEuclidean, ScalarDenseQuantizerSame, ScalarDenseQuantizerSquaredEuclidean,
+    ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
 };
+pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Quantizer, DotVByteFixedU8QueryEvaluator};
 pub use encoders::sparse_scalar::{
     PlainSparseQuantizer, PlainSparseQuantizerDotProduct, ScalarSparseQuantizer,
     ScalarSparseQuantizerDotProduct, ScalarSparseQuantizerSame, ScalarSparseQueryEvaluator,
     ScalarSparseSupportedDistance,
 };
-pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Quantizer, DotVByteFixedU8QueryEvaluator};
 
 pub use core::dataset::{Dataset, GrowableDataset, VectorId};
 pub use datasets::dense_dataset::{DenseDataset, DenseDatasetGeneric, DenseDatasetGrowable};
 pub use datasets::packed_dataset::{PackedDataset, PackedDatasetGeneric, PackedDatasetGrowable};
 pub use datasets::sparse_dataset::{SparseDataset, SparseDatasetGrowable};
 
-// Usefull type aliases for dense dataset types
+// Useful type aliases for dense dataset types
 pub type ScalarDenseDataset<VIn, VOut, D> = DenseDataset<ScalarDenseQuantizer<VIn, VOut, D>>;
 pub type ScalarDenseDatasetGrowable<VIn, VOut, D> =
     DenseDatasetGrowable<ScalarDenseQuantizer<VIn, VOut, D>>;
@@ -70,7 +74,7 @@ pub type ScalarDenseDatasetGrowable<VIn, VOut, D> =
 pub type PlainDenseDataset<V, D> = ScalarDenseDatasetGrowable<V, V, D>;
 pub type PlainDenseDatasetGrowable<V, D> = ScalarDenseDatasetGrowable<V, V, D>;
 
-// Usefull type aliases for sparse dataset types
+// Useful type aliases for sparse dataset types
 pub type ScalarSparseDataset<C, V, D> = SparseDataset<ScalarSparseQuantizer<C, V, V, D>>;
 pub type ScalarSparseDatasetGrowable<C, V, D> =
     SparseDatasetGrowable<ScalarSparseQuantizer<C, V, V, D>>;
@@ -78,8 +82,8 @@ pub type ScalarSparseDatasetGrowable<C, V, D> =
 pub type PlainSparseDataset<C, V, D> = SparseDataset<PlainSparseQuantizer<C, V, D>>;
 pub type PlainSparseDatasetGrowable<C, V, D> = SparseDatasetGrowable<PlainSparseQuantizer<C, V, D>>;
 
+pub use datasets::readers;
 pub use datasets::readers::{read_npy_f32, read_seismic_format};
-pub use datasets::readers as readers;
 
 /// Marker for types used as values in a dataset
 pub trait ValueType = SpaceUsage

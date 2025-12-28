@@ -100,25 +100,25 @@ fn main() {
             match (distance.as_str(), value_type.as_str()) {
                 ("euclidean", "f32") => compute_dense_groundtruth::<
                     f32,
-                    distances::EuclideanDistance,
+                    distances::SquaredEuclideanDistance,
                 >(input_path, query_path, output_path, k),
                 ("euclidean", "f16") => compute_dense_groundtruth::<
                     f16,
-                    distances::EuclideanDistance,
+                    distances::SquaredEuclideanDistance,
                 >(input_path, query_path, output_path, k),
                 ("euclidean", "bf16") => compute_dense_groundtruth::<
                     bf16,
-                    distances::EuclideanDistance,
+                    distances::SquaredEuclideanDistance,
                 >(input_path, query_path, output_path, k),
                 ("euclidean", "fixedu8") => compute_dense_groundtruth::<
                     FixedU8Q,
-                    distances::EuclideanDistance,
+                    distances::SquaredEuclideanDistance,
                 >(
                     input_path, query_path, output_path, k
                 ),
                 ("euclidean", "fixedu16") => compute_dense_groundtruth::<
                     FixedU16Q,
-                    distances::EuclideanDistance,
+                    distances::SquaredEuclideanDistance,
                 >(
                     input_path, query_path, output_path, k
                 ),

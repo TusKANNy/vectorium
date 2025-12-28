@@ -150,6 +150,7 @@ where
 
 /// Query evaluator for ScalarSparseQuantizer.
 /// Stores the query (as f32) components and values, and computes distances against encoded vectors.
+#[derive(Debug, Clone)]
 pub struct ScalarSparseQueryEvaluator<'a, C, OutValue, D>
 where
     C: ComponentType,

@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
 use crate::distances::{
-    Distance, DotProduct, EuclideanDistance, dot_product_dense, euclidean_distance_dense,
+    Distance, DotProduct, SquaredEuclideanDistance, dot_product_dense,
+    squared_euclidean_distance_dense,
 };
 use crate::numeric_markers::DenseComponent;
 use crate::{DenseQuantizer, QueryEvaluator, QueryVectorFor, VectorEncoder};
@@ -18,7 +19,7 @@ pub trait ScalarDenseSupportedDistance: Distance {
     ) -> Self;
 }
 
-impl ScalarDenseSupportedDistance for EuclideanDistance {
+impl ScalarDenseSupportedDistance for SquaredEuclideanDistance {
     fn compute_dense<Q: ValueType + Float, V: ValueType + Float>(
         query: DenseVector1D<Q, &[Q]>,
         vector: DenseVector1D<V, &[V]>,
@@ -26,7 +27,7 @@ impl ScalarDenseSupportedDistance for EuclideanDistance {
         let q_len = query.len();
         let v_len = vector.len();
         assert_eq!(q_len, v_len, "Dense vectors must have the same length");
-        unsafe { euclidean_distance_dense(query, vector) }
+        unsafe { squared_euclidean_distance_dense(query, vector) }
     }
 }
 
@@ -62,10 +63,24 @@ pub type ScalarDenseQuantizerSame<V, D> = ScalarDenseQuantizer<V, V, D>;
 pub type PlainDenseQuantizer<V, D> = ScalarDenseQuantizer<V, V, D>;
 
 /// Convenience aliases for common configurations
-pub type PlainDenseQuantizerEuclidean<V> = PlainDenseQuantizer<V, EuclideanDistance>;
+pub type PlainDenseQuantizerSquaredEuclidean<V> = PlainDenseQuantizer<V, SquaredEuclideanDistance>;
 pub type PlainDenseQuantizerDotProduct<V> = PlainDenseQuantizer<V, DotProduct>;
-pub type ScalarDenseQuantizerEuclidean<V> = ScalarDenseQuantizer<V, V, EuclideanDistance>;
+pub type ScalarDenseQuantizerSquaredEuclidean<V> =
+    ScalarDenseQuantizer<V, V, SquaredEuclideanDistance>;
 pub type ScalarDenseQuantizerDotProduct<V> = ScalarDenseQuantizer<V, V, DotProduct>;
+
+/// Deprecated alias for backwards compatibility.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use PlainDenseQuantizerSquaredEuclidean instead"
+)]
+pub type PlainDenseQuantizerEuclidean<V> = PlainDenseQuantizerSquaredEuclidean<V>;
+/// Deprecated alias for backwards compatibility.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use ScalarDenseQuantizerSquaredEuclidean instead"
+)]
+pub type ScalarDenseQuantizerEuclidean<V> = ScalarDenseQuantizerSquaredEuclidean<V>;
 
 impl<In, Out, D> ScalarDenseQuantizer<In, Out, D> {
     pub fn new(d: usize) -> Self {
@@ -112,7 +127,10 @@ where
     type OutputValueType = Out;
     type OutputComponentType = DenseComponent;
 
-    type Evaluator<'a> = ScalarDenseQueryEvaluator<Out, D> where Self: 'a;
+    type Evaluator<'a>
+        = ScalarDenseQueryEvaluator<Out, D>
+    where
+        Self: 'a;
     type EncodedVector<'a> = DenseVector1D<Out, &'a [Out]>;
 
     #[inline]
@@ -145,6 +163,7 @@ where
 
 /// Query evaluator for ScalarDenseQuantizer.
 /// Stores the query (as f32) and computes distances against encoded vectors.
+#[derive(Debug, Clone)]
 pub struct ScalarDenseQueryEvaluator<Out, D>
 where
     Out: ValueType + Float,

@@ -41,8 +41,17 @@ impl<D: Distance> Ord for ScoredRange<D> {
 pub type ScoredVector<D> = ScoredItemGeneric<D, VectorId>;
 pub type ScoredVectorDotProduct = ScoredVector<crate::core::distances::DotProduct>;
 pub type ScoredRangeDotProduct = ScoredRange<crate::core::distances::DotProduct>;
-pub type ScoredVectorEuclidean = ScoredVector<crate::core::distances::EuclideanDistance>;
-pub type ScoredRangeEuclidean = ScoredRange<crate::core::distances::EuclideanDistance>;
+pub type ScoredVectorSquaredEuclidean =
+    ScoredVector<crate::core::distances::SquaredEuclideanDistance>;
+pub type ScoredRangeSquaredEuclidean =
+    ScoredRange<crate::core::distances::SquaredEuclideanDistance>;
+
+/// Deprecated alias for backwards compatibility.
+#[deprecated(since = "0.2.0", note = "Use ScoredVectorSquaredEuclidean instead")]
+pub type ScoredVectorEuclidean = ScoredVectorSquaredEuclidean;
+/// Deprecated alias for backwards compatibility.
+#[deprecated(since = "0.2.0", note = "Use ScoredRangeSquaredEuclidean instead")]
+pub type ScoredRangeEuclidean = ScoredRangeSquaredEuclidean;
 
 /// A `Dataset` stores a collection of dense or sparse embedding vectors.
 ///

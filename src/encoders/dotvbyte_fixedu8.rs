@@ -5,8 +5,8 @@ mod swizzle;
 
 use crate::distances::DotProduct;
 use crate::packed_vector::PackedVector;
-use crate::{PackedQuantizer, QueryEvaluator, QueryVectorFor, VectorEncoder};
 use crate::{ComponentType, FixedU8Q, SpaceUsage, SparseVector1D, ValueType, Vector1D};
+use crate::{PackedQuantizer, QueryEvaluator, QueryVectorFor, VectorEncoder};
 
 use rusty_perm::PermApply as _;
 use rusty_perm::PermFromSorting as _;
@@ -165,6 +165,7 @@ where
 {
 }
 
+#[derive(Debug, Clone)]
 pub struct DotVByteFixedU8QueryEvaluator<'a> {
     dense_query: Vec<f32>,
     _phantom: PhantomData<&'a ()>,

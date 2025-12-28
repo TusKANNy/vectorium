@@ -41,34 +41,47 @@ impl std::fmt::Display for DistanceError {
 
 impl std::error::Error for DistanceError {}
 
-/// Euclidean distance wrapper around an `f32`.
+/// Squared Euclidean distance wrapper around an `f32`.
 ///
-/// Note: for performance we treat `EuclideanDistance` as the *squared*
-/// Euclidean distance (we do not take the square root). This avoids
-/// unnecessary `sqrt` computations when only comparisons are required.
+/// For performance, this type stores the *squared* Euclidean distance
+/// (without taking the square root). This avoids unnecessary `sqrt`
+/// computations when only comparisons are required.
+///
+/// If you need the actual Euclidean distance, call `.sqrt()` on the result.
 #[derive(Copy, Clone, Debug, Default)]
-pub struct EuclideanDistance(f32);
+pub struct SquaredEuclideanDistance(f32);
 
-impl Distance for EuclideanDistance {
+impl Distance for SquaredEuclideanDistance {
     fn distance(&self) -> f32 {
         self.0
     }
 }
 
-impl From<f32> for EuclideanDistance {
-    fn from(v: f32) -> Self {
-        assert!(!v.is_nan(), "NaN is not allowed for EuclideanDistance");
-        EuclideanDistance(v)
+impl SquaredEuclideanDistance {
+    /// Returns the actual Euclidean distance by taking the square root.
+    #[inline]
+    pub fn sqrt(&self) -> f32 {
+        self.0.sqrt()
     }
 }
 
-impl PartialEq for EuclideanDistance {
+impl From<f32> for SquaredEuclideanDistance {
+    fn from(v: f32) -> Self {
+        assert!(
+            !v.is_nan(),
+            "NaN is not allowed for SquaredEuclideanDistance"
+        );
+        SquaredEuclideanDistance(v)
+    }
+}
+
+impl PartialEq for SquaredEuclideanDistance {
     fn eq(&self, other: &Self) -> bool {
         self.0.eq(&other.0)
     }
 }
 
-impl PartialOrd for EuclideanDistance {
+impl PartialOrd for SquaredEuclideanDistance {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
@@ -78,9 +91,9 @@ impl PartialOrd for EuclideanDistance {
 // These implementations assume that `f32` values are finite numeric
 // distances. If a NaN is encountered, `Ord::cmp` will panic to make the
 // contract explicit.
-impl Eq for EuclideanDistance {}
+impl Eq for SquaredEuclideanDistance {}
 
-impl Ord for EuclideanDistance {
+impl Ord for SquaredEuclideanDistance {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Use total ordering for floats via `total_cmp`.
         self.0.total_cmp(&other.0)
@@ -164,8 +177,9 @@ impl Ord for DotProduct {
 /// ```
 ///
 /// # Safety
-/// - Ogni componente `c` in `vector.components_as_slice()` deve soddisfare `c.as_() < query.len()`.
+/// - All components `c` in `vector.components_as_slice()` must satisfy `c.as_() < query.len()`.
 #[inline]
+#[must_use]
 pub unsafe fn dot_product_dense_sparse<C, Q, V>(
     query: &DenseVector1D<Q, impl AsRef<[Q]>>,
     vector: &SparseVector1D<C, V, impl AsRef<[C]>, impl AsRef<[V]>>,
@@ -293,6 +307,7 @@ where
 /// # Safety
 /// - `query.len() == vector.len()`.
 #[inline]
+#[must_use]
 pub unsafe fn dot_product_dense<Q, V>(
     query: DenseVector1D<Q, impl AsRef<[Q]>>,
     vector: DenseVector1D<V, impl AsRef<[V]>>,
@@ -312,15 +327,16 @@ where
         .into()
 }
 
-/// Computes the Euclidean distance (squared) between two dense vectors.
+/// Computes the squared Euclidean distance between two dense vectors.
 ///
 /// # Safety
 /// - `query.len() == vector.len()`.
 #[inline]
-pub unsafe fn euclidean_distance_dense<Q, V>(
+#[must_use]
+pub unsafe fn squared_euclidean_distance_dense<Q, V>(
     query: DenseVector1D<Q, impl AsRef<[Q]>>,
     vector: DenseVector1D<V, impl AsRef<[V]>>,
-) -> EuclideanDistance
+) -> SquaredEuclideanDistance
 where
     Q: ValueType,
     V: ValueType,
@@ -364,9 +380,9 @@ mod tests {
     }
 
     #[test]
-    fn euclidean_ordering() {
-        let a = EuclideanDistance::from(1.0);
-        let b = EuclideanDistance::from(2.0);
+    fn squared_euclidean_ordering() {
+        let a = SquaredEuclideanDistance::from(1.0);
+        let b = SquaredEuclideanDistance::from(2.0);
         assert!(a < b);
     }
 
