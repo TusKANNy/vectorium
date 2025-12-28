@@ -471,7 +471,7 @@ fn compute_sparse_groundtruth_dotvbyte<V>(
     println!("Dataset size: {:.3} GiB", dataset_gib);
     println!(
         "Bits per entry: {:.3}",
-        (dataset.space_usage_byte() * 8) as f32 / dataset.nnz() as f32
+        (dataset.space_usage_bytes() * 8) as f32 / dataset.nnz() as f32
     );
     println!("Computing ground truth for {} queries...", queries.len());
 

@@ -130,7 +130,7 @@ where
         }
     }
 
-    fn get_query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Self::Evaluator<'a>
+    fn query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Self::Evaluator<'a>
     where
         QueryVector: QueryVectorFor<Self> + ?Sized,
     {
@@ -237,7 +237,7 @@ where
     OutValue: ValueType,
     D: ScalarSparseSupportedDistance,
 {
-    fn space_usage_byte(&self) -> usize {
+    fn space_usage_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
     }
 }

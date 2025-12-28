@@ -39,21 +39,14 @@ where
     }
 }
 
-// (reserved)
-
-pub trait MutableVector1D: Vector1D {
-    fn values_as_mut_slice(&mut self) -> &mut [Self::ValueType];
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct DenseVector1D<V, AV>
 where
     V: ValueType,
     AV: AsRef<[V]>,
 {
-    components: DenseComponent,
     values: AV,
-    phantom: std::marker::PhantomData<V>,
+    _phantom: std::marker::PhantomData<V>,
 }
 
 impl<V, AV> DenseVector1D<V, AV>
@@ -64,9 +57,8 @@ where
     #[inline]
     pub fn new(values: AV) -> Self {
         Self {
-            components: DenseComponent,
             values,
-            phantom: std::marker::PhantomData,
+            _phantom: std::marker::PhantomData,
         }
     }
 

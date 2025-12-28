@@ -726,11 +726,11 @@ where
     AV: AsRef<[E::OutputValueType]> + SpaceUsage,
 {
     /// Returns the size of the dataset in bytes.
-    fn space_usage_byte(&self) -> usize {
+    fn space_usage_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.offsets.space_usage_byte()
-            + self.components.space_usage_byte()
-            + self.values.space_usage_byte()
-            + self.quantizer.space_usage_byte()
+            + self.offsets.space_usage_bytes()
+            + self.components.space_usage_bytes()
+            + self.values.space_usage_bytes()
+            + self.quantizer.space_usage_bytes()
     }
 }

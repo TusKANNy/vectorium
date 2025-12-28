@@ -77,7 +77,7 @@ use std::hash::Hash;
 pub struct DenseComponent;
 
 impl SpaceUsage for DenseComponent {
-    fn space_usage_byte(&self) -> usize {
+    fn space_usage_bytes(&self) -> usize {
         0
     }
 }

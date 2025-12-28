@@ -54,12 +54,12 @@ where
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     Data: AsRef<[E::OutputValueType]> + SpaceUsage,
 {
-    fn space_usage_byte(&self) -> usize {
+    fn space_usage_bytes(&self) -> usize {
         // Use size_of for the quantizer to avoid requiring every VectorEncoder to
         // implement `SpaceUsage`.
         std::mem::size_of::<Self>()
-            + self.quantizer.space_usage_byte()
-            + self.data.space_usage_byte()
+            + self.quantizer.space_usage_bytes()
+            + self.data.space_usage_bytes()
     }
 }
 

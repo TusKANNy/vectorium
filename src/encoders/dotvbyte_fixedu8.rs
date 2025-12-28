@@ -128,7 +128,7 @@ impl VectorEncoder for DotVByteFixedU8Quantizer {
     }
 
     #[inline]
-    fn get_query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Self::Evaluator<'a>
+    fn query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Self::Evaluator<'a>
     where
         QueryVector: QueryVectorFor<Self> + ?Sized,
     {
@@ -508,9 +508,9 @@ where
 
 impl SpaceUsage for DotVByteFixedU8Quantizer {
     #[inline]
-    fn space_usage_byte(&self) -> usize {
+    fn space_usage_bytes(&self) -> usize {
         let size_of_mapping = match &self.component_mapping {
-            Some(component_mapping) => component_mapping.space_usage_byte(),
+            Some(component_mapping) => component_mapping.space_usage_bytes(),
             None => 0,
         };
         size_of_mapping + std::mem::size_of::<Self>()

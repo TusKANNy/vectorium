@@ -121,11 +121,11 @@ where
     Data: AsRef<[E::EncodingType]> + SpaceUsage,
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
-    fn space_usage_byte(&self) -> usize {
+    fn space_usage_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.quantizer.space_usage_byte()
-            + self.offsets.space_usage_byte()
-            + self.data.space_usage_byte()
+            + self.quantizer.space_usage_bytes()
+            + self.offsets.space_usage_bytes()
+            + self.data.space_usage_bytes()
     }
 }
 
@@ -318,7 +318,7 @@ mod tests {
         let dataset: PackedDataset<DotVByteFixedU8Quantizer> = frozen.into();
 
         let query = SparseVector1D::new(vec![1_u16, 10, 11], vec![2.0_f32, 3.0, 4.0]);
-        let evaluator = dataset.quantizer().get_query_evaluator(&query);
+        let evaluator = dataset.quantizer().query_evaluator(&query);
 
         let d0 = evaluator.compute_distance(dataset.get(0)).distance();
         let d1 = evaluator.compute_distance(dataset.get(1)).distance();

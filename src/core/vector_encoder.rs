@@ -6,7 +6,7 @@ use crate::{DenseVector1D, SparseVector1D, Vector1D, distances::Distance};
 
 /// Marker trait for types that are valid query vectors for a given quantizer `Q`.
 ///
-/// This allows `VectorEncoder::get_query_evaluator` to remain on the base trait while
+/// This allows `VectorEncoder::query_evaluator` to remain on the base trait while
 /// still enforcing that dense/sparse quantizers only accept the corresponding
 /// concrete vector representations.
 pub trait QueryVectorFor<Q: VectorEncoder>:
@@ -92,7 +92,7 @@ pub trait VectorEncoder: Sized {
     }
 
     /// Get a query evaluator for the given distance type
-    fn get_query_evaluator<'a, QueryVector>(
+    fn query_evaluator<'a, QueryVector>(
         &'a self,
         query: &'a QueryVector,
     ) -> Self::Evaluator<'a>

@@ -3,6 +3,8 @@
 #![allow(internal_features)]
 #![feature(core_intrinsics)]
 #![feature(float_algebraic)]
+#![feature(gen_blocks)]
+#![feature(yield_expr)]
 #![doc = include_str!("../README.md")]
 
 use fixed::FixedU8;
@@ -33,7 +35,7 @@ pub use utils::numeric_markers::{Float, FromF32};
 pub use utils::space_usage::SpaceUsage;
 
 #[allow(non_snake_case)]
-pub use core::vector1d::{DenseVector1D, MutableVector1D, SparseVector1D, Vector1D};
+pub use core::vector1d::{DenseVector1D, SparseVector1D, Vector1D};
 
 pub use core::packed_vector::{PackedEncoded, PackedVector};
 

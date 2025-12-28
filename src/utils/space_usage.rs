@@ -5,26 +5,26 @@ use std::mem;
 /// A trait to report the space usage of a data structure.
 pub trait SpaceUsage {
     /// Gives the space usage of the data structure in bytes.
-    fn space_usage_byte(&self) -> usize;
+    fn space_usage_bytes(&self) -> usize;
 
     /// Gives the space usage of the data structure in KiB.
     #[allow(non_snake_case)]
     fn space_usage_KiB(&self) -> f64 {
-        let bytes = self.space_usage_byte();
+        let bytes = self.space_usage_bytes();
         (bytes as f64) / (1024_f64)
     }
 
     /// Gives the space usage of the data structure in MiB.
     #[allow(non_snake_case)]
     fn space_usage_MiB(&self) -> f64 {
-        let bytes = self.space_usage_byte();
+        let bytes = self.space_usage_bytes();
         (bytes as f64) / ((1024 * 1024) as f64)
     }
 
     /// Gives the space usage of the data structure in GiB.
     #[allow(non_snake_case)]
     fn space_usage_GiB(&self) -> f64 {
-        let bytes = self.space_usage_byte();
+        let bytes = self.space_usage_bytes();
         (bytes as f64) / ((1024 * 1024 * 1024) as f64)
     }
 }
@@ -36,13 +36,13 @@ impl<T> SpaceUsage for Vec<T>
 where
     T: Copy,
 {
-    fn space_usage_byte(&self) -> usize {
+    fn space_usage_bytes(&self) -> usize {
         mem::size_of::<Self>() + mem::size_of::<T>() * self.capacity()
     }
 }
 
 impl SpaceUsage for () {
-    fn space_usage_byte(&self) -> usize {
+    fn space_usage_bytes(&self) -> usize {
         0
     }
 }
@@ -51,9 +51,9 @@ impl<T> SpaceUsage for Box<[T]>
 where
     T: SpaceUsage + Copy,
 {
-    fn space_usage_byte(&self) -> usize {
+    fn space_usage_bytes(&self) -> usize {
         if !self.is_empty() {
-            mem::size_of::<Self>() + self.first().unwrap().space_usage_byte() * self.len()
+            mem::size_of::<Self>() + self.first().unwrap().space_usage_bytes() * self.len()
         } else {
             mem::size_of::<Self>()
         }
@@ -63,7 +63,7 @@ where
 macro_rules! impl_space_usage {
     ($($t:ty),*) => {
         $(impl SpaceUsage for $t {
-            fn space_usage_byte(&self) -> usize {
+            fn space_usage_bytes(&self) -> usize {
                 mem::size_of::<Self>()
             }
         })*
@@ -78,7 +78,7 @@ impl<T> SpaceUsage for T
 where
     T: MarkerFixedSigned,
 {
-    fn space_usage_byte(&self) -> usize {
+    fn space_usage_bytes(&self) -> usize {
         mem::size_of::<Self>()
     }
 }

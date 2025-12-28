@@ -110,11 +110,11 @@ where
 
     /// Get a query evaluator for the given query vector.
     #[inline]
-    fn get_query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Q::Evaluator<'a>
+    fn query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Q::Evaluator<'a>
     where
         QueryVector: QueryVectorFor<Q> + ?Sized,
     {
-        self.quantizer().get_query_evaluator(query)
+        self.quantizer().query_evaluator(query)
     }
 
     fn shape(&self) -> (usize, usize) {
@@ -178,7 +178,7 @@ where
             return Vec::new();
         }
 
-        let evaluator = self.quantizer().get_query_evaluator(&query);
+        let evaluator = self.quantizer().query_evaluator(&query);
 
         self.iter()
             .enumerate()
