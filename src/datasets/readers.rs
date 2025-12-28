@@ -82,7 +82,7 @@ where
 
     let quantizer = PlainDenseQuantizer::new(d);
 
-    Ok(PlainDenseDataset::from_raw(data, n_vecs, quantizer))
+    Ok(PlainDenseDataset::from_raw(data.into(), n_vecs, quantizer))
 }
 
 /// Read a sparse dataset from the Seismic binary file format.
@@ -176,10 +176,8 @@ where
     let input_dim = max_component.map_or(0, |m| m + 1);
 
     // Pass 2: construct dataset and re-read, now that the dimensionality is known.
-    let quantizer = <PlainSparseQuantizer<C, V, D> as crate::VectorEncoder>::new(
-        input_dim,
-        input_dim,
-    );
+    let quantizer =
+        <PlainSparseQuantizer<C, V, D> as crate::VectorEncoder>::new(input_dim, input_dim);
     let mut data = PlainSparseDatasetGrowable::<C, V, D>::new(quantizer);
 
     let mut br = BufReader::new(File::open(path)?);

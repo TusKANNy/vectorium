@@ -234,8 +234,6 @@ where
     Q: ValueType,
     V: ValueType,
 {
-
-
     let query = query.values_as_slice();
     vector
         .components_as_slice()
@@ -356,7 +354,7 @@ where
     Q: ValueType,
     V: ValueType,
 {
-        debug_assert!(
+    debug_assert!(
         query.components_as_slice().is_sorted(),
         "query components must be sorted in strictly ascending order"
     );
@@ -364,7 +362,7 @@ where
         vector.components_as_slice().is_sorted(),
         "vector components must be sorted in strictly ascending order"
     );
-    
+
     let v_components = vector.components_as_slice();
     let v_values = vector.values_as_slice();
     let query_components = query.components_as_slice();
@@ -381,6 +379,8 @@ where
     let b = current.is_some();
     for (&q_id, &q_v) in query_components.iter().zip(query_values) {
         // This assert actually improves performance: https://github.com/rust-lang/rust/issues/134667
+        // It is correct because if `b` is true, then `current` must be `Some`.
+        // When current will become None, we break out of the loop.
         if b {
             unsafe { assert_unchecked(current.is_some()) }
         }

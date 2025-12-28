@@ -677,17 +677,21 @@ where
     /// assert_eq!(last.values_as_slice(), &[1.0, 2.0, 3.0, 4.0]);
     /// ```
     fn next_back(&mut self) -> Option<Self::Item> {
-        let (&last_offset, rest) = self.offsets.split_last()?;
+        if self.offsets.is_empty() {
+            return None;
+        }
+        let (&tail_offset, rest) = self.offsets.split_last()?;
         self.offsets = rest;
 
-        let next_offset = *self.offsets.last().unwrap_or(&self.last_offset);
+        let tail_offset = tail_offset - self.last_offset;
+        let next_offset = *self.offsets.last().unwrap_or(&self.last_offset) - self.last_offset;
 
-        let len = last_offset - next_offset;
+        let len = tail_offset - next_offset;
 
-        let (rest, cur_components) = self.components.split_at(last_offset - len);
+        let (rest, cur_components) = self.components.split_at(tail_offset - len);
         self.components = rest;
 
-        let (rest, cur_values) = self.values.split_at(last_offset - len);
+        let (rest, cur_values) = self.values.split_at(tail_offset - len);
         self.values = rest;
 
         Some(SparseVector1D::new(cur_components, cur_values))
@@ -705,5 +709,35 @@ where
         std::mem::size_of::<Self>()
             + self.storage.space_usage_bytes()
             + self.quantizer.space_usage_bytes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SparseDatasetIter;
+    use crate::core::dataset::GrowableDataset;
+    use crate::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
+    use crate::{Vector1D, VectorEncoder};
+
+    #[test]
+    fn sparse_dataset_iter_next_then_next_back_returns_last_vector() {
+        let quantizer = <PlainSparseQuantizer<u16, f32, DotProduct> as VectorEncoder>::new(6, 6);
+        let mut dataset = PlainSparseDatasetGrowable::new(quantizer);
+
+        dataset.push(SparseVector1D::new(vec![0_u16, 1], vec![1.0_f32, 1.0]));
+        dataset.push(SparseVector1D::new(vec![2_u16, 3], vec![2.0_f32, 2.0]));
+        dataset.push(SparseVector1D::new(vec![4_u16, 5], vec![3.0_f32, 3.0]));
+
+        let mut iter = SparseDatasetIter::new(&dataset);
+        let _ = iter.next().unwrap();
+        let back = iter.next_back().unwrap();
+
+        assert_eq!(back.components_as_slice(), &[4_u16, 5]);
+        assert_eq!(back.values_as_slice(), &[3.0_f32, 3.0]);
+        let back = iter.next_back().unwrap();
+        assert_eq!(back.components_as_slice(), &[2_u16, 3]);
+        assert_eq!(back.values_as_slice(), &[2.0_f32, 2.0]);
+
+        assert!(iter.next_back().is_none());
     }
 }
