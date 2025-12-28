@@ -1,19 +1,22 @@
 use serde::{Deserialize, Serialize};
 
 use crate::SpaceUsage;
+use crate::VectorId;
+use crate::utils::prefetch_read_slice;
 use crate::{Dataset, GrowableDataset};
 use crate::{DenseQuantizer, VectorEncoder};
-use crate::utils::prefetch_read_slice;
 use crate::{DenseVector1D, Vector1D};
-use crate::VectorId;
 
 use rayon::prelude::*;
 
-type DenseEncodedVector<'a, E> =
-    DenseVector1D<<E as VectorEncoder>::OutputValueType, &'a [<E as VectorEncoder>::OutputValueType]>;
+type DenseEncodedVector<'a, E> = DenseVector1D<
+    <E as VectorEncoder>::OutputValueType,
+    &'a [<E as VectorEncoder>::OutputValueType],
+>;
 
 // Implementation of a growable dense dataset.
-pub type DenseDatasetGrowable<E> = DenseDatasetGeneric<E, Vec<<E as VectorEncoder>::OutputValueType>>;
+pub type DenseDatasetGrowable<E> =
+    DenseDatasetGeneric<E, Vec<<E as VectorEncoder>::OutputValueType>>;
 
 // Implementation of a (immutable) sparse dataset.
 pub type DenseDataset<E> = DenseDatasetGeneric<E, Box<[<E as VectorEncoder>::OutputValueType]>>;

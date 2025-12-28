@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::hint::assert_unchecked;
 
 use crate::SpaceUsage;
-use crate::{Dataset, GrowableDataset};
-use crate::{VectorEncoder, SparseQuantizer};
 use crate::utils::prefetch_read_slice;
 use crate::{ComponentType, ValueType, VectorId};
+use crate::{Dataset, GrowableDataset};
+use crate::{SparseQuantizer, VectorEncoder};
 use crate::{SparseVector1D, Vector1D};
 
 use rayon::prelude::{IndexedParallelIterator, ParallelIterator, ParallelSlice};
