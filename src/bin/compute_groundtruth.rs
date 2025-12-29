@@ -350,7 +350,7 @@ fn compute_dense_groundtruth<V, D>(
         .progress_count(queries.len() as u64)
         .with_style(pb_style)
         .map(|qvec| {
-            let res: Vec<DatasetResult<D>> = dataset.search(qvec, k);
+            let res: Vec<DatasetResult<D>> = dataset.search(&qvec, k);
             res.into_iter()
                 .map(|r| (r.distance.distance(), r.vector))
                 .collect()
@@ -418,7 +418,7 @@ fn compute_sparse_groundtruth<C, V, D>(
         .progress_count(queries.len() as u64)
         .with_style(pb_style)
         .map(|qvec| {
-            let res: Vec<DatasetResult<D>> = dataset.search(qvec, k);
+            let res: Vec<DatasetResult<D>> = dataset.search(&qvec, k);
             res.into_iter()
                 .map(|r| (r.distance.distance(), r.vector))
                 .collect()
@@ -487,7 +487,7 @@ fn compute_sparse_groundtruth_dotvbyte<V>(
         .progress_count(queries.len() as u64)
         .with_style(pb_style)
         .map(|qvec| {
-            let res: Vec<DatasetResult<distances::DotProduct>> = dataset.search(qvec, k);
+            let res: Vec<DatasetResult<distances::DotProduct>> = dataset.search(&qvec, k);
             res.into_iter()
                 .map(|r| (r.distance.distance(), r.vector))
                 .collect()

@@ -162,16 +162,19 @@ where
     /// the indices of the K-nearest neighbors along with their distances.
     ///
     #[inline]
-    fn search(
+    fn search<QueryVector>(
         &self,
-        query: impl QueryVectorFor<Q>,
+        query: &QueryVector,
         k: usize,
-    ) -> Vec<ScoredVector<<Q as VectorEncoder>::Distance>> {
+    ) -> Vec<ScoredVector<<Q as VectorEncoder>::Distance>>
+    where
+        QueryVector: QueryVectorFor<Q> + ?Sized,
+    {
         if k == 0 {
             return Vec::new();
         }
 
-        let evaluator = self.quantizer().query_evaluator(&query);
+        let evaluator = self.quantizer().query_evaluator(query);
 
         self.iter()
             .enumerate()

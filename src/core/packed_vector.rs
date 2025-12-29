@@ -23,7 +23,6 @@ where
     AT: AsRef<[T]>,
 {
     data: AT,
-    original_length: Option<usize>, // Optional: original length of the uncompressed vector
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -33,10 +32,9 @@ where
     AT: AsRef<[T]>,
 {
     #[inline]
-    pub fn new(data: AT, original_length: Option<usize>) -> Self {
+    pub fn new(data: AT) -> Self {
         Self {
             data,
-            original_length,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -77,6 +75,6 @@ where
 {
     #[inline]
     fn from_slice(slice: &'a [T]) -> Self {
-        PackedVector::new(slice, None)
+        PackedVector::new(slice)
     }
 }
