@@ -288,10 +288,11 @@ where
     /// ```rust
     /// use vectorium::{Dataset, GrowableDataset};
     /// use vectorium::{DenseDataset, PlainDenseDatasetGrowable};
-    /// use vectorium::{DenseVector1D, EuclideanDistance, PlainDenseQuantizer};
+    /// use vectorium::{DenseVector1D, PlainDenseQuantizer, SquaredEuclideanDistance};
     ///
-    /// let quantizer = PlainDenseQuantizer::<f32, EuclideanDistance>::new(4);
-    /// let mut growable_dataset = PlainDenseDatasetGrowable::<f32, EuclideanDistance>::new(quantizer);
+    /// let quantizer = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(4);
+    /// let mut growable_dataset =
+    ///     PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::new(quantizer);
     ///
     /// // Populate mutable dataset...
     /// growable_dataset.push(DenseVector1D::new(&[1.0, 2.0, 3.0, 4.0]));
@@ -327,19 +328,25 @@ where
     ///
     /// ```rust
     /// use vectorium::{Dataset, GrowableDataset};
-    /// use vectorium::{DenseVector1D, EuclideanDistance, PlainDenseDataset, PlainDenseDatasetGrowable, PlainDenseQuantizer};
+    /// use vectorium::{
+    ///     DenseVector1D, PlainDenseDataset, PlainDenseDatasetGrowable, PlainDenseQuantizer,
+    ///     SquaredEuclideanDistance,
+    /// };
     ///
-    /// let quantizer = PlainDenseQuantizer::<f32, EuclideanDistance>::new(4);
-    /// let mut growable_dataset = PlainDenseDatasetGrowable::<f32, EuclideanDistance>::new(quantizer);
+    /// let quantizer = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(4);
+    /// let mut growable_dataset =
+    ///     PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::new(quantizer);
     ///
     /// growable_dataset.push(DenseVector1D::new(&[1.0, 2.0, 3.0, 4.0]));
     /// growable_dataset.push(DenseVector1D::new(&[0.0, 4.0, 5.0, 6.0]));
     /// growable_dataset.push(DenseVector1D::new(&[1.0, 2.0, 3.0, 4.0]));
     ///
-    /// let immutable_dataset: PlainDenseDataset<f32, EuclideanDistance> = growable_dataset.into();
+    /// let immutable_dataset: PlainDenseDataset<f32, SquaredEuclideanDistance> =
+    ///     growable_dataset.into();
     ///
     /// // Convert immutable dataset back to a growable one
-    /// let mut growable_dataset_again: PlainDenseDatasetGrowable<f32, EuclideanDistance> = immutable_dataset.into();
+    /// let mut growable_dataset_again: PlainDenseDatasetGrowable<f32, SquaredEuclideanDistance> =
+    ///     immutable_dataset.into();
     /// growable_dataset_again.push(DenseVector1D::new(&[1.0, 7.0, 8.0, 9.0]));
     ///
     /// assert_eq!(growable_dataset_again.len(), 4);
@@ -530,7 +537,7 @@ where
 
 //     pub fn top1(&self, queries: &[T], batch_size: usize) -> Vec<(f32, usize)>
 //     where
-//         T: Float + EuclideanDistance<T> + DotProduct<T>,
+//         T: Float,
 //     {
 //         assert!(
 //             queries.len() == batch_size * self.dim(),

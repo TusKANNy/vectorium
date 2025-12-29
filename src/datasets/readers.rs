@@ -55,7 +55,7 @@ impl std::error::Error for ReaderError {}
 /// The distance type `D` must implement `ScalarDenseSupportedDistance`.
 ///
 /// # Type Parameters
-/// * `D` - The distance type (e.g., `EuclideanDistance` or `DotProduct`)
+/// * `D` - The distance type (e.g., `SquaredEuclideanDistance` or `DotProduct`)
 ///
 /// # Arguments
 /// * `filename` - Path to the `.npy` file
@@ -63,9 +63,9 @@ impl std::error::Error for ReaderError {}
 /// # Example
 /// ```ignore
 /// use vectorium::readers::read_npy_f32;
-/// use vectorium::distances::EuclideanDistance;
+/// use vectorium::distances::SquaredEuclideanDistance;
 ///
-/// let dataset = read_npy_f32::<EuclideanDistance>("vectors.npy")?;
+/// let dataset = read_npy_f32::<SquaredEuclideanDistance>("vectors.npy")?;
 /// let evaluator = dataset.quantizer().get_query_evaluator(&query);
 /// ```
 pub fn read_npy_f32<D>(filename: impl AsRef<Path>) -> Result<PlainDenseDataset<f32, D>, ReaderError>

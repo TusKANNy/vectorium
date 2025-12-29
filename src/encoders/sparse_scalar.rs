@@ -21,7 +21,7 @@ pub trait ScalarSparseSupportedDistance: Distance {
 }
 
 // For now, only DotProduct is implemented.
-// EuclideanDistance for sparse vectors would require custom implementation.
+// SquaredEuclideanDistance for sparse vectors would require custom implementation.
 impl ScalarSparseSupportedDistance for DotProduct {
     #[inline]
     fn compute_sparse<C: ComponentType, V: ValueType + Float>(

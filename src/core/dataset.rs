@@ -46,13 +46,6 @@ pub type ScoredVectorSquaredEuclidean =
 pub type ScoredRangeSquaredEuclidean =
     ScoredRange<crate::core::distances::SquaredEuclideanDistance>;
 
-/// Deprecated alias for backwards compatibility.
-#[deprecated(since = "0.2.0", note = "Use ScoredVectorSquaredEuclidean instead")]
-pub type ScoredVectorEuclidean = ScoredVectorSquaredEuclidean;
-/// Deprecated alias for backwards compatibility.
-#[deprecated(since = "0.2.0", note = "Use ScoredRangeSquaredEuclidean instead")]
-pub type ScoredRangeEuclidean = ScoredRangeSquaredEuclidean;
-
 /// A `Dataset` stores a collection of dense or sparse embedding vectors.
 ///
 /// At the moment we have two implementations:

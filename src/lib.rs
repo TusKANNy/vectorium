@@ -42,20 +42,14 @@ pub use core::packed_vector::{PackedEncoded, PackedVector};
 
 pub use core::distances::{Distance, DotProduct, SquaredEuclideanDistance};
 
-/// Deprecated alias for backwards compatibility.
-#[deprecated(since = "0.2.0", note = "Use SquaredEuclideanDistance instead")]
-pub type EuclideanDistance = SquaredEuclideanDistance;
-
 pub use core::vector_encoder::{
     DenseQuantizer, PackedQuantizer, QueryEvaluator, QueryVectorFor, SparseQuantizer, VectorEncoder,
 };
 
-#[allow(deprecated)]
 pub use encoders::dense_scalar::{
-    PlainDenseQuantizer, PlainDenseQuantizerDotProduct, PlainDenseQuantizerEuclidean,
-    PlainDenseQuantizerSquaredEuclidean, ScalarDenseQuantizer, ScalarDenseQuantizerDotProduct,
-    ScalarDenseQuantizerEuclidean, ScalarDenseQuantizerSame, ScalarDenseQuantizerSquaredEuclidean,
-    ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
+    PlainDenseQuantizer, PlainDenseQuantizerDotProduct, PlainDenseQuantizerSquaredEuclidean,
+    ScalarDenseQuantizer, ScalarDenseQuantizerDotProduct, ScalarDenseQuantizerSame,
+    ScalarDenseQuantizerSquaredEuclidean, ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
 };
 pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Quantizer, DotVByteFixedU8QueryEvaluator};
 pub use encoders::sparse_scalar::{

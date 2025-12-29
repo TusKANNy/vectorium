@@ -71,19 +71,6 @@ pub type ScalarDenseQuantizerSquaredEuclidean<V> =
     ScalarDenseQuantizer<V, V, SquaredEuclideanDistance>;
 pub type ScalarDenseQuantizerDotProduct<V> = ScalarDenseQuantizer<V, V, DotProduct>;
 
-/// Deprecated alias for backwards compatibility.
-#[deprecated(
-    since = "0.2.0",
-    note = "Use PlainDenseQuantizerSquaredEuclidean instead"
-)]
-pub type PlainDenseQuantizerEuclidean<V> = PlainDenseQuantizerSquaredEuclidean<V>;
-/// Deprecated alias for backwards compatibility.
-#[deprecated(
-    since = "0.2.0",
-    note = "Use ScalarDenseQuantizerSquaredEuclidean instead"
-)]
-pub type ScalarDenseQuantizerEuclidean<V> = ScalarDenseQuantizerSquaredEuclidean<V>;
-
 impl<In, Out, D> ScalarDenseQuantizer<In, Out, D> {
     pub fn new(d: usize) -> Self {
         Self {
