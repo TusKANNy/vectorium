@@ -125,7 +125,9 @@ pub trait DenseQuantizer:
         OutputComponentType = DenseComponent,
     > + SpaceUsage
 {
-    /// Encode input vectors into quantized output vectors
+    /// Encode input vectors into quantized output vectors.
+    ///
+    /// Implementations must append exactly `self.output_dim()` values to `values`.
     fn extend_with_encode<ValueContainer>(
         &self,
         input_vector: DenseVector1D<Self::InputValueType, impl AsRef<[Self::InputValueType]>>,
@@ -155,8 +157,14 @@ pub trait DenseQuantizer:
     {
         let values = input_vector.values_as_slice();
         let mut out_values = Vec::with_capacity(values.len());
+        let before_len = out_values.len();
 
         self.extend_with_encode(DenseVector1D::new(values), &mut out_values);
+        assert_eq!(
+            out_values.len(),
+            before_len + self.output_dim(),
+            "DenseQuantizer::extend_with_encode must append exactly output_dim() values"
+        );
 
         DenseVector1D::new(out_values)
     }

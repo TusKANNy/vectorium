@@ -253,7 +253,13 @@ where
         );
 
         let input = DenseVector1D::new(vec.values_as_slice());
+        let before_len = self.data.len();
         self.quantizer.extend_with_encode(input, &mut self.data);
+        assert_eq!(
+            self.data.len(),
+            before_len + self.quantizer.output_dim(),
+            "DenseQuantizer::extend_with_encode must append exactly output_dim() values"
+        );
 
         self.n_vecs += 1;
     }
@@ -469,7 +475,13 @@ where
         // Iterate vector by vector and encode
         for src_vec in source.iter() {
             let input = DenseVector1D::new(src_vec.values_as_slice());
+            let before_len = output_data.len();
             quantizer.extend_with_encode(input, &mut output_data);
+            assert_eq!(
+                output_data.len(),
+                before_len + dst_dim,
+                "DenseQuantizer::extend_with_encode must append exactly output_dim() values"
+            );
         }
 
         DenseDatasetGeneric::<ScalarDenseQuantizer<In, Out, D>, AVOut> {
