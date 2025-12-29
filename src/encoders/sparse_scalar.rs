@@ -183,12 +183,6 @@ where
         QueryVector: Vector1D<Value = f32, Component = C> + ?Sized,
         InValue: ValueType + Float,
     {
-        let query_components = query.components_as_slice();
-        assert!(
-            is_strictly_sorted(query_components),
-            "Query components must be sorted in strictly ascending order."
-        );
-
         let max_c = query
             .components_as_slice()
             .iter()
@@ -220,6 +214,10 @@ where
             Some(DenseVector1D::new(dense_query))
         } else {
             // For large dimensions, keep sparse representation and do merge based dot product computation.
+            assert!(
+                is_strictly_sorted(query.components_as_slice()),
+                "Query components must be sorted in strictly ascending order."
+            );
             None
         };
 

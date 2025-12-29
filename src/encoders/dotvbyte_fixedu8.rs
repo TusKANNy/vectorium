@@ -38,7 +38,17 @@ pub struct DotVByteFixedU8Quantizer {
 impl DotVByteFixedU8Quantizer {
     #[inline]
     pub fn component_mapping(&self) -> Option<&[u16]> {
-        self.component_mapping.as_deref()
+        let mapping = self.component_mapping.as_deref();
+        if let Some(mapping) = mapping {
+            assert_eq!(
+                mapping.len(),
+                self.dim,
+                "component mapping length {} does not match input dimension {}",
+                mapping.len(),
+                self.dim
+            );
+        }
+        mapping
     }
 
     /// Encode a sparse vector (components + `FixedU8Q` values) into the packed DotVByte format
@@ -177,13 +187,33 @@ impl<'a> DotVByteFixedU8QueryEvaluator<'a> {
     where
         QueryVector: Vector1D<Component = u16, Value = f32> + ?Sized,
     {
+        // xxxxx_TODO: need a merge-based dot product computation when there are too high dimensionality.
+
+        let max_c = query
+            .components_as_slice()
+            .iter()
+            .map(|c| c.as_())
+            .max()
+            .unwrap_or(0);
+
+        assert!(
+            max_c < quantizer.input_dim(),
+            "Query vector component exceeds quantizer input dimension."
+        );
+
+        assert_eq!(
+            query.components_as_slice().len(),
+            query.values_as_slice().len(),
+            "Query vector components and values length mismatch."
+        );
+
         // Densify the remapped query vector
         let mut vec = vec![0.0; quantizer.dim];
         let query_components = query.components_as_slice();
         let query_values = query.values_as_slice();
 
         for (&c, &v) in query_components.iter().zip(query_values.iter()) {
-            let mapped_component = if let Some(component_mapping) = &quantizer.component_mapping {
+            let mapped_component = if let Some(component_mapping) = quantizer.component_mapping() {
                 component_mapping[c as usize]
             } else {
                 c
