@@ -4,7 +4,7 @@ use std::io;
 use std::path::Path;
 
 use std::fs::File;
-use std::io::{BufReader, Read, Result as IoResult};
+use std::io::{BufReader, Read};
 
 use ndarray::Array2;
 use ndarray_npy::ReadNpyExt;
@@ -100,7 +100,7 @@ where
 /// * `D` - Distance type (must implement `ScalarSparseSupportedDistance`)
 ///
 /// # Errors
-/// Returns `IoResult` error if:
+/// Returns `ReaderError` if:
 /// - File cannot be read
 /// - Component values overflow the type C (e.g., reading a value > 2^16 when C is u16)
 ///
@@ -113,7 +113,7 @@ where
 /// ```
 pub fn read_seismic_format<C, V, D>(
     filename: impl AsRef<Path>,
-) -> IoResult<PlainSparseDataset<C, V, D>>
+) -> Result<PlainSparseDataset<C, V, D>, ReaderError>
 where
     C: ComponentType,
     V: ValueType + Float,
@@ -134,13 +134,13 @@ where
 /// * `limit` - Maximum number of vectors to read (if `None`, reads all vectors)
 ///
 /// # Errors
-/// Returns `IoResult` error if:
+/// Returns `ReaderError` if:
 /// - File cannot be read
 /// - Component values overflow the type C (e.g., reading a value > 2^16 when C is u16)
 pub fn read_seismic_format_limit<C, V, D>(
     filename: impl AsRef<Path>,
     limit: Option<usize>,
-) -> IoResult<PlainSparseDataset<C, V, D>>
+) -> Result<PlainSparseDataset<C, V, D>, ReaderError>
 where
     C: ComponentType,
     V: ValueType + Float,
@@ -184,10 +184,10 @@ where
     br.read_exact(&mut buffer_d)?; // n_vecs header
     let file_n_vecs_2 = u32::from_le_bytes(buffer_d) as usize;
     if file_n_vecs_2 != file_n_vecs {
-        return Err(io::Error::new(
+        return Err(ReaderError::Io(io::Error::new(
             io::ErrorKind::InvalidData,
             "Inconsistent header n_vecs between passes",
-        ));
+        )));
     }
 
     use crate::SparseVector1D;
