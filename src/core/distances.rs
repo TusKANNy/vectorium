@@ -25,23 +25,6 @@ pub trait Distance: Ord + Copy + Send + Sync {
     fn distance(&self) -> f32;
 }
 
-/// Errors returned when attempting to construct a distance value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DistanceError {
-    /// Value was NaN which is not allowed for distances.
-    NaNValue,
-}
-
-impl std::fmt::Display for DistanceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DistanceError::NaNValue => write!(f, "NaN is not allowed for distance types"),
-        }
-    }
-}
-
-impl std::error::Error for DistanceError {}
-
 /// Squared Euclidean distance wrapper around an `f32`.
 ///
 /// For performance, this type stores the *squared* Euclidean distance
