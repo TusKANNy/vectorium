@@ -511,8 +511,8 @@ impl SpaceUsage for DotVByteFixedU8Quantizer {
     fn space_usage_bytes(&self) -> usize {
         let size_of_mapping = match &self.component_mapping {
             Some(component_mapping) => component_mapping.space_usage_bytes(),
-            None => 0,
+            None => std::mem::size_of::<Option<Box<[u16]>>>(),
         };
-        size_of_mapping + std::mem::size_of::<Self>()
+        size_of_mapping + self.dim.space_usage_bytes()
     }
 }

@@ -60,7 +60,7 @@ where
     fn space_usage_bytes(&self) -> usize {
         // Use size_of for the quantizer to avoid requiring every VectorEncoder to
         // implement `SpaceUsage`.
-        std::mem::size_of::<Self>()
+        self.n_vecs.space_usage_bytes()
             + self.quantizer.space_usage_bytes()
             + self.data.space_usage_bytes()
     }

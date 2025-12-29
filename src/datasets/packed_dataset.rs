@@ -122,10 +122,10 @@ where
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     fn space_usage_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.quantizer.space_usage_bytes()
+        self.quantizer.space_usage_bytes()
             + self.offsets.space_usage_bytes()
             + self.data.space_usage_bytes()
+            + self.nnz.space_usage_bytes()
     }
 }
 

@@ -203,7 +203,7 @@ where
     D: ScalarDenseSupportedDistance,
 {
     fn space_usage_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
+        self.d.space_usage_bytes()
     }
 }
 

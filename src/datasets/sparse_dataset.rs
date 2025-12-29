@@ -618,8 +618,9 @@ where
         let (&next_offset, rest) = self.offsets.split_first()?;
         self.offsets = rest;
 
-        let (cur_components, rest) =
-            self.components.split_at(next_offset - self.front_base_offset);
+        let (cur_components, rest) = self
+            .components
+            .split_at(next_offset - self.front_base_offset);
         self.components = rest;
 
         let (cur_values, rest) = self.values.split_at(next_offset - self.front_base_offset);
@@ -709,9 +710,7 @@ where
 {
     /// Returns the size of the dataset in bytes.
     fn space_usage_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.storage.space_usage_bytes()
-            + self.quantizer.space_usage_bytes()
+        self.storage.space_usage_bytes() + self.quantizer.space_usage_bytes()
     }
 }
 
