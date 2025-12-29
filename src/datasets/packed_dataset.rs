@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::PackedEncoded;
 use crate::PackedVectorEncoder;
 use crate::SpaceUsage;
-use crate::PackedEncoded;
 use crate::utils::prefetch_read_slice;
 use crate::{Dataset, GrowableDataset, SparseVector1D, Vector1D, VectorId};
 
@@ -257,7 +257,7 @@ where
     }
 }
 
-impl<QIn> From<crate::datasets::sparse_dataset::SparseDataset<QIn>>
+impl<QIn, S> From<crate::datasets::sparse_dataset::SparseDatasetGeneric<QIn, S>>
     for PackedDataset<crate::DotVByteFixedU8Quantizer>
 where
     QIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
@@ -270,8 +270,9 @@ where
                 &'a [<QIn as crate::VectorEncoder>::OutputValueType],
             >,
         >,
+    S: crate::core::storage::SparseStorage<QIn>,
 {
-    fn from(dataset: crate::datasets::sparse_dataset::SparseDataset<QIn>) -> Self {
+    fn from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<QIn, S>) -> Self {
         use crate::SparseVectorEncoder;
         use crate::VectorEncoder;
         use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
@@ -281,9 +282,6 @@ where
         let mut dotvbyte_quantizer =
             <crate::DotVByteFixedU8Quantizer as VectorEncoder>::new(dim, dim);
 
-        // NOTE: `VectorEncoder::train` consumes input vectors. Training a DotVByte quantizer on a
-        // sparse dataset requires a (potentially) two-pass conversion (or a
-        // dedicated training iterator) and is left for later.
         dotvbyte_quantizer.train(dataset.iter());
 
         // Use a scalar quantizer to map values from `QIn::OutputValueType` into `FixedU8Q`.
@@ -292,24 +290,37 @@ where
                 dim, dim,
             );
 
-        let mut offsets: Vec<usize> = Vec::with_capacity(dataset.len() + 1);
-        offsets.push(0);
-        let mut data = Vec::with_capacity(dataset.nnz() / 3); // overallocate, estimated 21 bits per entry
+        let mut growable = PackedDatasetGrowable::new(dotvbyte_quantizer);
 
         for v in dataset.iter() {
             let v_fixedu8 = scalar.quantize_vector(v); // convert to FixedU8Q representation
 
-            dotvbyte_quantizer.extend_with_encode(v_fixedu8, &mut data);
-
-            offsets.push(data.len());
+            growable.push(v_fixedu8);
         }
 
-        Self {
-            offsets: offsets.into_boxed_slice(),
-            data: data.into_boxed_slice(),
-            quantizer: dotvbyte_quantizer,
-            nnz: dataset.nnz(),
-        }
+        let mut packed: PackedDataset<crate::DotVByteFixedU8Quantizer> = growable.into();
+        packed.nnz = dataset.nnz();
+        packed
+
+        // Old direct encoding path (kept for reference):
+        // let mut offsets: Vec<usize> = Vec::with_capacity(dataset.len() + 1);
+        // offsets.push(0);
+        // let mut data = Vec::with_capacity(dataset.nnz() / 3); // overallocate, estimated 21 bits per entry
+        //
+        // for v in dataset.iter() {
+        //     let v_fixedu8 = scalar.quantize_vector(v); // convert to FixedU8Q representation
+        //
+        //     dotvbyte_quantizer.extend_with_encode(v_fixedu8, &mut data);
+        //
+        //     offsets.push(data.len());
+        // }
+        //
+        // Self {
+        //     offsets: offsets.into_boxed_slice(),
+        //     data: data.into_boxed_slice(),
+        //     quantizer: dotvbyte_quantizer,
+        //     nnz: dataset.nnz(),
+        // }
     }
 }
 

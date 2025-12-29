@@ -3,8 +3,8 @@ use std::marker::PhantomData;
 
 mod swizzle;
 
-use crate::distances::DotProduct;
 use crate::PackedVector;
+use crate::distances::DotProduct;
 use crate::{ComponentType, FixedU8Q, SpaceUsage, SparseVector1D, ValueType, Vector1D};
 use crate::{PackedVectorEncoder, QueryEvaluator, QueryVectorFor, VectorEncoder};
 
