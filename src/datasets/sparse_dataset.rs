@@ -6,7 +6,7 @@ use crate::core::storage::{GrowableSparseStorage, ImmutableSparseStorage, Sparse
 use crate::utils::{is_strictly_sorted, prefetch_read_slice};
 use crate::{ComponentType, ValueType, VectorId};
 use crate::{Dataset, GrowableDataset};
-use crate::{SparseQuantizer, VectorEncoder};
+use crate::{SparseVectorEncoder, VectorEncoder};
 use crate::{SparseVector1D, Vector1D};
 
 use rayon::prelude::{IndexedParallelIterator, ParallelIterator, ParallelSlice};
@@ -42,7 +42,7 @@ pub type SparseDataset<E> = SparseDatasetGeneric<E, ImmutableSparseStorage<E>>;
 ///
 /// # Type Parameters
 ///
-/// - `E`: The encoder/quantizer type (must implement `SparseQuantizer`)
+/// - `E`: The encoder/quantizer type (must implement `SparseVectorEncoder`)
 /// - `S`: The storage backend (defaults to `GrowableSparseStorage<E>`)
 ///
 /// # Example
@@ -69,7 +69,7 @@ pub type SparseDataset<E> = SparseDatasetGeneric<E, ImmutableSparseStorage<E>>;
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct SparseDatasetGeneric<E, S = GrowableSparseStorage<E>>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>, // Ensure that the encoded vector is a sparse vector
     S: SparseStorage<E>,
 {
@@ -79,7 +79,7 @@ where
 
 impl<E, S> SparseDatasetGeneric<E, S>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
     S: SparseStorage<E>,
 {
@@ -102,7 +102,7 @@ where
 
 impl<E, S> Dataset<E> for SparseDatasetGeneric<E, S>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
     S: SparseStorage<E>,
 {
@@ -358,7 +358,7 @@ where
 
 // impl<E, AC, AV> FromIterator<(AC, AV)> for SparseDatasetGrowable<E>
 // where
-//     E: SparseQuantizer,
+//     E: SparseVectorEncoder,
 //     AC: AsRef<[E::OutputComponentType]>,
 //     AV: AsRef<[E::OutputValueType]>,
 // {
@@ -409,7 +409,7 @@ where
 
 impl<E> From<SparseDatasetGrowable<E>> for SparseDataset<E>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
 {
     /// Converts a mutable sparse dataset into an immutable one.
@@ -445,7 +445,7 @@ where
 
 impl<E> From<SparseDataset<E>> for SparseDatasetGrowable<E>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
 {
     /// Converts an immutable sparse dataset into a mutable one.
@@ -508,7 +508,7 @@ where
     #[inline]
     pub fn new<E, S>(dataset: &'a SparseDatasetGeneric<E, S>) -> Self
     where
-        E: SparseQuantizer<OutputComponentType = C, OutputValueType = V>,
+        E: SparseVectorEncoder<OutputComponentType = C, OutputValueType = V>,
         for<'b> E: VectorEncoder<EncodedVector<'b> = SparseEncodedVector<'b, E>>,
         S: SparseStorage<E>,
     {
@@ -523,7 +523,7 @@ where
 
 impl<E> GrowableDataset<E> for SparseDatasetGrowable<E>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
 {
     /// For SparseDataset, the dimensionality `d` may be 0 if unknown when creating a new dataset.
@@ -704,7 +704,7 @@ where
 
 impl<E, S> SpaceUsage for SparseDatasetGeneric<E, S>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
     S: SparseStorage<E>,
 {

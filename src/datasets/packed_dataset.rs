@@ -1,20 +1,20 @@
 use serde::{Deserialize, Serialize};
 
-use crate::PackedQuantizer;
+use crate::PackedVectorEncoder;
 use crate::SpaceUsage;
-use crate::packed_vector::PackedEncoded;
+use crate::PackedEncoded;
 use crate::utils::prefetch_read_slice;
-use crate::{Dataset, VectorId};
+use crate::{Dataset, GrowableDataset, SparseVector1D, Vector1D, VectorId};
 
 use rayon::prelude::*;
 
 /// A growable packed dataset.
 pub type PackedDatasetGrowable<E> =
-    PackedDatasetGeneric<E, Vec<usize>, Vec<<E as PackedQuantizer>::EncodingType>>;
+    PackedDatasetGeneric<E, Vec<usize>, Vec<<E as PackedVectorEncoder>::EncodingType>>;
 
 /// An immutable packed dataset.
 pub type PackedDataset<E> =
-    PackedDatasetGeneric<E, Box<[usize]>, Box<[<E as PackedQuantizer>::EncodingType]>>;
+    PackedDatasetGeneric<E, Box<[usize]>, Box<[<E as PackedVectorEncoder>::EncodingType]>>;
 
 /// Dataset storing variable-length packed encodings in a single concatenated `data` array.
 ///
@@ -44,7 +44,7 @@ pub type PackedDataset<E> =
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct PackedDatasetGeneric<E, Offsets, Data>
 where
-    E: PackedQuantizer,
+    E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::EncodingType]>,
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
@@ -57,7 +57,7 @@ where
 
 impl<E, Offsets, Data> PackedDatasetGeneric<E, Offsets, Data>
 where
-    E: PackedQuantizer,
+    E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::EncodingType]>,
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
@@ -89,9 +89,45 @@ where
     }
 }
 
+impl<E> GrowableDataset<E>
+    for PackedDatasetGeneric<E, Vec<usize>, Vec<<E as PackedVectorEncoder>::EncodingType>>
+where
+    E: PackedVectorEncoder,
+    for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
+{
+    #[inline]
+    fn new(quantizer: E) -> Self {
+        Self {
+            offsets: vec![0],
+            data: Vec::new(),
+            quantizer,
+            nnz: 0,
+        }
+    }
+
+    #[inline]
+    fn push(
+        &mut self,
+        vec: impl Vector1D<Component = E::InputComponentType, Value = E::InputValueType>,
+    ) {
+        let components = vec.components_as_slice();
+        let values = vec.values_as_slice();
+        assert_eq!(
+            components.len(),
+            values.len(),
+            "PackedDatasetGrowable expects sparse vectors with explicit components"
+        );
+
+        let input = SparseVector1D::new(components, values);
+        self.quantizer.extend_with_encode(input, &mut self.data);
+        self.offsets.push(self.data.len());
+        self.nnz += components.len();
+    }
+}
+
 // impl<E> PackedDatasetGeneric<E, Vec<usize>, Vec<E::EncodingType>>
 // where
-//     E: PackedQuantizer,
+//     E: PackedVectorEncoder,
 //     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 // {
 //     #[inline]
@@ -116,7 +152,7 @@ where
 
 impl<E, Offsets, Data> SpaceUsage for PackedDatasetGeneric<E, Offsets, Data>
 where
-    E: PackedQuantizer,
+    E: PackedVectorEncoder,
     Offsets: AsRef<[usize]> + SpaceUsage,
     Data: AsRef<[E::EncodingType]> + SpaceUsage,
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
@@ -131,7 +167,7 @@ where
 
 impl<E, Offsets, Data> Dataset<E> for PackedDatasetGeneric<E, Offsets, Data>
 where
-    E: PackedQuantizer,
+    E: PackedVectorEncoder,
     Offsets: AsRef<[usize]> + SpaceUsage,
     Data: AsRef<[E::EncodingType]> + SpaceUsage,
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
@@ -193,7 +229,7 @@ where
 
 impl<E> From<PackedDatasetGrowable<E>> for PackedDataset<E>
 where
-    E: PackedQuantizer,
+    E: PackedVectorEncoder,
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     fn from(dataset: PackedDatasetGrowable<E>) -> Self {
@@ -208,7 +244,7 @@ where
 
 impl<E> From<PackedDataset<E>> for PackedDatasetGrowable<E>
 where
-    E: PackedQuantizer,
+    E: PackedVectorEncoder,
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     fn from(dataset: PackedDataset<E>) -> Self {
@@ -224,7 +260,7 @@ where
 impl<QIn> From<crate::datasets::sparse_dataset::SparseDataset<QIn>>
     for PackedDataset<crate::DotVByteFixedU8Quantizer>
 where
-    QIn: crate::SparseQuantizer<OutputComponentType = u16>,
+    QIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
     <QIn as crate::VectorEncoder>::OutputValueType: crate::ValueType + crate::Float,
     for<'a> QIn: crate::VectorEncoder<
             EncodedVector<'a> = crate::SparseVector1D<
@@ -236,7 +272,7 @@ where
         >,
 {
     fn from(dataset: crate::datasets::sparse_dataset::SparseDataset<QIn>) -> Self {
-        use crate::SparseQuantizer;
+        use crate::SparseVectorEncoder;
         use crate::VectorEncoder;
         use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
         use crate::{DotProduct, FixedU8Q};

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
 use crate::SpaceUsage;
-use crate::SparseQuantizer;
+use crate::SparseVectorEncoder;
 
 // =============================================================================
 // Sparse Storage
@@ -26,7 +26,7 @@ use crate::SparseQuantizer;
 /// This abstracts over the concrete storage types (`Vec`, `Box<[T]>`, etc.)
 /// reducing the generic parameter count from 4 (`O, AC, AV` + encoder) to 2
 /// (encoder + storage).
-pub trait SparseStorage<E: SparseQuantizer>: SpaceUsage + Clone {
+pub trait SparseStorage<E: SparseVectorEncoder>: SpaceUsage + Clone {
     /// Type for storing offsets (e.g., `Vec<usize>` or `Box<[usize]>`)
     type Offsets: AsRef<[usize]> + SpaceUsage;
 
@@ -47,7 +47,7 @@ pub trait SparseStorage<E: SparseQuantizer>: SpaceUsage + Clone {
 }
 
 /// Extension trait for mutable sparse storage operations.
-pub trait SparseStorageMut<E: SparseQuantizer>: SparseStorage<E> {
+pub trait SparseStorageMut<E: SparseVectorEncoder>: SparseStorage<E> {
     /// Returns a mutable reference to the offsets array.
     fn offsets_mut(&mut self) -> &mut Self::Offsets;
 
@@ -66,7 +66,7 @@ pub trait SparseStorageMut<E: SparseQuantizer>: SparseStorage<E> {
 ))]
 pub struct GrowableSparseStorage<E>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
 {
     pub(crate) offsets: Vec<usize>,
     pub(crate) components: Vec<E::OutputComponentType>,
@@ -77,7 +77,7 @@ where
 
 impl<E> Clone for GrowableSparseStorage<E>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
     E::OutputComponentType: Clone,
     E::OutputValueType: Clone,
 {
@@ -93,7 +93,7 @@ where
 
 impl<E> GrowableSparseStorage<E>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
 {
     /// Creates a new empty growable storage.
     #[inline]
@@ -122,7 +122,7 @@ where
 
 impl<E> SpaceUsage for GrowableSparseStorage<E>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
 {
     fn space_usage_bytes(&self) -> usize {
         self.offsets.space_usage_bytes()
@@ -133,7 +133,7 @@ where
 
 impl<E> SparseStorage<E> for GrowableSparseStorage<E>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
 {
     type Offsets = Vec<usize>;
     type Components = Vec<E::OutputComponentType>;
@@ -157,7 +157,7 @@ where
 
 impl<E> SparseStorageMut<E> for GrowableSparseStorage<E>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
 {
     #[inline]
     fn offsets_mut(&mut self) -> &mut Self::Offsets {
@@ -183,7 +183,7 @@ where
 ))]
 pub struct ImmutableSparseStorage<E>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
 {
     pub(crate) offsets: Box<[usize]>,
     pub(crate) components: Box<[E::OutputComponentType]>,
@@ -194,7 +194,7 @@ where
 
 impl<E> Clone for ImmutableSparseStorage<E>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
     E::OutputComponentType: Clone,
     E::OutputValueType: Clone,
 {
@@ -210,7 +210,7 @@ where
 
 impl<E> SpaceUsage for ImmutableSparseStorage<E>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
 {
     fn space_usage_bytes(&self) -> usize {
         self.offsets.space_usage_bytes()
@@ -221,7 +221,7 @@ where
 
 impl<E> SparseStorage<E> for ImmutableSparseStorage<E>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
 {
     type Offsets = Box<[usize]>;
     type Components = Box<[E::OutputComponentType]>;
@@ -245,7 +245,7 @@ where
 
 impl<E> From<GrowableSparseStorage<E>> for ImmutableSparseStorage<E>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
 {
     fn from(storage: GrowableSparseStorage<E>) -> Self {
         Self {
@@ -259,7 +259,7 @@ where
 
 impl<E> From<ImmutableSparseStorage<E>> for GrowableSparseStorage<E>
 where
-    E: SparseQuantizer,
+    E: SparseVectorEncoder,
 {
     fn from(storage: ImmutableSparseStorage<E>) -> Self {
         Self {

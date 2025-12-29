@@ -23,7 +23,7 @@ where
 impl<Q, AC, AV> QueryVectorFor<Q>
     for SparseVector1D<Q::QueryComponentType, Q::QueryValueType, AC, AV>
 where
-    Q: SparseQuantizer,
+    Q: SparseVectorEncoder,
     AC: AsRef<[Q::QueryComponentType]>,
     AV: AsRef<[Q::QueryValueType]>,
 {
@@ -110,15 +110,24 @@ pub trait VectorEncoder: Sized {
     fn input_dim(&self) -> usize;
 }
 
-/// A quantizer whose encoded representation is a packed slice of fixed-width elements.
+/// A packed encoder whose encoded representation is a packed slice of fixed-width elements.
 ///
 /// This is meant to be used together with a `PackedDataset` (variable-length by offsets).
-pub trait PackedQuantizer: VectorEncoder + SpaceUsage {
+pub trait PackedVectorEncoder: VectorEncoder + SpaceUsage {
     /// Element type stored in the dataset backing array (e.g. `u64` for word-packed encodings).
     type EncodingType: SpaceUsage + Copy + Send + Sync + 'static;
+
+    /// Encode input sparse vectors into packed output words.
+    fn extend_with_encode<AC, AV>(
+        &self,
+        input_vector: SparseVector1D<Self::InputComponentType, Self::InputValueType, AC, AV>,
+        values: &mut Vec<Self::EncodingType>,
+    ) where
+        AC: AsRef<[Self::InputComponentType]>,
+        AV: AsRef<[Self::InputValueType]>;
 }
 
-pub trait DenseQuantizer:
+pub trait DenseVectorEncoder:
     VectorEncoder<
         QueryComponentType = DenseComponent,
         InputComponentType = DenseComponent,
@@ -139,7 +148,7 @@ pub trait DenseQuantizer:
     ///
     /// # Example
     /// ```
-    /// use vectorium::{DenseQuantizer, DenseVector1D, DotProduct, PlainDenseQuantizer};
+    /// use vectorium::{DenseVectorEncoder, DenseVector1D, DotProduct, PlainDenseQuantizer};
     /// use vectorium::{Vector1D, VectorEncoder};
     ///
     /// let quantizer = PlainDenseQuantizer::<f32, DotProduct>::new(3);
@@ -163,14 +172,14 @@ pub trait DenseQuantizer:
         assert_eq!(
             out_values.len(),
             before_len + self.output_dim(),
-            "DenseQuantizer::extend_with_encode must append exactly output_dim() values"
+            "DenseVectorEncoder::extend_with_encode must append exactly output_dim() values"
         );
 
         DenseVector1D::new(out_values)
     }
 }
 
-pub trait SparseQuantizer: VectorEncoder + SpaceUsage {
+pub trait SparseVectorEncoder: VectorEncoder + SpaceUsage {
     /// Encode input vectors into quantized output vectors
     fn extend_with_encode<ValueContainer, ComponentContainer>(
         &self,
@@ -190,7 +199,7 @@ pub trait SparseQuantizer: VectorEncoder + SpaceUsage {
     ///
     /// # Example
     /// ```
-    /// use vectorium::{DotProduct, PlainSparseQuantizer, SparseQuantizer, SparseVector1D};
+    /// use vectorium::{DotProduct, PlainSparseQuantizer, SparseVectorEncoder, SparseVector1D};
     /// use vectorium::{Vector1D, VectorEncoder};
     ///
     /// let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);

@@ -4,7 +4,7 @@ use crate::SpaceUsage;
 use crate::VectorId;
 use crate::utils::prefetch_read_slice;
 use crate::{Dataset, GrowableDataset};
-use crate::{DenseQuantizer, VectorEncoder};
+use crate::{DenseVectorEncoder, VectorEncoder};
 use crate::{DenseVector1D, Vector1D};
 
 use rayon::prelude::*;
@@ -42,7 +42,7 @@ pub type DenseDataset<E> = DenseDatasetGeneric<E, Box<[<E as VectorEncoder>::Out
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct DenseDatasetGeneric<E, Data>
 where
-    E: DenseQuantizer,
+    E: DenseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     Data: AsRef<[E::OutputValueType]>,
 {
@@ -53,7 +53,7 @@ where
 
 impl<E, Data> SpaceUsage for DenseDatasetGeneric<E, Data>
 where
-    E: DenseQuantizer,
+    E: DenseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     Data: AsRef<[E::OutputValueType]> + SpaceUsage,
 {
@@ -68,7 +68,7 @@ where
 
 impl<E, Data> DenseDatasetGeneric<E, Data>
 where
-    E: DenseQuantizer,
+    E: DenseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     Data: AsRef<[E::OutputValueType]>,
 {
@@ -118,7 +118,7 @@ where
 /// immutable
 impl<E, Data> Dataset<E> for DenseDatasetGeneric<E, Data>
 where
-    E: DenseQuantizer,
+    E: DenseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     Data: AsRef<[E::OutputValueType]> + SpaceUsage,
 {
@@ -229,7 +229,7 @@ where
 // Growable dataset implementation
 impl<E> GrowableDataset<E> for DenseDatasetGeneric<E, Vec<E::OutputValueType>>
 where
-    E: DenseQuantizer,
+    E: DenseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     E::OutputValueType: Default,
 {
@@ -258,7 +258,7 @@ where
         assert_eq!(
             self.data.len(),
             before_len + self.quantizer.output_dim(),
-            "DenseQuantizer::extend_with_encode must append exactly output_dim() values"
+            "DenseVectorEncoder::extend_with_encode must append exactly output_dim() values"
         );
 
         self.n_vecs += 1;
@@ -279,7 +279,7 @@ where
 
 impl<E> From<DenseDatasetGrowable<E>> for DenseDataset<E>
 where
-    E: DenseQuantizer,
+    E: DenseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
 {
     /// Converts a mutable dense dataset into an immutable one.
@@ -320,7 +320,7 @@ where
 
 impl<E> From<DenseDataset<E>> for DenseDatasetGrowable<E>
 where
-    E: DenseQuantizer,
+    E: DenseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
 {
     /// Converts an immutable sparse dataset into a mutable one.
@@ -382,7 +382,7 @@ where
 
 impl<E, T> AsRef<[E::OutputValueType]> for DenseDatasetGeneric<E, T>
 where
-    E: DenseQuantizer,
+    E: DenseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     T: AsRef<[E::OutputValueType]>,
 {
@@ -394,7 +394,7 @@ where
 /// densedataset iterator
 pub struct DenseDatasetIter<'a, E>
 where
-    E: DenseQuantizer,
+    E: DenseVectorEncoder,
     for<'b> E: VectorEncoder<EncodedVector<'b> = DenseEncodedVector<'b, E>>,
 {
     data: &'a [E::OutputValueType],
@@ -404,7 +404,7 @@ where
 
 impl<'a, E> DenseDatasetIter<'a, E>
 where
-    E: DenseQuantizer,
+    E: DenseVectorEncoder,
     for<'b> E: VectorEncoder<EncodedVector<'b> = DenseEncodedVector<'b, E>>,
 {
     pub fn new<Data>(dataset: &'a DenseDatasetGeneric<E, Data>) -> Self
@@ -421,7 +421,7 @@ where
 
 impl<'a, E> Iterator for DenseDatasetIter<'a, E>
 where
-    E: DenseQuantizer,
+    E: DenseVectorEncoder,
     for<'b> E: VectorEncoder<EncodedVector<'b> = DenseEncodedVector<'b, E>>,
 {
     type Item = E::EncodedVector<'a>;
@@ -480,7 +480,7 @@ where
             assert_eq!(
                 output_data.len(),
                 before_len + dst_dim,
-                "DenseQuantizer::extend_with_encode must append exactly output_dim() values"
+                "DenseVectorEncoder::extend_with_encode must append exactly output_dim() values"
             );
         }
 

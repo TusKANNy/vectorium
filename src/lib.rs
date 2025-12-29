@@ -25,7 +25,6 @@ pub mod utils;
 
 pub use core::dataset;
 pub use core::distances;
-pub use core::packed_vector;
 pub use core::storage;
 pub use core::vector_encoder;
 pub use core::vector1d;
@@ -38,12 +37,13 @@ pub use utils::space_usage::SpaceUsage;
 #[allow(non_snake_case)]
 pub use core::vector1d::{DenseVector1D, SparseVector1D, Vector1D};
 
-pub use core::packed_vector::{PackedEncoded, PackedVector};
+pub use core::vector1d::{PackedEncoded, PackedVector};
 
 pub use core::distances::{Distance, DotProduct, SquaredEuclideanDistance};
 
 pub use core::vector_encoder::{
-    DenseQuantizer, PackedQuantizer, QueryEvaluator, QueryVectorFor, SparseQuantizer, VectorEncoder,
+    DenseVectorEncoder, PackedVectorEncoder, QueryEvaluator, QueryVectorFor, SparseVectorEncoder,
+    VectorEncoder,
 };
 
 pub use encoders::dense_scalar::{

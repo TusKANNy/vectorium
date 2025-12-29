@@ -6,7 +6,7 @@ use crate::distances::{
     squared_euclidean_distance_dense_unchecked,
 };
 use crate::numeric_markers::DenseComponent;
-use crate::{DenseQuantizer, QueryEvaluator, QueryVectorFor, VectorEncoder};
+use crate::{DenseVectorEncoder, QueryEvaluator, QueryVectorFor, VectorEncoder};
 use crate::{DenseVector1D, Float, SpaceUsage, ValueType, Vector1D};
 
 /// Marker trait for distance types supported by scalar dense quantizers.
@@ -80,7 +80,7 @@ impl<In, Out, D> ScalarDenseQuantizer<In, Out, D> {
     }
 }
 
-impl<In, Out, D> DenseQuantizer for ScalarDenseQuantizer<In, Out, D>
+impl<In, Out, D> DenseVectorEncoder for ScalarDenseQuantizer<In, Out, D>
 where
     In: ValueType + Float,
     Out: ValueType + Float,

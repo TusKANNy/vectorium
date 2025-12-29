@@ -4,9 +4,9 @@ use std::marker::PhantomData;
 mod swizzle;
 
 use crate::distances::DotProduct;
-use crate::packed_vector::PackedVector;
+use crate::PackedVector;
 use crate::{ComponentType, FixedU8Q, SpaceUsage, SparseVector1D, ValueType, Vector1D};
-use crate::{PackedQuantizer, QueryEvaluator, QueryVectorFor, VectorEncoder};
+use crate::{PackedVectorEncoder, QueryEvaluator, QueryVectorFor, VectorEncoder};
 
 use rusty_perm::PermApply as _;
 use rusty_perm::PermFromSorting as _;
@@ -102,8 +102,20 @@ impl DotVByteFixedU8Quantizer {
     }
 }
 
-impl PackedQuantizer for DotVByteFixedU8Quantizer {
+impl PackedVectorEncoder for DotVByteFixedU8Quantizer {
     type EncodingType = u64;
+
+    #[inline]
+    fn extend_with_encode<AC, AV>(
+        &self,
+        input_vector: SparseVector1D<Self::InputComponentType, Self::InputValueType, AC, AV>,
+        values: &mut Vec<Self::EncodingType>,
+    ) where
+        AC: AsRef<[Self::InputComponentType]>,
+        AV: AsRef<[Self::InputValueType]>,
+    {
+        Self::extend_with_encode(self, input_vector, values);
+    }
 }
 
 impl VectorEncoder for DotVByteFixedU8Quantizer {

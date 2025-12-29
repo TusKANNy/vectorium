@@ -7,7 +7,7 @@ use crate::distances::{
 };
 use crate::utils::is_strictly_sorted;
 use crate::{ComponentType, DenseVector1D, Float, SpaceUsage, SparseVector1D, ValueType, Vector1D};
-use crate::{QueryEvaluator, QueryVectorFor, SparseQuantizer, VectorEncoder};
+use crate::{QueryEvaluator, QueryVectorFor, SparseVectorEncoder, VectorEncoder};
 
 /// Marker trait for distance types supported by scalar sparse quantizers.
 /// Provides the computation method specific to sparse vectors.
@@ -68,7 +68,8 @@ pub type PlainSparseQuantizer<C, V, D> = ScalarSparseQuantizer<C, V, V, D>;
 pub type PlainSparseQuantizerDotProduct<C, V> = PlainSparseQuantizer<C, V, DotProduct>;
 pub type ScalarSparseQuantizerDotProduct<C, V> = ScalarSparseQuantizer<C, V, V, DotProduct>;
 
-impl<C, InValue, OutValue, D> SparseQuantizer for ScalarSparseQuantizer<C, InValue, OutValue, D>
+impl<C, InValue, OutValue, D> SparseVectorEncoder
+    for ScalarSparseQuantizer<C, InValue, OutValue, D>
 where
     C: ComponentType,
     InValue: ValueType + Float,

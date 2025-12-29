@@ -9,7 +9,7 @@ Vectorium is a Rust library for storing, compressing, and searching dense and sp
 ```rust
 use vectorium::{
     Dataset, DenseDataset, DenseVector1D, DotProduct, GrowableDataset, PlainDenseDatasetGrowable,
-    PlainDenseQuantizer, Vector1D, VectorEncoder,
+    DenseVectorEncoder, PlainDenseQuantizer, Vector1D, VectorEncoder,
 };
 
 let encoder = PlainDenseQuantizer::<f32, DotProduct>::new(3);
@@ -31,7 +31,7 @@ assert_eq!(v.values_as_slice(), &[0.5, 1.5, 0.0]);
 ```rust
 use vectorium::{
     Dataset, DotProduct, GrowableDataset, PlainSparseDataset, PlainSparseDatasetGrowable,
-    PlainSparseQuantizer, SparseVector1D, Vector1D, VectorEncoder,
+    PlainSparseQuantizer, SparseVector1D, SparseVectorEncoder, Vector1D, VectorEncoder,
 };
 
 let encoder = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);
@@ -50,4 +50,4 @@ assert_eq!(v.values_as_slice(), &[1.0, 2.0]);
 
 - `Dataset::range_from_id` returns the slice range for a vector; use that range with `get_by_range`/`prefetch`.
 - The growable dataset types (`*Growable`) can be converted into immutable datasets with `into()`.
-- `Plain*Quantizer` types are concrete implementations of the `VectorEncoder` trait.
+- `Plain*Quantizer` types are concrete implementations of the `VectorEncoder` trait and the relevant `*VectorEncoder` specialization.
