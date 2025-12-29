@@ -23,6 +23,11 @@ pub fn prefetch_read_slice<T>(data: &[T]) {
     }
 }
 
+#[inline]
+pub fn is_strictly_sorted<T: Ord>(slice: &[T]) -> bool {
+    slice.windows(2).all(|w| w[0] < w[1])
+}
+
 // #[inline]
 // pub fn prefetch_read_slice<T>(data: &[T]) {
 //     let ptr = data.as_ptr() as *const i8;

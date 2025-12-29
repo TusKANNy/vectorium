@@ -15,6 +15,7 @@ use crate::DenseVector1D;
 use crate::SparseVector1D;
 use crate::Vector1D;
 use crate::{ComponentType, ValueType};
+use crate::utils::is_strictly_sorted;
 
 use std::hint::assert_unchecked;
 
@@ -256,7 +257,7 @@ where
 /// For hot paths where preconditions are already guaranteed, use
 /// [`dot_product_sparse_with_merge_unchecked`].
 ///
-/// Both vectors' components must be sorted in ascending order.
+/// Both vectors' components must be sorted in strictly ascending order.
 ///
 /// # Arguments
 ///
@@ -271,7 +272,7 @@ where
 ///
 /// Panics if:
 /// - Component and value slices have different lengths for either vector.
-/// - Components are not sorted in ascending order.
+/// - Components are not sorted in strictly ascending order.
 ///
 /// # Examples
 ///
@@ -310,11 +311,11 @@ where
         "vector components and values must have the same length"
     );
     assert!(
-        query.components_as_slice().is_sorted(),
+        is_strictly_sorted(query.components_as_slice()),
         "query components must be sorted in strictly ascending order"
     );
     assert!(
-        vector.components_as_slice().is_sorted(),
+        is_strictly_sorted(vector.components_as_slice()),
         "vector components must be sorted in strictly ascending order"
     );
     // SAFETY: We just validated the preconditions.
@@ -355,11 +356,11 @@ where
     V: ValueType,
 {
     debug_assert!(
-        query.components_as_slice().is_sorted(),
+        is_strictly_sorted(query.components_as_slice()),
         "query components must be sorted in strictly ascending order"
     );
     debug_assert!(
-        vector.components_as_slice().is_sorted(),
+        is_strictly_sorted(vector.components_as_slice()),
         "vector components must be sorted in strictly ascending order"
     );
 

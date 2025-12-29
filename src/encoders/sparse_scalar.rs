@@ -5,9 +5,8 @@ use crate::distances::{
     Distance, DotProduct, dot_product_dense_sparse_unchecked,
     dot_product_sparse_with_merge_unchecked,
 };
-use crate::{
-    ComponentType, DenseVector1D, Float, SpaceUsage, SparseVector1D, ValueType, Vector1D,
-};
+use crate::utils::is_strictly_sorted;
+use crate::{ComponentType, DenseVector1D, Float, SpaceUsage, SparseVector1D, ValueType, Vector1D};
 use crate::{QueryEvaluator, QueryVectorFor, SparseQuantizer, VectorEncoder};
 
 /// Marker trait for distance types supported by scalar sparse quantizers.
@@ -184,9 +183,22 @@ where
         QueryVector: Vector1D<Value = f32, Component = C> + ?Sized,
         InValue: ValueType + Float,
     {
+        let query_components = query.components_as_slice();
         assert!(
-            query.len() <= quantizer.input_dim(),
-            "Query vector length exceeds quantizer input dimension."
+            is_strictly_sorted(query_components),
+            "Query components must be sorted in strictly ascending order."
+        );
+
+        let max_c = query
+            .components_as_slice()
+            .iter()
+            .map(|c| c.as_())
+            .max()
+            .unwrap_or(0);
+
+        assert!(
+            max_c < quantizer.input_dim(),
+            "Query vector component exceeds quantizer input dimension."
         );
 
         assert_eq!(
@@ -207,13 +219,7 @@ where
             }
             Some(DenseVector1D::new(dense_query))
         } else {
-            // For large dimensions, keep sparse representation and do merge based dot product computation. But first check that components are sorted.
-            let query_components = query.components_as_slice();
-            assert!(
-                query_components.is_sorted(),
-                "Query components must be sorted in ascending order."
-            );
-
+            // For large dimensions, keep sparse representation and do merge based dot product computation.
             None
         };
 

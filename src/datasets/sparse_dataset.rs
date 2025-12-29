@@ -3,7 +3,7 @@ use std::hint::assert_unchecked;
 
 use crate::SpaceUsage;
 use crate::core::storage::{GrowableSparseStorage, ImmutableSparseStorage, SparseStorage};
-use crate::utils::prefetch_read_slice;
+use crate::utils::{is_strictly_sorted, prefetch_read_slice};
 use crate::{ComponentType, ValueType, VectorId};
 use crate::{Dataset, GrowableDataset};
 use crate::{SparseQuantizer, VectorEncoder};
@@ -493,7 +493,8 @@ where
     C: ComponentType,
     V: ValueType,
 {
-    last_offset: usize,
+    // Last offset consumed from the front; used to rebase remaining offsets to the current slices.
+    front_base_offset: usize,
     offsets: &'a [usize],
     components: &'a [C],
     values: &'a [V],
@@ -512,7 +513,7 @@ where
         S: SparseStorage<E>,
     {
         Self {
-            last_offset: 0,
+            front_base_offset: 0,
             offsets: &dataset.storage.offsets().as_ref()[1..],
             components: dataset.storage.components().as_ref(),
             values: dataset.storage.values().as_ref(),
@@ -538,7 +539,7 @@ where
     /// The `components` parameter is assumed to be a strictly increasing sequence
     /// representing the indices of non-zero values in the vector, and `values`
     /// holds the corresponding values. Both `components` and `values` must have
-    /// the same size and cannot be empty. Additionally, `components` must be sorted.
+    /// the same size and cannot be empty. Additionally, `components` must be sorted in strictly ascending order.
     ///
     /// # Parameters
     ///
@@ -551,7 +552,7 @@ where
     ///
     /// * The sizes of `components` and `values` are different.
     /// * The size of either `components` or `values` is 0.
-    /// * `components` is not sorted in ascending order.
+    /// * `components` is not sorted in strictly ascending order.
     ///
     /// # Examples
     ///
@@ -581,8 +582,8 @@ where
         );
 
         assert!(
-            components.is_sorted(),
-            "Components must be given in sorted order"
+            is_strictly_sorted(components),
+            "Components must be given in strictly ascending order"
         );
 
         let cur_dim = self.quantizer.input_dim();
@@ -617,13 +618,14 @@ where
         let (&next_offset, rest) = self.offsets.split_first()?;
         self.offsets = rest;
 
-        let (cur_components, rest) = self.components.split_at(next_offset - self.last_offset);
+        let (cur_components, rest) =
+            self.components.split_at(next_offset - self.front_base_offset);
         self.components = rest;
 
-        let (cur_values, rest) = self.values.split_at(next_offset - self.last_offset);
+        let (cur_values, rest) = self.values.split_at(next_offset - self.front_base_offset);
         self.values = rest;
 
-        self.last_offset = next_offset;
+        self.front_base_offset = next_offset;
 
         Some(SparseVector1D::new(cur_components, cur_values))
     }
@@ -683,8 +685,9 @@ where
         let (&tail_offset, rest) = self.offsets.split_last()?;
         self.offsets = rest;
 
-        let tail_offset = tail_offset - self.last_offset;
-        let next_offset = *self.offsets.last().unwrap_or(&self.last_offset) - self.last_offset;
+        let tail_offset = tail_offset - self.front_base_offset;
+        let next_offset =
+            *self.offsets.last().unwrap_or(&self.front_base_offset) - self.front_base_offset;
 
         let len = tail_offset - next_offset;
 
