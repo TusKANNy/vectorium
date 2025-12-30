@@ -5,6 +5,7 @@ use crate::SpaceUsage;
 use crate::core::storage::{GrowableSparseStorage, ImmutableSparseStorage, SparseStorage};
 use crate::utils::{is_strictly_sorted, prefetch_read_slice};
 use crate::{ComponentType, ValueType, VectorId};
+use num_traits::AsPrimitive;
 use crate::{Dataset, GrowableDataset};
 use crate::{SparseVectorEncoder, VectorEncoder};
 use crate::{SparseVector1D, Vector1D};

@@ -7,6 +7,7 @@ use crate::PackedVector;
 use crate::distances::DotProduct;
 use crate::{ComponentType, FixedU8Q, SpaceUsage, SparseVector1D, ValueType, Vector1D};
 use crate::{PackedVectorEncoder, QueryEvaluator, QueryVectorFor, VectorEncoder};
+use num_traits::{AsPrimitive, ToPrimitive};
 
 use rusty_perm::PermApply as _;
 use rusty_perm::PermFromSorting as _;

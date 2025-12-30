@@ -1,4 +1,3 @@
-#![feature(trait_alias)]
 #![feature(portable_simd)]
 #![allow(internal_features)]
 #![feature(core_intrinsics)]
@@ -7,12 +6,12 @@
 #![feature(yield_expr)]
 #![doc = include_str!("../README.md")]
 
-use fixed::FixedU8;
-use fixed::FixedU16;
 use num_traits::{AsPrimitive, ToPrimitive};
 
 /// Type aliases for quantized fixed-point types. You can change FRAC in the `fixed` crate to adjust the precision.
 /// The `FixedU8Q` type uses 6 fractional bits, while `FixedU16Q` uses 13 fractional bits.
+use fixed::FixedU8;
+use fixed::FixedU16;
 use fixed::types::extra::U6;
 use fixed::types::extra::U13;
 pub type FixedU8Q = FixedU8<U6>;
@@ -85,14 +84,10 @@ pub type PlainSparseDatasetGrowable<C, V, D> = SparseDatasetGrowable<PlainSparse
 pub use datasets::readers;
 pub use datasets::readers::{read_npy_f32, read_seismic_format};
 
-/// Marker for types used as values in a dataset
-pub trait ValueType = Copy + Send + Sync + 'static + ToPrimitive;
+/// Marker for types used as values in a dataset.
+pub trait ValueType: Copy + Send + Sync + 'static + ToPrimitive {}
+impl<T> ValueType for T where T: Copy + Send + Sync + 'static + ToPrimitive {}
 
-pub trait ComponentType = AsPrimitive<usize>
-    + Copy
-    + Send
-    + Sync
-    + 'static
-    + Ord;
-
-pub trait PackedType = Copy + Send + Sync + Default;
+/// Marker for types used as components in a dataset.
+pub trait ComponentType: AsPrimitive<usize> + Copy + Send + Sync + 'static + Ord {}
+impl<T> ComponentType for T where T: AsPrimitive<usize> + Copy + Send + Sync + 'static + Ord {}
