@@ -706,7 +706,8 @@ impl<E, S> SpaceUsage for SparseDatasetGeneric<E, S>
 where
     E: SparseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
-    S: SparseStorage<E>,
+    E: SpaceUsage,
+    S: SparseStorage<E> + SpaceUsage,
 {
     /// Returns the size of the dataset in bytes.
     fn space_usage_bytes(&self) -> usize {

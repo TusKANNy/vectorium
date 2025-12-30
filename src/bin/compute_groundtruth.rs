@@ -314,7 +314,7 @@ fn compute_dense_groundtruth<V, D>(
     output_path: String,
     k: usize,
 ) where
-    V: vectorium::ValueType + Float,
+    V: vectorium::ValueType + Float + vectorium::FromF32 + vectorium::SpaceUsage,
     D: vectorium::ScalarDenseSupportedDistance,
 {
     // Read dataset and queries as f32
@@ -380,8 +380,8 @@ fn compute_sparse_groundtruth<C, V, D>(
     output_path: String,
     k: usize,
 ) where
-    C: vectorium::ComponentType + std::fmt::Debug,
-    V: vectorium::ValueType + Float + std::fmt::Debug,
+    C: vectorium::ComponentType + vectorium::SpaceUsage + std::fmt::Debug,
+    V: vectorium::ValueType + Float + vectorium::FromF32 + vectorium::SpaceUsage + std::fmt::Debug,
     D: vectorium::ScalarSparseSupportedDistance,
 {
     // Read sparse dataset from seismic binary format
@@ -448,7 +448,7 @@ fn compute_sparse_groundtruth_dotvbyte<V>(
     output_path: String,
     k: usize,
 ) where
-    V: vectorium::ValueType + Float,
+    V: vectorium::ValueType + Float + vectorium::FromF32 + vectorium::SpaceUsage,
 {
     use vectorium::DotVByteFixedU8Quantizer;
     use vectorium::PackedDataset;

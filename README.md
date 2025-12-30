@@ -1,6 +1,7 @@
 # Vectorium
 
 Vectorium is a Rust library for storing, compressing, and searching dense and sparse embeddings.
+Search here is done witha brute-force parallel scan of the entire dataset. Consider [Seismic](https://github.com/TusKANNy/seismic) and [kANNolo](https://github.com/TusKANNy/kannolo) for faster indexing solutions.
 
 ## Quick start
 

@@ -125,34 +125,10 @@ where
     }
 }
 
-// impl<E> PackedDatasetGeneric<E, Vec<usize>, Vec<E::EncodingType>>
-// where
-//     E: PackedVectorEncoder,
-//     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
-// {
-//     #[inline]
-//     pub fn new_growable(quantizer: E) -> Self {
-//         Self {
-//             offsets: vec![0],
-//             data: Vec::new(),
-//             quantizer,
-//             nnz: 0,
-//         }
-//     }
-
-//     /// Push an already-packed representation.
-//     #[inline]
-//     pub fn push_encoded(&mut self, encoded: impl AsRef<[E::EncodingType]>) {
-//         let encoded = encoded.as_ref();
-//         self.data.extend_from_slice(encoded);
-//         self.offsets.push(self.data.len());
-//         self.nnz += XXX; (how to compute nnz?)
-//     }
-// }
-
 impl<E, Offsets, Data> SpaceUsage for PackedDatasetGeneric<E, Offsets, Data>
 where
     E: PackedVectorEncoder,
+    E: SpaceUsage,
     Offsets: AsRef<[usize]> + SpaceUsage,
     Data: AsRef<[E::EncodingType]> + SpaceUsage,
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
@@ -168,8 +144,8 @@ where
 impl<E, Offsets, Data> Dataset<E> for PackedDatasetGeneric<E, Offsets, Data>
 where
     E: PackedVectorEncoder,
-    Offsets: AsRef<[usize]> + SpaceUsage,
-    Data: AsRef<[E::EncodingType]> + SpaceUsage,
+    Offsets: AsRef<[usize]>,
+    Data: AsRef<[E::EncodingType]>,
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     #[inline]
@@ -293,7 +269,7 @@ where
         let mut growable = PackedDatasetGrowable::new(dotvbyte_quantizer);
 
         for v in dataset.iter() {
-            let v_fixedu8 = scalar.quantize_vector(v); // convert to FixedU8Q representation
+            let v_fixedu8 = scalar.encode_vector(v); // convert to FixedU8Q representation
 
             growable.push(v_fixedu8);
         }

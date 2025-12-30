@@ -7,7 +7,7 @@ use crate::distances::{
 };
 use crate::numeric_markers::DenseComponent;
 use crate::{DenseVectorEncoder, QueryEvaluator, QueryVectorFor, VectorEncoder};
-use crate::{DenseVector1D, Float, SpaceUsage, ValueType, Vector1D};
+use crate::{DenseVector1D, Float, FromF32, SpaceUsage, ValueType, Vector1D};
 
 /// Marker trait for distance types supported by scalar dense quantizers.
 /// Provides the computation method specific to dense vectors.
@@ -83,7 +83,7 @@ impl<In, Out, D> ScalarDenseQuantizer<In, Out, D> {
 impl<In, Out, D> DenseVectorEncoder for ScalarDenseQuantizer<In, Out, D>
 where
     In: ValueType + Float,
-    Out: ValueType + Float,
+    Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
 {
     fn extend_with_encode<ValueContainer>(
@@ -104,7 +104,7 @@ where
 impl<In, Out, D> VectorEncoder for ScalarDenseQuantizer<In, Out, D>
 where
     In: ValueType + Float,
-    Out: ValueType + Float,
+    Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
 {
     type Distance = D;
@@ -160,7 +160,7 @@ where
 #[derive(Debug, Clone)]
 pub struct ScalarDenseQueryEvaluator<Out, D>
 where
-    Out: ValueType + Float,
+    Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
 {
     query: Vec<f32>,
@@ -169,7 +169,7 @@ where
 
 impl<Out, D> ScalarDenseQueryEvaluator<Out, D>
 where
-    Out: ValueType + Float,
+    Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
 {
     pub fn from_query<QueryVector>(query: QueryVector) -> Self
@@ -186,7 +186,7 @@ where
 impl<In, Out, D> SpaceUsage for ScalarDenseQuantizer<In, Out, D>
 where
     In: ValueType + Float,
-    Out: ValueType + Float,
+    Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
 {
     fn space_usage_bytes(&self) -> usize {
@@ -198,7 +198,7 @@ impl<In, Out, D> QueryEvaluator<ScalarDenseQuantizer<In, Out, D>>
     for ScalarDenseQueryEvaluator<Out, D>
 where
     In: ValueType + Float,
-    Out: ValueType + Float,
+    Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
 {
     #[inline]

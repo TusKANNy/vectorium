@@ -55,6 +55,7 @@ impl<E, Data> SpaceUsage for DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
+    E: SpaceUsage,
     Data: AsRef<[E::OutputValueType]> + SpaceUsage,
 {
     fn space_usage_bytes(&self) -> usize {
@@ -120,7 +121,7 @@ impl<E, Data> Dataset<E> for DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
-    Data: AsRef<[E::OutputValueType]> + SpaceUsage,
+    Data: AsRef<[E::OutputValueType]>,
 {
     #[inline]
     fn quantizer(&self) -> &E {
@@ -409,7 +410,7 @@ where
 {
     pub fn new<Data>(dataset: &'a DenseDatasetGeneric<E, Data>) -> Self
     where
-        Data: AsRef<[E::OutputValueType]> + SpaceUsage,
+        Data: AsRef<[E::OutputValueType]>,
     {
         Self {
             data: dataset.values(),
@@ -441,7 +442,7 @@ where
 }
 
 use crate::encoders::dense_scalar::{ScalarDenseQuantizer, ScalarDenseSupportedDistance};
-use crate::{Float, ValueType};
+use crate::{Float, FromF32, ValueType};
 
 /// Conversion methods for DenseDataset
 ///
@@ -452,8 +453,8 @@ use crate::{Float, ValueType};
 /// input type (In).
 impl<In, Out, D, AVOut> DenseDatasetGeneric<ScalarDenseQuantizer<In, Out, D>, AVOut>
 where
-    In: ValueType + Float,
-    Out: ValueType + Float,
+    In: ValueType + Float + FromF32,
+    Out: ValueType + Float + FromF32,
     AVOut: AsRef<[Out]> + crate::SpaceUsage + From<Vec<Out>>,
     D: ScalarDenseSupportedDistance,
 {

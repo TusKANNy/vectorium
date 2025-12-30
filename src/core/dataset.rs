@@ -1,4 +1,4 @@
-use crate::{Distance, SpaceUsage, Vector1D};
+use crate::{Distance, Vector1D};
 use crate::{QueryEvaluator, QueryVectorFor, VectorEncoder};
 
 use itertools::Itertools;
@@ -95,7 +95,7 @@ pub type ScoredRangeSquaredEuclidean =
 /// let v = dataset.get(0);
 /// assert_eq!(v.values_as_slice(), &[1.0, 0.0, 2.0]);
 /// ```
-pub trait Dataset<Q>: SpaceUsage
+pub trait Dataset<Q>
 where
     Q: VectorEncoder,
 {

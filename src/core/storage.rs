@@ -26,15 +26,15 @@ use crate::SparseVectorEncoder;
 /// This abstracts over the concrete storage types (`Vec`, `Box<[T]>`, etc.)
 /// reducing the generic parameter count from 4 (`O, AC, AV` + encoder) to 2
 /// (encoder + storage).
-pub trait SparseStorage<E: SparseVectorEncoder>: SpaceUsage + Clone {
+pub trait SparseStorage<E: SparseVectorEncoder>: Clone {
     /// Type for storing offsets (e.g., `Vec<usize>` or `Box<[usize]>`)
-    type Offsets: AsRef<[usize]> + SpaceUsage;
+    type Offsets: AsRef<[usize]>;
 
     /// Type for storing components (e.g., `Vec<C>` or `Box<[C]>`)
-    type Components: AsRef<[E::OutputComponentType]> + SpaceUsage;
+    type Components: AsRef<[E::OutputComponentType]>;
 
     /// Type for storing values (e.g., `Vec<V>` or `Box<[V]>`)
-    type Values: AsRef<[E::OutputValueType]> + SpaceUsage;
+    type Values: AsRef<[E::OutputValueType]>;
 
     /// Returns a reference to the offsets array.
     fn offsets(&self) -> &Self::Offsets;
@@ -123,6 +123,8 @@ where
 impl<E> SpaceUsage for GrowableSparseStorage<E>
 where
     E: SparseVectorEncoder,
+    E::OutputComponentType: SpaceUsage,
+    E::OutputValueType: SpaceUsage,
 {
     fn space_usage_bytes(&self) -> usize {
         self.offsets.space_usage_bytes()
@@ -211,6 +213,8 @@ where
 impl<E> SpaceUsage for ImmutableSparseStorage<E>
 where
     E: SparseVectorEncoder,
+    E::OutputComponentType: SpaceUsage,
+    E::OutputValueType: SpaceUsage,
 {
     fn space_usage_bytes(&self) -> usize {
         self.offsets.space_usage_bytes()

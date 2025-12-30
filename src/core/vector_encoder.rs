@@ -1,4 +1,3 @@
-use crate::SpaceUsage;
 use crate::numeric_markers::DenseComponent;
 use crate::{ComponentType, ValueType};
 use crate::{DenseVector1D, SparseVector1D, Vector1D, distances::Distance};
@@ -113,9 +112,9 @@ pub trait VectorEncoder: Sized {
 /// A packed encoder whose encoded representation is a packed slice of fixed-width elements.
 ///
 /// This is meant to be used together with a `PackedDataset` (variable-length by offsets).
-pub trait PackedVectorEncoder: VectorEncoder + SpaceUsage {
+pub trait PackedVectorEncoder: VectorEncoder {
     /// Element type stored in the dataset backing array (e.g. `u64` for word-packed encodings).
-    type EncodingType: SpaceUsage + Copy + Send + Sync + 'static;
+    type EncodingType: Copy + Send + Sync + 'static;
 
     /// Encode input sparse vectors into packed output words.
     fn extend_with_encode<AC, AV>(
@@ -132,7 +131,7 @@ pub trait DenseVectorEncoder:
         QueryComponentType = DenseComponent,
         InputComponentType = DenseComponent,
         OutputComponentType = DenseComponent,
-    > + SpaceUsage
+    >
 {
     /// Encode input vectors into output vectors.
     ///
@@ -179,7 +178,7 @@ pub trait DenseVectorEncoder:
     }
 }
 
-pub trait SparseVectorEncoder: VectorEncoder + SpaceUsage {
+pub trait SparseVectorEncoder: VectorEncoder {
     /// Encode input vectors into output vectors
     fn extend_with_encode<ValueContainer, ComponentContainer>(
         &self,

@@ -12,7 +12,7 @@ use ndarray_npy::ReadNpyExt;
 use crate::GrowableDataset;
 use crate::encoders::dense_scalar::{PlainDenseQuantizer, ScalarDenseSupportedDistance};
 use crate::encoders::sparse_scalar::{PlainSparseQuantizer, ScalarSparseSupportedDistance};
-use crate::{ComponentType, Float, ValueType};
+use crate::{ComponentType, Float, FromF32, SpaceUsage, ValueType};
 use crate::{PlainDenseDataset, PlainSparseDataset, PlainSparseDatasetGrowable};
 
 /// Error type for dataset reading operations.
@@ -116,7 +116,7 @@ pub fn read_seismic_format<C, V, D>(
 ) -> Result<PlainSparseDataset<C, V, D>, ReaderError>
 where
     C: ComponentType,
-    V: ValueType + Float,
+    V: ValueType + Float + FromF32 + SpaceUsage,
     D: ScalarSparseSupportedDistance,
 {
     read_seismic_format_limit(filename, None)
@@ -143,7 +143,7 @@ pub fn read_seismic_format_limit<C, V, D>(
 ) -> Result<PlainSparseDataset<C, V, D>, ReaderError>
 where
     C: ComponentType,
-    V: ValueType + Float,
+    V: ValueType + Float + FromF32 + SpaceUsage,
     D: ScalarSparseSupportedDistance,
 {
     let path = Path::new(filename.as_ref());

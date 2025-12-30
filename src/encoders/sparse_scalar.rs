@@ -6,7 +6,9 @@ use crate::distances::{
     dot_product_sparse_with_merge_unchecked,
 };
 use crate::utils::is_strictly_sorted;
-use crate::{ComponentType, DenseVector1D, Float, SpaceUsage, SparseVector1D, ValueType, Vector1D};
+use crate::{
+    ComponentType, DenseVector1D, Float, FromF32, SpaceUsage, SparseVector1D, ValueType, Vector1D,
+};
 use crate::{QueryEvaluator, QueryVectorFor, SparseVectorEncoder, VectorEncoder};
 
 /// Marker trait for distance types supported by scalar sparse quantizers.
@@ -73,7 +75,7 @@ impl<C, InValue, OutValue, D> SparseVectorEncoder
 where
     C: ComponentType,
     InValue: ValueType + Float,
-    OutValue: ValueType + Float,
+    OutValue: ValueType + Float + FromF32,
     D: ScalarSparseSupportedDistance,
 {
     fn extend_with_encode<ValueContainer, ComponentContainer>(
@@ -105,7 +107,7 @@ impl<C, InValue, OutValue, D> VectorEncoder for ScalarSparseQuantizer<C, InValue
 where
     C: ComponentType,
     InValue: ValueType + Float,
-    OutValue: ValueType + Float,
+    OutValue: ValueType + Float + FromF32,
     D: ScalarSparseSupportedDistance,
 {
     type Distance = D;
@@ -161,7 +163,7 @@ where
 pub struct ScalarSparseQueryEvaluator<'a, C, OutValue, D>
 where
     C: ComponentType,
-    OutValue: ValueType + Float,
+    OutValue: ValueType + Float + FromF32,
     D: ScalarSparseSupportedDistance,
 {
     dense_query: Option<DenseVector1D<f32, Vec<f32>>>,
@@ -173,7 +175,7 @@ where
 impl<'a, C, OutValue, D> ScalarSparseQueryEvaluator<'a, C, OutValue, D>
 where
     C: ComponentType,
-    OutValue: ValueType + Float,
+    OutValue: ValueType + Float + FromF32,
     D: ScalarSparseSupportedDistance,
 {
     pub fn new<QueryVector, InValue>(
@@ -236,7 +238,7 @@ impl<'a, C, InValue, OutValue, D> QueryEvaluator<ScalarSparseQuantizer<C, InValu
 where
     C: ComponentType,
     InValue: ValueType + Float,
-    OutValue: ValueType + Float,
+    OutValue: ValueType + Float + FromF32,
     D: ScalarSparseSupportedDistance,
 {
     #[inline]
