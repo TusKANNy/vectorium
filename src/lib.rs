@@ -12,11 +12,11 @@ use fixed::FixedU16;
 use num_traits::{AsPrimitive, FromPrimitive, ToPrimitive, Zero};
 
 /// Type aliases for quantized fixed-point types. You can change FRAC in the `fixed` crate to adjust the precision.
-/// The `FixedU8Q` type uses 6 fractional bits, while `FixedU16Q` uses 8 fractional bits.
+/// The `FixedU8Q` type uses 6 fractional bits, while `FixedU16Q` uses 13 fractional bits.
 use fixed::types::extra::U6;
-use fixed::types::extra::U8;
+use fixed::types::extra::U13;
 pub type FixedU8Q = FixedU8<U6>;
-pub type FixedU16Q = FixedU16<U8>;
+pub type FixedU16Q = FixedU16<U13>;
 
 pub mod core;
 pub mod datasets;

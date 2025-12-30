@@ -12,7 +12,7 @@ use rusty_perm::PermApply as _;
 use rusty_perm::PermFromSorting as _;
 
 use self::swizzle::*;
-use crate::utils::permute_graph_bisection;
+use crate::utils::permute_components_with_bisection;
 use std::simd::StdFloat;
 use std::simd::num::{SimdFloat, SimdUint};
 
@@ -50,17 +50,25 @@ impl DotVByteFixedU8Quantizer {
         }
         mapping
     }
+}
+
+impl PackedVectorEncoder for DotVByteFixedU8Quantizer {
+    type EncodingType = u64;
 
     /// Encode a sparse vector (components + `FixedU8Q` values) into the packed DotVByte format
-    /// and append it to `out_words`.
+    /// and append it to `data`.
     ///
     /// The packed representation is appended as a sequence of `u64` words; its length depends
-    /// on the vector sparsity and is therefore variable.
-    pub fn extend_with_encode(
+    /// on the vector components and is therefore variable.
+    #[inline]
+    fn extend_with_encode<AC, AV>(
         &self,
-        input_vector: SparseVector1D<u16, FixedU8Q, impl AsRef<[u16]>, impl AsRef<[FixedU8Q]>>,
-        out_words: &mut Vec<u64>,
-    ) {
+        input_vector: SparseVector1D<Self::InputComponentType, Self::InputValueType, AC, AV>,
+        data: &mut Vec<Self::EncodingType>,
+    ) where
+        AC: AsRef<[Self::InputComponentType]>,
+        AV: AsRef<[Self::InputValueType]>,
+    {
         let mut encoded_u8 = Vec::new();
 
         let mut q_values: Vec<_> = input_vector
@@ -97,24 +105,8 @@ impl DotVByteFixedU8Quantizer {
 
         for chunk in encoded_u8.chunks_exact(8) {
             let word = u64::from_le_bytes(chunk.try_into().unwrap()); // choose LE/BE/NE
-            out_words.push(word);
+            data.push(word);
         }
-    }
-}
-
-impl PackedVectorEncoder for DotVByteFixedU8Quantizer {
-    type EncodingType = u64;
-
-    #[inline]
-    fn extend_with_encode<AC, AV>(
-        &self,
-        input_vector: SparseVector1D<Self::InputComponentType, Self::InputValueType, AC, AV>,
-        values: &mut Vec<Self::EncodingType>,
-    ) where
-        AC: AsRef<[Self::InputComponentType]>,
-        AV: AsRef<[Self::InputValueType]>,
-    {
-        Self::extend_with_encode(self, input_vector, values);
     }
 }
 
@@ -173,7 +165,7 @@ impl VectorEncoder for DotVByteFixedU8Quantizer {
         InputVector::Component: ComponentType,
         InputVector::Value: ValueType,
     {
-        let permutation = permute_graph_bisection(self.input_dim(), training_data);
+        let permutation = permute_components_with_bisection(self.input_dim(), training_data);
         let component_mapping: Vec<u16> = permutation.iter().map(|i| *i as u16).collect();
         self.component_mapping = Some(component_mapping.into_boxed_slice());
     }
@@ -264,7 +256,7 @@ struct DotVbyteFixedu8<'a> {
 }
 
 impl<'a> DotVbyteFixedu8<'a> {
-    pub unsafe fn from_unchecked_slice(slice: &'a [u64]) -> Self {
+    unsafe fn from_unchecked_slice(slice: &'a [u64]) -> Self {
         unsafe {
             let slice = try_cast_slice::<u64, u8>(slice).unwrap_unchecked();
 
@@ -441,7 +433,7 @@ impl<'a> DotVbyteFixedu8<'a> {
         }
     }
 
-    pub fn dot_product(&self, mut query: &[f32]) -> f32 {
+    pub(crate) fn dot_product(&self, mut query: &[f32]) -> f32 {
         let mut result = Simd::<f32, 8>::splat(0.0);
         // This ugly clone is optimized away
         for (components, values) in self.clone().iter_raw() {

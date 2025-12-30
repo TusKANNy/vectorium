@@ -3,10 +3,10 @@ use crate::numeric_markers::DenseComponent;
 use crate::{ComponentType, ValueType};
 use crate::{DenseVector1D, SparseVector1D, Vector1D, distances::Distance};
 
-/// Marker trait for types that are valid query vectors for a given quantizer `Q`.
+/// Marker trait for types that are valid query vectors for a given encoder`E`.
 ///
 /// This allows `VectorEncoder::query_evaluator` to remain on the base trait while
-/// still enforcing that dense/sparse quantizers only accept the corresponding
+/// still enforcing that dense/sparse/packed encoders only accept the corresponding
 /// concrete vector representations.
 pub trait QueryVectorFor<Q: VectorEncoder>:
     Vector1D<Value = Q::QueryValueType, Component = Q::QueryComponentType>
@@ -51,7 +51,7 @@ pub trait VectorEncoder: Sized {
     type OutputValueType: ValueType;
     type OutputComponentType: ComponentType;
 
-    /// The query evaluator type for this quantizer and distance.
+    /// The query evaluator type for this encoder and distance.
     ///
     /// The evaluator may borrow the query vector, hence it is lifetime-parameterized.
     type Evaluator<'a>: QueryEvaluator<Self>
@@ -121,7 +121,7 @@ pub trait PackedVectorEncoder: VectorEncoder + SpaceUsage {
     fn extend_with_encode<AC, AV>(
         &self,
         input_vector: SparseVector1D<Self::InputComponentType, Self::InputValueType, AC, AV>,
-        values: &mut Vec<Self::EncodingType>,
+        data: &mut Vec<Self::EncodingType>,
     ) where
         AC: AsRef<[Self::InputComponentType]>,
         AV: AsRef<[Self::InputValueType]>;
@@ -134,7 +134,7 @@ pub trait DenseVectorEncoder:
         OutputComponentType = DenseComponent,
     > + SpaceUsage
 {
-    /// Encode input vectors into quantized output vectors.
+    /// Encode input vectors into output vectors.
     ///
     /// Implementations must append exactly `self.output_dim()` values to `values`.
     fn extend_with_encode<ValueContainer>(
@@ -144,20 +144,20 @@ pub trait DenseVectorEncoder:
     ) where
         ValueContainer: Extend<Self::OutputValueType>;
 
-    /// Quantize an input dense vector into owned output values.
+    /// Encode an input dense vector into owned output values.
     ///
     /// # Example
     /// ```
     /// use vectorium::{DenseVectorEncoder, DenseVector1D, DotProduct, PlainDenseQuantizer};
     /// use vectorium::{Vector1D, VectorEncoder};
     ///
-    /// let quantizer = PlainDenseQuantizer::<f32, DotProduct>::new(3);
+    /// let encoder = PlainDenseQuantizer::<f32, DotProduct>::new(3);
     /// let v = DenseVector1D::new(vec![1.0_f32, 0.0, 2.0]);
-    /// let q = quantizer.quantize_vector(v);
+    /// let q = encoder.encode_vector(v);
     /// assert_eq!(q.values_as_slice().len(), 3);
     /// ```
     #[inline]
-    fn quantize_vector<AV>(
+    fn encode_vector<AV>(
         &self,
         input_vector: DenseVector1D<Self::InputValueType, AV>,
     ) -> DenseVector1D<Self::OutputValueType, Vec<Self::OutputValueType>>
@@ -180,7 +180,7 @@ pub trait DenseVectorEncoder:
 }
 
 pub trait SparseVectorEncoder: VectorEncoder + SpaceUsage {
-    /// Encode input vectors into quantized output vectors
+    /// Encode input vectors into output vectors
     fn extend_with_encode<ValueContainer, ComponentContainer>(
         &self,
         input_vector: SparseVector1D<
@@ -195,21 +195,21 @@ pub trait SparseVectorEncoder: VectorEncoder + SpaceUsage {
         ValueContainer: Extend<Self::OutputValueType>,
         ComponentContainer: Extend<Self::OutputComponentType>;
 
-    /// Quantize an input sparse vector into owned output components/values.
+    /// Encode an input sparse vector into owned output components/values.
     ///
     /// # Example
     /// ```
     /// use vectorium::{DotProduct, PlainSparseQuantizer, SparseVectorEncoder, SparseVector1D};
     /// use vectorium::{Vector1D, VectorEncoder};
     ///
-    /// let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);
+    /// let encoder = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);
     /// let v = SparseVector1D::new(vec![1_u16, 3], vec![1.0, 2.0]);
-    /// let q = quantizer.quantize_vector(v);
+    /// let q = encoder.encode_vector(v);
     /// assert_eq!(q.components_as_slice(), &[1_u16, 3]);
     /// assert_eq!(q.values_as_slice(), &[1.0, 2.0]);
     /// ```
     #[inline]
-    fn quantize_vector<AC, AV>(
+    fn encode_vector<AC, AV>(
         &self,
         input_vector: SparseVector1D<Self::InputComponentType, Self::InputValueType, AC, AV>,
     ) -> SparseVector1D<

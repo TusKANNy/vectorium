@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::hash::Hash;
+
 use crate::{ComponentType, ValueType, Vector1D};
 use rgb::forward::Doc;
 
@@ -28,21 +31,21 @@ pub fn is_strictly_sorted<T: Ord>(slice: &[T]) -> bool {
     slice.windows(2).all(|w| w[0] < w[1])
 }
 
-// #[inline]
-// pub fn prefetch_read_slice<T>(data: &[T]) {
-//     let ptr = data.as_ptr() as *const i8;
-//     // Cache line size on x86 is 64 bytes.
-//     // The function is written with a pointer because iterating the array seems to prevent loop unrolling, for some reason.
-//     // Prefetching the first two cache lines only is faster in modern CPUs. TODO: experiment this more.
-//     let len = core::mem::size_of::<T>() * data.len();
-//     for i in (0..len).step_by(64) {
-//         core::intrinsics::prefetch_read_data::<_, 1>(ptr.wrapping_add(i));
-//     }
-// }
+/// Computes the size of the intersection of two unsorted lists of integers.
+pub fn intersection<T: Eq + Hash + Clone>(s: &[T], groundtruth: &[T]) -> usize {
+    let s_set: HashSet<_> = s.iter().cloned().collect();
+    let mut size = 0;
+    for v in groundtruth {
+        if s_set.contains(v) {
+            size += 1;
+        }
+    }
+    size
+}
 
 /// Compute a permutation of components using recursive graph bisection.
 /// Components that often appear together in documents will be grouped close together.
-pub fn permute_graph_bisection<C, V, InputVector>(
+pub(crate) fn permute_components_with_bisection<C, V, InputVector>(
     dim: usize,
     vectors: impl Iterator<Item = InputVector>,
 ) -> Box<[usize]>
@@ -98,17 +101,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::permute_graph_bisection;
+    use super::permute_components_with_bisection;
     use crate::SparseVector1D;
 
     #[test]
-    fn permute_graph_bisection_returns_permutation() {
+    fn permute_components_with_bisection_returns_permutation() {
         let vectors = vec![
             SparseVector1D::new(vec![0_u16, 2], vec![1.0_f32, 2.0]),
             SparseVector1D::new(vec![1_u16, 3], vec![3.0_f32, 4.0]),
         ];
 
-        let perm = permute_graph_bisection(4, vectors.into_iter());
+        let perm = permute_components_with_bisection(4, vectors.into_iter());
         assert_eq!(perm.len(), 4);
 
         let mut seen = vec![false; 4];
