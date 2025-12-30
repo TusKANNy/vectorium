@@ -9,7 +9,7 @@
 
 use fixed::FixedU8;
 use fixed::FixedU16;
-use num_traits::{AsPrimitive, FromPrimitive, ToPrimitive};
+use num_traits::{AsPrimitive, ToPrimitive};
 
 /// Type aliases for quantized fixed-point types. You can change FRAC in the `fixed` crate to adjust the precision.
 /// The `FixedU8Q` type uses 6 fractional bits, while `FixedU16Q` uses 13 fractional bits.
@@ -89,14 +89,10 @@ pub use datasets::readers::{read_npy_f32, read_seismic_format};
 pub trait ValueType = Copy + Send + Sync + 'static + ToPrimitive;
 
 pub trait ComponentType = AsPrimitive<usize>
-    + FromPrimitive
     + Copy
     + Send
     + Sync
-    + std::hash::Hash
-    + Eq
-    + Ord
-    + std::convert::TryFrom<usize>
-    + 'static;
+    + 'static
+    + Ord;
 
 pub trait PackedType = Copy + Send + Sync + Default;

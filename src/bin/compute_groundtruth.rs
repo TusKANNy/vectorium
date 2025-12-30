@@ -380,7 +380,10 @@ fn compute_sparse_groundtruth<C, V, D>(
     output_path: String,
     k: usize,
 ) where
-    C: vectorium::ComponentType + vectorium::SpaceUsage + std::fmt::Debug,
+    C: vectorium::ComponentType
+        + vectorium::SpaceUsage
+        + std::fmt::Debug
+        + num_traits::FromPrimitive,
     V: vectorium::ValueType + Float + vectorium::FromF32 + vectorium::SpaceUsage + std::fmt::Debug,
     D: vectorium::ScalarSparseSupportedDistance,
 {

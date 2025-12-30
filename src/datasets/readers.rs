@@ -115,7 +115,7 @@ pub fn read_seismic_format<C, V, D>(
     filename: impl AsRef<Path>,
 ) -> Result<PlainSparseDataset<C, V, D>, ReaderError>
 where
-    C: ComponentType,
+    C: ComponentType + num_traits::FromPrimitive,
     V: ValueType + Float + FromF32 + SpaceUsage,
     D: ScalarSparseSupportedDistance,
 {
@@ -142,7 +142,7 @@ pub fn read_seismic_format_limit<C, V, D>(
     limit: Option<usize>,
 ) -> Result<PlainSparseDataset<C, V, D>, ReaderError>
 where
-    C: ComponentType,
+    C: ComponentType + num_traits::FromPrimitive,
     V: ValueType + Float + FromF32 + SpaceUsage,
     D: ScalarSparseSupportedDistance,
 {
