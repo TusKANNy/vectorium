@@ -186,6 +186,36 @@ where
 //     }
 // }
 
+#[cfg(test)]
+mod tests {
+    use crate::{
+        Dataset, DenseVector1D, DotProduct, GrowableDataset, PlainDenseDataset,
+        PlainDenseDatasetGrowable, PlainDenseQuantizer, Vector1D,
+    };
+
+    #[test]
+    fn dense_growable_immutable_roundtrip() {
+        let quantizer = PlainDenseQuantizer::<f32, DotProduct>::new(3);
+        let mut growable = PlainDenseDatasetGrowable::new(quantizer);
+
+        growable.push(DenseVector1D::new(&[1.0, 2.0, 3.0]));
+        growable.push(DenseVector1D::new(&[4.0, 5.0, 6.0]));
+
+        let frozen: PlainDenseDataset<f32, DotProduct> = growable.into();
+        assert_eq!(frozen.len(), 2);
+        assert_eq!(frozen.nnz(), 6);
+
+        let first = frozen.get(0);
+        assert_eq!(first.values_as_slice(), &[1.0, 2.0, 3.0]);
+
+        let mut growable_again: PlainDenseDatasetGrowable<f32, DotProduct> = frozen.into();
+        growable_again.push(DenseVector1D::new(&[7.0, 8.0, 9.0]));
+
+        assert_eq!(growable_again.len(), 3);
+        assert_eq!(growable_again.nnz(), 9);
+    }
+}
+
 // impl<'a, E> DenseDatasetGeneric<E, Vec<E::OutputItem>>
 // where
 //     E: VectorEncoder,

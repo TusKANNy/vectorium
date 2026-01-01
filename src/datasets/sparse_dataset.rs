@@ -720,7 +720,10 @@ where
 mod tests {
     use super::SparseDatasetIter;
     use crate::core::dataset::GrowableDataset;
-    use crate::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D};
+    use crate::{
+        Dataset, DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer,
+        SparseVector1D,
+    };
     use crate::{Vector1D, VectorEncoder};
 
     #[test]
@@ -743,5 +746,28 @@ mod tests {
         assert_eq!(back.values_as_slice(), &[2.0_f32, 2.0]);
 
         assert!(iter.next_back().is_none());
+    }
+
+    #[test]
+    fn sparse_growable_immutable_roundtrip() {
+        let quantizer = <PlainSparseQuantizer<u16, f32, DotProduct> as VectorEncoder>::new(6, 6);
+        let mut growable = PlainSparseDatasetGrowable::new(quantizer);
+
+        growable.push(SparseVector1D::new(vec![0_u16, 2], vec![1.0_f32, 2.0]));
+        growable.push(SparseVector1D::new(vec![1_u16, 3], vec![3.0_f32, 4.0]));
+
+        let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
+        assert_eq!(frozen.len(), 2);
+        assert_eq!(frozen.nnz(), 4);
+
+        let first = frozen.get(0);
+        assert_eq!(first.components_as_slice(), &[0_u16, 2]);
+        assert_eq!(first.values_as_slice(), &[1.0_f32, 2.0]);
+
+        let mut growable_again: PlainSparseDatasetGrowable<u16, f32, DotProduct> = frozen.into();
+        growable_again.push(SparseVector1D::new(vec![4_u16], vec![5.0_f32]));
+
+        assert_eq!(growable_again.len(), 3);
+        assert_eq!(growable_again.nnz(), 5);
     }
 }

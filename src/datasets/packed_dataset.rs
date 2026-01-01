@@ -303,6 +303,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FromF32 as _;
 
     #[test]
     fn conversion_and_dot_product() {
@@ -351,5 +352,40 @@ mod tests {
 
         assert_eq!(d0, expected0);
         assert_eq!(d1, expected1);
+    }
+
+    #[test]
+    fn packed_growable_immutable_roundtrip() {
+        use crate::{DotVByteFixedU8Quantizer, FixedU8Q, GrowableDataset, PackedDataset};
+        use crate::{PackedDatasetGrowable, SparseVector1D};
+
+        let dim = 8;
+        let quantizer = <DotVByteFixedU8Quantizer as crate::VectorEncoder>::new(dim, dim);
+        let mut growable = PackedDatasetGrowable::new(quantizer);
+
+        growable.push(SparseVector1D::new(
+            vec![1_u16, 4],
+            vec![
+                FixedU8Q::from_f32_saturating(1.0),
+                FixedU8Q::from_f32_saturating(2.0),
+            ],
+        ));
+        growable.push(SparseVector1D::new(
+            vec![2_u16],
+            vec![FixedU8Q::from_f32_saturating(3.0)],
+        ));
+
+        let frozen: PackedDataset<DotVByteFixedU8Quantizer> = growable.into();
+        assert_eq!(frozen.len(), 2);
+        assert_eq!(frozen.nnz(), 3);
+
+        let mut growable_again: PackedDatasetGrowable<DotVByteFixedU8Quantizer> = frozen.into();
+        growable_again.push(SparseVector1D::new(
+            vec![7_u16],
+            vec![FixedU8Q::from_f32_saturating(4.0)],
+        ));
+
+        assert_eq!(growable_again.len(), 3);
+        assert_eq!(growable_again.nnz(), 4);
     }
 }
