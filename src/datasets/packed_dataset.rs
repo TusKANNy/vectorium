@@ -244,7 +244,7 @@ where
     }
 }
 
-impl<QIn, S> From<crate::datasets::sparse_dataset::SparseDatasetGeneric<QIn, S>>
+impl<QIn, S> ConvertFrom<crate::datasets::sparse_dataset::SparseDatasetGeneric<QIn, S>>
     for PackedDataset<crate::DotVByteFixedU8Quantizer>
 where
     QIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
@@ -259,7 +259,7 @@ where
         >,
     S: crate::core::storage::SparseStorage<QIn>,
 {
-    fn from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<QIn, S>) -> Self {
+    fn convert_from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<QIn, S>) -> Self {
         use crate::SparseVectorEncoder;
         use crate::VectorEncoder;
         use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
@@ -308,6 +308,26 @@ where
         //     quantizer: dotvbyte_quantizer,
         //     nnz: dataset.nnz(),
         // }
+    }
+}
+
+impl<QIn, S> From<crate::datasets::sparse_dataset::SparseDatasetGeneric<QIn, S>>
+    for PackedDataset<crate::DotVByteFixedU8Quantizer>
+where
+    QIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
+    <QIn as crate::VectorEncoder>::OutputValueType: crate::ValueType + crate::Float,
+    for<'a> QIn: crate::VectorEncoder<
+            EncodedVector<'a> = crate::SparseVector1D<
+                u16,
+                <QIn as crate::VectorEncoder>::OutputValueType,
+                &'a [u16],
+                &'a [<QIn as crate::VectorEncoder>::OutputValueType],
+            >,
+        >,
+    S: crate::core::storage::SparseStorage<QIn>,
+{
+    fn from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<QIn, S>) -> Self {
+        Self::convert_from(dataset)
     }
 }
 
