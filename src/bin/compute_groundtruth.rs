@@ -7,11 +7,11 @@ use half::{bf16, f16};
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::iter::ParallelIterator;
 
-use vectorium::dataset::ScoredVector as DatasetResult;
+use vectorium::dataset::{ConvertInto, ScoredVector as DatasetResult};
 use vectorium::distances;
 use vectorium::readers;
 use vectorium::{Dataset, FixedU8Q, FixedU16Q, PlainSparseDataset, ScalarDenseDataset, SpaceUsage};
-use vectorium::{DenseDataset, Distance, Float};
+use vectorium::{Distance, Float};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -321,8 +321,8 @@ fn compute_dense_groundtruth<V, D>(
     let dataset_f32 = readers::read_npy_f32::<D>(&input_path).expect("failed to read dataset");
     let queries = readers::read_npy_f32::<D>(&query_path).expect("failed to read queries");
 
-    // Convert dataset from f32 to target value type V using DenseDataset::quantize
-    let dataset: ScalarDenseDataset<f32, V, D> = DenseDataset::quantize(&dataset_f32);
+    // Convert dataset from f32 to target value type V using ConvertInto
+    let dataset: ScalarDenseDataset<f32, V, D> = (&dataset_f32).convert_into();
 
     // Print dataset size in GiB
     let dataset_gib = dataset.space_usage_GiB();

@@ -5,6 +5,7 @@ use crate::PackedVectorEncoder;
 use crate::SpaceUsage;
 use crate::utils::prefetch_read_slice;
 use crate::{Dataset, GrowableDataset, SparseVector1D, Vector1D, VectorId};
+use crate::core::dataset::ConvertFrom;
 
 use rayon::prelude::*;
 
@@ -203,18 +204,28 @@ where
     }
 }
 
-impl<E> From<PackedDatasetGrowable<E>> for PackedDataset<E>
+impl<E> ConvertFrom<PackedDatasetGrowable<E>> for PackedDataset<E>
 where
     E: PackedVectorEncoder,
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
-    fn from(dataset: PackedDatasetGrowable<E>) -> Self {
+    fn convert_from(dataset: PackedDatasetGrowable<E>) -> Self {
         PackedDatasetGeneric {
             offsets: dataset.offsets.into_boxed_slice(),
             data: dataset.data.into_boxed_slice(),
             quantizer: dataset.quantizer,
             nnz: dataset.nnz,
         }
+    }
+}
+
+impl<E> From<PackedDatasetGrowable<E>> for PackedDataset<E>
+where
+    E: PackedVectorEncoder,
+    for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
+{
+    fn from(dataset: PackedDatasetGrowable<E>) -> Self {
+        Self::convert_from(dataset)
     }
 }
 

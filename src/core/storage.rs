@@ -118,6 +118,21 @@ where
             _phantom: PhantomData,
         }
     }
+
+    pub(crate) fn relabel<E2>(self) -> GrowableSparseStorage<E2>
+    where
+        E2: SparseVectorEncoder<
+            OutputComponentType = E::OutputComponentType,
+            OutputValueType = E::OutputValueType,
+        >,
+    {
+        GrowableSparseStorage {
+            offsets: self.offsets,
+            components: self.components,
+            values: self.values,
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<E> SpaceUsage for GrowableSparseStorage<E>
@@ -244,6 +259,26 @@ where
     #[inline]
     fn values(&self) -> &Self::Values {
         &self.values
+    }
+}
+
+impl<E> ImmutableSparseStorage<E>
+where
+    E: SparseVectorEncoder,
+{
+    pub(crate) fn relabel<E2>(self) -> ImmutableSparseStorage<E2>
+    where
+        E2: SparseVectorEncoder<
+            OutputComponentType = E::OutputComponentType,
+            OutputValueType = E::OutputValueType,
+        >,
+    {
+        ImmutableSparseStorage {
+            offsets: self.offsets,
+            components: self.components,
+            values: self.values,
+            _phantom: PhantomData,
+        }
     }
 }
 

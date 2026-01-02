@@ -4,6 +4,7 @@ use crate::SpaceUsage;
 use crate::VectorId;
 use crate::utils::prefetch_read_slice;
 use crate::{Dataset, GrowableDataset};
+use crate::core::dataset::ConvertFrom;
 use crate::{DenseVectorEncoder, VectorEncoder};
 use crate::{DenseVector1D, Vector1D};
 
@@ -189,9 +190,11 @@ where
 #[cfg(test)]
 mod tests {
     use crate::{
-        Dataset, DenseVector1D, DotProduct, GrowableDataset, PlainDenseDataset,
-        PlainDenseDatasetGrowable, PlainDenseQuantizer, Vector1D,
+        dataset::ConvertInto, Dataset, DenseDataset, DenseDatasetGrowable, DenseVector1D,
+        DotProduct, GrowableDataset, PlainDenseDataset, PlainDenseDatasetGrowable,
+        PlainDenseQuantizer, Vector1D,
     };
+    use half::f16;
 
     #[test]
     fn dense_growable_immutable_roundtrip() {
@@ -213,6 +216,65 @@ mod tests {
 
         assert_eq!(growable_again.len(), 3);
         assert_eq!(growable_again.nnz(), 9);
+    }
+
+    #[test]
+    fn dense_scalar_plain_roundtrip_without_reencode() {
+        let quantizer = crate::ScalarDenseQuantizer::<f32, f16, DotProduct>::new(3);
+        let mut growable = DenseDatasetGrowable::new(quantizer);
+
+        growable.push(DenseVector1D::new(&[1.0_f32, 2.0, 3.0]));
+        growable.push(DenseVector1D::new(&[4.0_f32, 5.0, 6.0]));
+
+        let growable_plain: DenseDatasetGrowable<PlainDenseQuantizer<f16, DotProduct>> =
+            growable.relabel_as_plain();
+        assert_eq!(
+            growable_plain.values(),
+            &[
+                f16::from_f32(1.0),
+                f16::from_f32(2.0),
+                f16::from_f32(3.0),
+                f16::from_f32(4.0),
+                f16::from_f32(5.0),
+                f16::from_f32(6.0),
+            ]
+        );
+
+        let frozen_plain: PlainDenseDataset<f16, DotProduct> = growable_plain.into();
+        let frozen_scalar: DenseDataset<crate::ScalarDenseQuantizer<f32, f16, DotProduct>> =
+            frozen_plain.relabel_as_scalar();
+        assert_eq!(
+            frozen_scalar.values(),
+            &[
+                f16::from_f32(1.0),
+                f16::from_f32(2.0),
+                f16::from_f32(3.0),
+                f16::from_f32(4.0),
+                f16::from_f32(5.0),
+                f16::from_f32(6.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn dense_scalar_reencode_changes_value_type() {
+        let quantizer = PlainDenseQuantizer::<f32, DotProduct>::new(3);
+        let mut growable = PlainDenseDatasetGrowable::new(quantizer);
+
+        growable.push(DenseVector1D::new(&[1.25_f32, 2.5, 3.75]));
+        let frozen: PlainDenseDataset<f32, DotProduct> = growable.into();
+
+        let reencoded: DenseDataset<crate::ScalarDenseQuantizer<f32, f16, DotProduct>> =
+            (&frozen).convert_into();
+
+        assert_eq!(
+            reencoded.values(),
+            &[
+                f16::from_f32(1.25),
+                f16::from_f32(2.5),
+                f16::from_f32(3.75),
+            ]
+        );
     }
 }
 
@@ -308,7 +370,7 @@ where
 //     }
 // }
 
-impl<E> From<DenseDatasetGrowable<E>> for DenseDataset<E>
+impl<E> ConvertFrom<DenseDatasetGrowable<E>> for DenseDataset<E>
 where
     E: DenseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
@@ -340,7 +402,7 @@ where
     /// assert_eq!(immutable_dataset.len(), 3);
     /// assert_eq!(immutable_dataset.nnz(), 12);
     /// ```
-    fn from(dataset: DenseDatasetGrowable<E>) -> Self {
+    fn convert_from(dataset: DenseDatasetGrowable<E>) -> Self {
         Self {
             n_vecs: dataset.n_vecs,
             data: dataset.data.into_boxed_slice(),
@@ -349,7 +411,17 @@ where
     }
 }
 
-impl<E> From<DenseDataset<E>> for DenseDatasetGrowable<E>
+impl<E> From<DenseDatasetGrowable<E>> for DenseDataset<E>
+where
+    E: DenseVectorEncoder,
+    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
+{
+    fn from(dataset: DenseDatasetGrowable<E>) -> Self {
+        Self::convert_from(dataset)
+    }
+}
+
+impl<E> ConvertFrom<DenseDataset<E>> for DenseDatasetGrowable<E>
 where
     E: DenseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
@@ -389,11 +461,61 @@ where
     /// assert_eq!(growable_dataset_again.len(), 4);
     /// assert_eq!(growable_dataset_again.nnz(), 16);
     /// ```
-    fn from(dataset: DenseDataset<E>) -> Self {
+    fn convert_from(dataset: DenseDataset<E>) -> Self {
         Self {
             data: dataset.data.to_vec(),
             n_vecs: dataset.n_vecs,
             quantizer: dataset.quantizer,
+        }
+    }
+}
+
+impl<E> From<DenseDataset<E>> for DenseDatasetGrowable<E>
+where
+    E: DenseVectorEncoder,
+    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
+{
+    fn from(dataset: DenseDataset<E>) -> Self {
+        Self::convert_from(dataset)
+    }
+}
+
+impl<In, V, D, Data> DenseDatasetGeneric<crate::ScalarDenseQuantizer<In, V, D>, Data>
+where
+    In: crate::ValueType + crate::Float,
+    V: crate::ValueType + crate::Float + crate::FromF32,
+    D: crate::ScalarDenseSupportedDistance,
+    Data: AsRef<[V]>,
+{
+    /// Relabels a scalar-quantized dataset as plain without re-encoding.
+    pub fn relabel_as_plain(self) -> DenseDatasetGeneric<crate::PlainDenseQuantizer<V, D>, Data> {
+        let dim = self.quantizer.output_dim();
+        DenseDatasetGeneric {
+            n_vecs: self.n_vecs,
+            data: self.data,
+            quantizer: crate::PlainDenseQuantizer::<V, D>::new(dim),
+        }
+    }
+}
+
+impl<V, D, Data> DenseDatasetGeneric<crate::PlainDenseQuantizer<V, D>, Data>
+where
+    V: crate::ValueType + crate::Float + crate::FromF32,
+    D: crate::ScalarDenseSupportedDistance,
+    Data: AsRef<[V]>,
+{
+    /// Relabels a plain-quantized dataset as scalar without re-encoding.
+    pub fn relabel_as_scalar<In>(
+        self,
+    ) -> DenseDatasetGeneric<crate::ScalarDenseQuantizer<In, V, D>, Data>
+    where
+        In: crate::ValueType + crate::Float,
+    {
+        let dim = self.quantizer.output_dim();
+        DenseDatasetGeneric {
+            n_vecs: self.n_vecs,
+            data: self.data,
+            quantizer: crate::ScalarDenseQuantizer::<In, V, D>::new(dim),
         }
     }
 }
@@ -474,27 +596,21 @@ where
 use crate::encoders::dense_scalar::{ScalarDenseQuantizer, ScalarDenseSupportedDistance};
 use crate::{Float, FromF32, ValueType};
 
-/// Conversion methods for DenseDataset
-///
-/// Convert a DenseDataset ith ScalarDenseQuantizer<SrcIn, SrcOut, D> to
-/// DenseDataset<ScalarDenseQuantizer<SrcOut, Out, D>, Vec<Out>>.
-///
-/// The source dataset's output type (SrcOut) must match the target quantizer's
-/// input type (In).
-impl<In, Out, D, AVOut> DenseDatasetGeneric<ScalarDenseQuantizer<In, Out, D>, AVOut>
+/// Converts a dense dataset with scalar quantizer output `In` into one with output `Out`.
+impl<In, Out, D, AVOut, SrcIn, SrcData>
+    ConvertFrom<&DenseDatasetGeneric<ScalarDenseQuantizer<SrcIn, In, D>, SrcData>>
+    for DenseDatasetGeneric<ScalarDenseQuantizer<In, Out, D>, AVOut>
 where
     In: ValueType + Float + FromF32,
     Out: ValueType + Float + FromF32,
     AVOut: AsRef<[Out]> + crate::SpaceUsage + From<Vec<Out>>,
     D: ScalarDenseSupportedDistance,
+    SrcIn: ValueType + Float,
+    SrcData: AsRef<[In]> + crate::SpaceUsage,
 {
-    pub fn quantize<SrcIn, SrcData>(
+    fn convert_from(
         source: &DenseDatasetGeneric<ScalarDenseQuantizer<SrcIn, In, D>, SrcData>,
-    ) -> Self
-    where
-        SrcIn: ValueType + Float,
-        SrcData: AsRef<[In]> + crate::SpaceUsage,
-    {
+    ) -> Self {
         let n_vecs = source.len();
         let src_dim = source.quantizer.output_dim();
         let quantizer: ScalarDenseQuantizer<In, Out, D> = ScalarDenseQuantizer::new(src_dim);

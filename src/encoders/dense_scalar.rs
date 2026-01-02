@@ -6,8 +6,8 @@ use crate::distances::{
     squared_euclidean_distance_dense_unchecked,
 };
 use crate::numeric_markers::DenseComponent;
-use crate::{DenseVectorEncoder, QueryEvaluator, QueryVectorFor, VectorEncoder};
 use crate::{DenseVector1D, Float, FromF32, SpaceUsage, ValueType, Vector1D};
+use crate::{DenseVectorEncoder, QueryEvaluator, QueryVectorFor, VectorEncoder};
 
 /// Marker trait for distance types supported by scalar dense quantizers.
 /// Provides the computation method specific to dense vectors.
@@ -95,6 +95,7 @@ where
     {
         let input = input_vector.values_as_slice();
         values.extend(input.iter().map(|&in_val| {
+            // xxxxx_TODO: avoid to_f32 conversion, use direct cast if possible
             let f32_val = in_val.to_f32().unwrap();
             Out::from_f32_saturating(f32_val)
         }));

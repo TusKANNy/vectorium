@@ -4,7 +4,8 @@ use std::hint::assert_unchecked;
 use crate::SpaceUsage;
 use crate::core::storage::{GrowableSparseStorage, ImmutableSparseStorage, SparseStorage};
 use crate::utils::{is_strictly_sorted, prefetch_read_slice};
-use crate::{ComponentType, ValueType, VectorId};
+use crate::{ComponentType, Float, FromF32, ValueType, VectorId};
+use crate::core::dataset::ConvertFrom;
 use num_traits::AsPrimitive;
 use crate::{Dataset, GrowableDataset};
 use crate::{SparseVectorEncoder, VectorEncoder};
@@ -408,7 +409,7 @@ where
 
 // Unfortunately, Rust doesn't yet support specialization, meaning that we can't use From too generically (otherwise it fails due to reimplementing `From<T> for T`)
 
-impl<E> From<SparseDatasetGrowable<E>> for SparseDataset<E>
+impl<E> ConvertFrom<SparseDatasetGrowable<E>> for SparseDataset<E>
 where
     E: SparseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
@@ -436,7 +437,7 @@ where
     /// let immutable_dataset: PlainSparseDataset<u32, f32, DotProduct> = growable_dataset.into();
     /// assert_eq!(immutable_dataset.nnz(), 9);
     /// ```
-    fn from(dataset: SparseDatasetGrowable<E>) -> Self {
+    fn convert_from(dataset: SparseDatasetGrowable<E>) -> Self {
         Self {
             storage: dataset.storage.into(),
             quantizer: dataset.quantizer,
@@ -444,7 +445,17 @@ where
     }
 }
 
-impl<E> From<SparseDataset<E>> for SparseDatasetGrowable<E>
+impl<E> From<SparseDatasetGrowable<E>> for SparseDataset<E>
+where
+    E: SparseVectorEncoder,
+    for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
+{
+    fn from(dataset: SparseDatasetGrowable<E>) -> Self {
+        Self::convert_from(dataset)
+    }
+}
+
+impl<E> ConvertFrom<SparseDataset<E>> for SparseDatasetGrowable<E>
 where
     E: SparseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
@@ -476,10 +487,144 @@ where
     ///
     /// assert_eq!(growable_dataset_again.nnz(), 7);
     /// ```
-    fn from(dataset: SparseDataset<E>) -> Self {
+    fn convert_from(dataset: SparseDataset<E>) -> Self {
         Self {
             storage: dataset.storage.into(),
             quantizer: dataset.quantizer,
+        }
+    }
+}
+
+impl<E> From<SparseDataset<E>> for SparseDatasetGrowable<E>
+where
+    E: SparseVectorEncoder,
+    for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
+{
+    fn from(dataset: SparseDataset<E>) -> Self {
+        Self::convert_from(dataset)
+    }
+}
+
+impl<C, InValue, OutValue, D>
+    SparseDatasetGeneric<
+        crate::ScalarSparseQuantizer<C, InValue, OutValue, D>,
+        GrowableSparseStorage<crate::ScalarSparseQuantizer<C, InValue, OutValue, D>>,
+    >
+where
+    C: ComponentType,
+    InValue: ValueType + Float,
+    OutValue: ValueType + Float + FromF32,
+    D: crate::ScalarSparseSupportedDistance,
+{
+    /// Relabels a scalar-quantized growable dataset as plain without re-encoding.
+    pub fn relabel_as_plain(
+        self,
+    ) -> SparseDatasetGeneric<
+        crate::PlainSparseQuantizer<C, OutValue, D>,
+        GrowableSparseStorage<crate::PlainSparseQuantizer<C, OutValue, D>>,
+    > {
+        let dim = self.quantizer.output_dim();
+        let storage = self
+            .storage
+            .relabel::<crate::PlainSparseQuantizer<C, OutValue, D>>();
+
+        SparseDatasetGeneric {
+            storage,
+            quantizer: crate::PlainSparseQuantizer::<C, OutValue, D>::new(dim, dim),
+        }
+    }
+}
+
+impl<C, OutValue, D>
+    SparseDatasetGeneric<
+        crate::PlainSparseQuantizer<C, OutValue, D>,
+        GrowableSparseStorage<crate::PlainSparseQuantizer<C, OutValue, D>>,
+    >
+where
+    C: ComponentType,
+    OutValue: ValueType + Float + FromF32,
+    D: crate::ScalarSparseSupportedDistance,
+{
+    /// Relabels a plain-quantized growable dataset as scalar without re-encoding.
+    pub fn relabel_as_scalar<InValue>(
+        self,
+    ) -> SparseDatasetGeneric<
+        crate::ScalarSparseQuantizer<C, InValue, OutValue, D>,
+        GrowableSparseStorage<crate::ScalarSparseQuantizer<C, InValue, OutValue, D>>,
+    >
+    where
+        InValue: ValueType + Float,
+    {
+        let dim = self.quantizer.output_dim();
+        let storage = self
+            .storage
+            .relabel::<crate::ScalarSparseQuantizer<C, InValue, OutValue, D>>();
+
+        SparseDatasetGeneric {
+            storage,
+            quantizer: crate::ScalarSparseQuantizer::<C, InValue, OutValue, D>::new(dim, dim),
+        }
+    }
+}
+
+impl<C, InValue, OutValue, D>
+    SparseDatasetGeneric<
+        crate::ScalarSparseQuantizer<C, InValue, OutValue, D>,
+        ImmutableSparseStorage<crate::ScalarSparseQuantizer<C, InValue, OutValue, D>>,
+    >
+where
+    C: ComponentType,
+    InValue: ValueType + Float,
+    OutValue: ValueType + Float + FromF32,
+    D: crate::ScalarSparseSupportedDistance,
+{
+    /// Relabels a scalar-quantized immutable dataset as plain without re-encoding.
+    pub fn relabel_as_plain(
+        self,
+    ) -> SparseDatasetGeneric<
+        crate::PlainSparseQuantizer<C, OutValue, D>,
+        ImmutableSparseStorage<crate::PlainSparseQuantizer<C, OutValue, D>>,
+    > {
+        let dim = self.quantizer.output_dim();
+        let storage = self
+            .storage
+            .relabel::<crate::PlainSparseQuantizer<C, OutValue, D>>();
+
+        SparseDatasetGeneric {
+            storage,
+            quantizer: crate::PlainSparseQuantizer::<C, OutValue, D>::new(dim, dim),
+        }
+    }
+}
+
+impl<C, OutValue, D>
+    SparseDatasetGeneric<
+        crate::PlainSparseQuantizer<C, OutValue, D>,
+        ImmutableSparseStorage<crate::PlainSparseQuantizer<C, OutValue, D>>,
+    >
+where
+    C: ComponentType,
+    OutValue: ValueType + Float + FromF32,
+    D: crate::ScalarSparseSupportedDistance,
+{
+    /// Relabels a plain-quantized immutable dataset as scalar without re-encoding.
+    pub fn relabel_as_scalar<InValue>(
+        self,
+    ) -> SparseDatasetGeneric<
+        crate::ScalarSparseQuantizer<C, InValue, OutValue, D>,
+        ImmutableSparseStorage<crate::ScalarSparseQuantizer<C, InValue, OutValue, D>>,
+    >
+    where
+        InValue: ValueType + Float,
+    {
+        let dim = self.quantizer.output_dim();
+        let storage = self
+            .storage
+            .relabel::<crate::ScalarSparseQuantizer<C, InValue, OutValue, D>>();
+
+        SparseDatasetGeneric {
+            storage,
+            quantizer: crate::ScalarSparseQuantizer::<C, InValue, OutValue, D>::new(dim, dim),
         }
     }
 }
@@ -722,9 +867,10 @@ mod tests {
     use crate::core::dataset::GrowableDataset;
     use crate::{
         Dataset, DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer,
-        SparseVector1D,
+        SparseDataset, SparseDatasetGrowable, SparseVector1D,
     };
     use crate::{Vector1D, VectorEncoder};
+    use half::f16;
 
     #[test]
     fn sparse_dataset_iter_next_then_next_back_returns_last_vector() {
@@ -769,5 +915,27 @@ mod tests {
 
         assert_eq!(growable_again.len(), 3);
         assert_eq!(growable_again.nnz(), 5);
+    }
+
+    #[test]
+    fn sparse_scalar_plain_roundtrip_without_reencode() {
+        let quantizer =
+            <crate::ScalarSparseQuantizer<u16, f32, f16, DotProduct> as VectorEncoder>::new(6, 6);
+        let mut growable = SparseDatasetGrowable::new(quantizer);
+
+        growable.push(SparseVector1D::new(vec![0_u16, 2], vec![1.0_f32, 2.0]));
+        growable.push(SparseVector1D::new(vec![1_u16, 3], vec![3.0_f32, 4.0]));
+
+        let growable_plain: SparseDatasetGrowable<PlainSparseQuantizer<u16, f16, DotProduct>> =
+            growable.relabel_as_plain();
+        let first = growable_plain.get(0);
+        assert_eq!(first.values_as_slice(), &[f16::from_f32(1.0), f16::from_f32(2.0)]);
+
+        let frozen_plain: PlainSparseDataset<u16, f16, DotProduct> = growable_plain.into();
+        let frozen_scalar: SparseDataset<
+            crate::ScalarSparseQuantizer<u16, f32, f16, DotProduct>,
+        > = frozen_plain.relabel_as_scalar();
+        let second = frozen_scalar.get(1);
+        assert_eq!(second.values_as_slice(), &[f16::from_f32(3.0), f16::from_f32(4.0)]);
     }
 }

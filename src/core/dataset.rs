@@ -46,6 +46,60 @@ pub type ScoredVectorSquaredEuclidean =
 pub type ScoredRangeSquaredEuclidean =
     ScoredRange<crate::core::distances::SquaredEuclideanDistance>;
 
+// We define custom conversion traits because std `From`/`Into`/`TryFrom`/`TryInto` would
+// conflict with blanket impls when used for generic dataset conversions.
+pub trait ConvertFrom<T>: Sized {
+    fn convert_from(value: T) -> Self;
+}
+
+pub trait ConvertInto<T>: Sized {
+    fn convert_into(self) -> T;
+}
+
+pub trait TryConvertFrom<T>: Sized {
+    type Error;
+    fn try_convert_from(value: T) -> Result<Self, Self::Error>;
+}
+
+pub trait TryConvertInto<T>: Sized {
+    type Error;
+    fn try_convert_into(self) -> Result<T, Self::Error>;
+}
+
+impl<T, U> ConvertInto<U> for T
+where
+    U: ConvertFrom<T>,
+{
+    #[inline]
+    fn convert_into(self) -> U {
+        U::convert_from(self)
+    }
+}
+
+impl<T, U> TryConvertFrom<T> for U
+where
+    U: ConvertFrom<T>,
+{
+    type Error = core::convert::Infallible;
+
+    #[inline]
+    fn try_convert_from(value: T) -> Result<Self, Self::Error> {
+        Ok(U::convert_from(value))
+    }
+}
+
+impl<T, U> TryConvertInto<U> for T
+where
+    U: TryConvertFrom<T>,
+{
+    type Error = U::Error;
+
+    #[inline]
+    fn try_convert_into(self) -> Result<U, Self::Error> {
+        U::try_convert_from(self)
+    }
+}
+
 /// A `Dataset` stores a collection of dense or sparse embedding vectors.
 ///
 /// At the moment we have two implementations:
