@@ -629,6 +629,156 @@ where
     }
 }
 
+impl<C, SrcIn, Mid, DstOut, D, SrcStorage, DstStorage>
+    ConvertFrom<
+        &SparseDatasetGeneric<
+            crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>,
+            SrcStorage,
+        >,
+    >
+    for SparseDatasetGeneric<
+        crate::ScalarSparseQuantizer<C, Mid, DstOut, D>,
+        DstStorage,
+    >
+where
+    C: ComponentType,
+    SrcIn: ValueType + Float,
+    Mid: ValueType + Float + FromF32,
+    DstOut: ValueType + Float + FromF32,
+    D: crate::ScalarSparseSupportedDistance,
+    crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>: SparseVectorEncoder<
+        InputComponentType = C,
+        InputValueType = SrcIn,
+        OutputComponentType = C,
+        OutputValueType = Mid,
+    >,
+    crate::ScalarSparseQuantizer<C, Mid, DstOut, D>: SparseVectorEncoder<
+        InputComponentType = C,
+        InputValueType = Mid,
+        OutputComponentType = C,
+        OutputValueType = DstOut,
+    >,
+    SrcStorage: SparseStorage<crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>>,
+    for<'a> crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>: VectorEncoder<
+        EncodedVector<'a> =
+            SparseEncodedVector<'a, crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>>,
+    >,
+    for<'a> crate::ScalarSparseQuantizer<C, Mid, DstOut, D>: VectorEncoder<
+        EncodedVector<'a> =
+            SparseEncodedVector<'a, crate::ScalarSparseQuantizer<C, Mid, DstOut, D>>,
+    >,
+    DstStorage: SparseStorage<crate::ScalarSparseQuantizer<C, Mid, DstOut, D>>
+        + From<GrowableSparseStorage<crate::ScalarSparseQuantizer<C, Mid, DstOut, D>>>,
+{
+    fn convert_from(
+        source: &SparseDatasetGeneric<
+            crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>,
+            SrcStorage,
+        >,
+    ) -> Self {
+        let n_vecs = source.len();
+        let nnz = source.nnz();
+        let dim = source.quantizer.output_dim();
+        let quantizer = crate::ScalarSparseQuantizer::<C, Mid, DstOut, D>::new(dim, dim);
+
+        let mut storage =
+            GrowableSparseStorage::<crate::ScalarSparseQuantizer<C, Mid, DstOut, D>>::with_capacity(
+                n_vecs, nnz,
+            );
+
+        for src_vec in source.iter() {
+            quantizer.extend_with_encode(
+                SparseVector1D::<C, Mid, _, _>::new(
+                    src_vec.components_as_slice(),
+                    src_vec.values_as_slice(),
+                ),
+                &mut storage.components,
+                &mut storage.values,
+            );
+            storage.offsets.push(storage.components.len());
+        }
+
+        SparseDatasetGeneric {
+            storage: storage.into(),
+            quantizer,
+        }
+    }
+}
+
+impl<C, SrcIn, Mid, DstOut, D>
+    ConvertFrom<SparseDataset<crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>>>
+    for SparseDataset<crate::ScalarSparseQuantizer<C, Mid, DstOut, D>>
+where
+    C: ComponentType,
+    SrcIn: ValueType + Float,
+    Mid: ValueType + Float + FromF32,
+    DstOut: ValueType + Float + FromF32,
+    D: crate::ScalarSparseSupportedDistance,
+    crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>: SparseVectorEncoder<
+        InputComponentType = C,
+        InputValueType = SrcIn,
+        OutputComponentType = C,
+        OutputValueType = Mid,
+    >,
+    crate::ScalarSparseQuantizer<C, Mid, DstOut, D>: SparseVectorEncoder<
+        InputComponentType = C,
+        InputValueType = Mid,
+        OutputComponentType = C,
+        OutputValueType = DstOut,
+    >,
+    for<'a> crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>: VectorEncoder<
+        EncodedVector<'a> =
+            SparseEncodedVector<'a, crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>>,
+    >,
+    for<'a> crate::ScalarSparseQuantizer<C, Mid, DstOut, D>: VectorEncoder<
+        EncodedVector<'a> =
+            SparseEncodedVector<'a, crate::ScalarSparseQuantizer<C, Mid, DstOut, D>>,
+    >,
+{
+    fn convert_from(
+        source: SparseDataset<crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>>,
+    ) -> Self {
+        Self::convert_from(&source)
+    }
+}
+
+impl<C, SrcIn, Mid, DstOut, D>
+    ConvertFrom<SparseDatasetGrowable<crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>>>
+    for SparseDatasetGrowable<crate::ScalarSparseQuantizer<C, Mid, DstOut, D>>
+where
+    C: ComponentType,
+    SrcIn: ValueType + Float,
+    Mid: ValueType + Float + FromF32,
+    DstOut: ValueType + Float + FromF32,
+    D: crate::ScalarSparseSupportedDistance,
+    crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>: SparseVectorEncoder<
+        InputComponentType = C,
+        InputValueType = SrcIn,
+        OutputComponentType = C,
+        OutputValueType = Mid,
+    >,
+    crate::ScalarSparseQuantizer<C, Mid, DstOut, D>: SparseVectorEncoder<
+        InputComponentType = C,
+        InputValueType = Mid,
+        OutputComponentType = C,
+        OutputValueType = DstOut,
+    >,
+    for<'a> crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>: VectorEncoder<
+        EncodedVector<'a> =
+            SparseEncodedVector<'a, crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>>,
+    >,
+    for<'a> crate::ScalarSparseQuantizer<C, Mid, DstOut, D>: VectorEncoder<
+        EncodedVector<'a> =
+            SparseEncodedVector<'a, crate::ScalarSparseQuantizer<C, Mid, DstOut, D>>,
+    >,
+{
+    fn convert_from(
+        source: SparseDatasetGrowable<crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>>,
+    ) -> Self {
+        Self::convert_from(&source)
+    }
+}
+
 /// A struct to iterate over the *raw* sparse dataset storage as slice-backed `SparseVector1D`.
 ///
 /// This iterator is independent from the quantizer’s `EncodedVector` choice and is
@@ -864,6 +1014,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::SparseDatasetIter;
+    use crate::core::dataset::ConvertInto;
     use crate::core::dataset::GrowableDataset;
     use crate::{
         Dataset, DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer,
@@ -937,5 +1088,41 @@ mod tests {
         > = frozen_plain.relabel_as_scalar();
         let second = frozen_scalar.get(1);
         assert_eq!(second.values_as_slice(), &[f16::from_f32(3.0), f16::from_f32(4.0)]);
+    }
+
+    #[test]
+    fn sparse_scalar_reencode_convert_into_owned() {
+        type SrcQuant = crate::ScalarSparseQuantizer<u16, f32, f16, DotProduct>;
+        type DstQuant = crate::ScalarSparseQuantizer<u16, f16, f32, DotProduct>;
+
+        let quantizer = <SrcQuant as VectorEncoder>::new(6, 6);
+        let mut growable = SparseDatasetGrowable::new(quantizer);
+
+        growable.push(SparseVector1D::new(vec![0_u16, 2], vec![1.25_f32, 2.5]));
+        growable.push(SparseVector1D::new(vec![1_u16, 3], vec![3.5_f32, 4.25]));
+
+        let frozen: SparseDataset<SrcQuant> = growable.into();
+
+        let converted: SparseDataset<DstQuant> = frozen.convert_into();
+
+        let first = converted.get(0);
+        assert_eq!(first.components_as_slice(), &[0_u16, 2]);
+        assert_eq!(
+            first.values_as_slice(),
+            &[
+                f32::from(f16::from_f32(1.25)),
+                f32::from(f16::from_f32(2.5)),
+            ]
+        );
+
+        let second = converted.get(1);
+        assert_eq!(second.components_as_slice(), &[1_u16, 3]);
+        assert_eq!(
+            second.values_as_slice(),
+            &[
+                f32::from(f16::from_f32(3.5)),
+                f32::from(f16::from_f32(4.25)),
+            ]
+        );
     }
 }

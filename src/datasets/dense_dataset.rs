@@ -639,6 +639,110 @@ where
     }
 }
 
+impl<In, Out, D, SrcIn>
+    ConvertFrom<DenseDataset<ScalarDenseQuantizer<SrcIn, In, D>>>
+    for DenseDataset<ScalarDenseQuantizer<In, Out, D>>
+where
+    In: ValueType + Float + FromF32,
+    Out: ValueType + Float + FromF32,
+    D: ScalarDenseSupportedDistance,
+    SrcIn: ValueType + Float,
+    ScalarDenseQuantizer<SrcIn, In, D>: DenseVectorEncoder<
+        InputValueType = SrcIn,
+        OutputValueType = In,
+    >,
+    ScalarDenseQuantizer<In, Out, D>: DenseVectorEncoder<
+        InputValueType = In,
+        OutputValueType = Out,
+    >,
+    for<'a> ScalarDenseQuantizer<SrcIn, In, D>: VectorEncoder<
+        EncodedVector<'a> =
+            DenseEncodedVector<'a, ScalarDenseQuantizer<SrcIn, In, D>>,
+    >,
+    for<'a> ScalarDenseQuantizer<In, Out, D>: VectorEncoder<
+        EncodedVector<'a> =
+            DenseEncodedVector<'a, ScalarDenseQuantizer<In, Out, D>>,
+    >,
+{
+    fn convert_from(source: DenseDataset<ScalarDenseQuantizer<SrcIn, In, D>>) -> Self {
+        let n_vecs = source.len();
+        let src_dim = source.quantizer.output_dim();
+        let quantizer: ScalarDenseQuantizer<In, Out, D> = ScalarDenseQuantizer::new(src_dim);
+        let dst_dim = quantizer.output_dim();
+
+        let mut output_data: Vec<Out> = Vec::with_capacity(n_vecs * dst_dim);
+
+        for src_vec in source.iter() {
+            let input = DenseVector1D::<In, _>::new(src_vec.values_as_slice());
+            let before_len = output_data.len();
+            quantizer.extend_with_encode(input, &mut output_data);
+            assert_eq!(
+                output_data.len(),
+                before_len + dst_dim,
+                "DenseVectorEncoder::extend_with_encode must append exactly output_dim() values"
+            );
+        }
+
+        DenseDatasetGeneric::<ScalarDenseQuantizer<In, Out, D>, Box<[Out]>> {
+            n_vecs,
+            data: output_data.into_boxed_slice(),
+            quantizer,
+        }
+    }
+}
+
+impl<In, Out, D, SrcIn>
+    ConvertFrom<DenseDatasetGrowable<ScalarDenseQuantizer<SrcIn, In, D>>>
+    for DenseDatasetGrowable<ScalarDenseQuantizer<In, Out, D>>
+where
+    In: ValueType + Float + FromF32,
+    Out: ValueType + Float + FromF32,
+    D: ScalarDenseSupportedDistance,
+    SrcIn: ValueType + Float,
+    ScalarDenseQuantizer<SrcIn, In, D>: DenseVectorEncoder<
+        InputValueType = SrcIn,
+        OutputValueType = In,
+    >,
+    ScalarDenseQuantizer<In, Out, D>: DenseVectorEncoder<
+        InputValueType = In,
+        OutputValueType = Out,
+    >,
+    for<'a> ScalarDenseQuantizer<SrcIn, In, D>: VectorEncoder<
+        EncodedVector<'a> =
+            DenseEncodedVector<'a, ScalarDenseQuantizer<SrcIn, In, D>>,
+    >,
+    for<'a> ScalarDenseQuantizer<In, Out, D>: VectorEncoder<
+        EncodedVector<'a> =
+            DenseEncodedVector<'a, ScalarDenseQuantizer<In, Out, D>>,
+    >,
+{
+    fn convert_from(source: DenseDatasetGrowable<ScalarDenseQuantizer<SrcIn, In, D>>) -> Self {
+        let n_vecs = source.len();
+        let src_dim = source.quantizer.output_dim();
+        let quantizer: ScalarDenseQuantizer<In, Out, D> = ScalarDenseQuantizer::new(src_dim);
+        let dst_dim = quantizer.output_dim();
+
+        let mut output_data: Vec<Out> = Vec::with_capacity(n_vecs * dst_dim);
+
+        for src_vec in source.iter() {
+            let input = DenseVector1D::<In, _>::new(src_vec.values_as_slice());
+            let before_len = output_data.len();
+            quantizer.extend_with_encode(input, &mut output_data);
+            assert_eq!(
+                output_data.len(),
+                before_len + dst_dim,
+                "DenseVectorEncoder::extend_with_encode must append exactly output_dim() values"
+            );
+        }
+
+        DenseDatasetGeneric::<ScalarDenseQuantizer<In, Out, D>, Vec<Out>> {
+            n_vecs,
+            data: output_data,
+            quantizer,
+        }
+    }
+}
+
 // impl<T> PlainDenseDataset<T>
 // where
 //     T: Float,
