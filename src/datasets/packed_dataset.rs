@@ -149,7 +149,7 @@ where
     Data: AsRef<[E::EncodingType]>,
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
-    type VectorEncoder = E;
+    type Encoder = E;
 
     #[inline]
     fn quantizer(&self) -> &E {

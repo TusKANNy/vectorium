@@ -124,7 +124,7 @@ where
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     Data: AsRef<[E::OutputValueType]>,
 {
-    type VectorEncoder = E;
+    type Encoder = E;
 
     #[inline]
     fn quantizer(&self) -> &E {

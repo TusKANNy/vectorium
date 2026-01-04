@@ -108,7 +108,7 @@ where
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
     S: SparseStorage<E>,
 {
-    type VectorEncoder = E;
+    type Encoder = E;
 
     /// Retrieves the components and values of the sparse vector at the specified index.
     ///
