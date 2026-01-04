@@ -1,5 +1,5 @@
 use crate::{Distance, Vector1D};
-use crate::{QueryEvaluator, QueryVectorFor, VectorEncoder};
+use crate::QueryVectorFor;
 
 use itertools::Itertools;
 
@@ -149,17 +149,19 @@ where
 /// let v = dataset.get(0);
 /// assert_eq!(v.values_as_slice(), &[1.0, 0.0, 2.0]);
 /// ```
-pub trait Dataset<Q>
-where
-    Q: VectorEncoder,
-{
-    fn quantizer(&self) -> &Q;
+pub trait Dataset {
+    type VectorEncoder: crate::VectorEncoder;
+
+    fn quantizer(&self) -> &Self::VectorEncoder;
 
     /// Get a query evaluator for the given query vector.
     #[inline]
-    fn query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Q::Evaluator<'a>
+    fn query_evaluator<'a, QueryVector>(
+        &'a self,
+        query: &'a QueryVector,
+    ) -> Self::VectorEncoder::Evaluator<'a>
     where
-        QueryVector: QueryVectorFor<Q> + ?Sized,
+        QueryVector: QueryVectorFor<Self::VectorEncoder> + ?Sized,
     {
         self.quantizer().query_evaluator(query)
     }
@@ -196,18 +198,21 @@ where
 
     /// Get the representation of the vector with the given id.
     #[inline]
-    fn get<'a>(&'a self, id: VectorId) -> Q::EncodedVector<'a> {
+    fn get<'a>(&'a self, id: VectorId) -> Self::VectorEncoder::EncodedVector<'a> {
         let range = self.range_from_id(id);
         self.get_by_range(range)
     }
 
     /// Get the representation of the vector with the given range.
-    fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> Q::EncodedVector<'a>;
+    fn get_by_range<'a>(
+        &'a self,
+        range: std::ops::Range<usize>,
+    ) -> Self::VectorEncoder::EncodedVector<'a>;
 
     fn prefetch(&self, range: std::ops::Range<usize>);
 
     /// Returns an iterator over all encoded vectors in the dataset.
-    fn iter<'a>(&'a self) -> impl Iterator<Item = Q::EncodedVector<'a>>;
+    fn iter<'a>(&'a self) -> impl Iterator<Item = Self::VectorEncoder::EncodedVector<'a>>;
 
     /// Performs a brute-force search to find the K-nearest neighbors (KNN) of the queried vector.
     ///
@@ -220,9 +225,9 @@ where
         &self,
         query: &QueryVector,
         k: usize,
-    ) -> Vec<ScoredVector<<Q as VectorEncoder>::Distance>>
+    ) -> Vec<ScoredVector<<Self::VectorEncoder as crate::VectorEncoder>::Distance>>
     where
-        QueryVector: QueryVectorFor<Q> + ?Sized,
+        QueryVector: QueryVectorFor<Self::VectorEncoder> + ?Sized,
     {
         if k == 0 {
             return Vec::new();
@@ -241,10 +246,7 @@ where
     }
 }
 
-pub trait GrowableDataset<Q>: Dataset<Q>
-where
-    Q: VectorEncoder,
-{
+pub trait GrowableDataset: Dataset {
     /// Growable dataset API.
     ///
     /// # Example
@@ -261,13 +263,16 @@ where
     /// assert_eq!(dataset.len(), 2);
     /// ```
     /// Create a new growable dataset with the given quantizer and dimensionality.
-    fn new(quantizer: Q) -> Self;
+    fn new(quantizer: <Self as Dataset>::VectorEncoder) -> Self;
 
     /// Push a new vector into the dataset.
     /// The vector must have the appropriate component and value types as defined by the quantizer.
     /// The encoding defined by the quantizer is applied to the input vector before storing it in the dataset.
     fn push(
         &mut self,
-        vec: impl Vector1D<Component = Q::InputComponentType, Value = Q::InputValueType>,
+        vec: impl Vector1D<
+            Component = <Self as Dataset>::VectorEncoder::InputComponentType,
+            Value = <Self as Dataset>::VectorEncoder::InputValueType,
+        >,
     );
 }

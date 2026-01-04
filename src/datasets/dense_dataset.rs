@@ -118,12 +118,14 @@ where
 }
 
 /// immutable
-impl<E, Data> Dataset<E> for DenseDatasetGeneric<E, Data>
+impl<E, Data> Dataset for DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     Data: AsRef<[E::OutputValueType]>,
 {
+    type VectorEncoder = E;
+
     #[inline]
     fn quantizer(&self) -> &E {
         &self.quantizer
@@ -320,7 +322,7 @@ mod tests {
 // }
 
 // Growable dataset implementation
-impl<E> GrowableDataset<E> for DenseDatasetGeneric<E, Vec<E::OutputValueType>>
+impl<E> GrowableDataset for DenseDatasetGeneric<E, Vec<E::OutputValueType>>
 where
     E: DenseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,

@@ -90,7 +90,7 @@ where
     }
 }
 
-impl<E> GrowableDataset<E>
+impl<E> GrowableDataset
     for PackedDatasetGeneric<E, Vec<usize>, Vec<<E as PackedVectorEncoder>::EncodingType>>
 where
     E: PackedVectorEncoder,
@@ -142,13 +142,15 @@ where
     }
 }
 
-impl<E, Offsets, Data> Dataset<E> for PackedDatasetGeneric<E, Offsets, Data>
+impl<E, Offsets, Data> Dataset for PackedDatasetGeneric<E, Offsets, Data>
 where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::EncodingType]>,
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
+    type VectorEncoder = E;
+
     #[inline]
     fn quantizer(&self) -> &E {
         &self.quantizer

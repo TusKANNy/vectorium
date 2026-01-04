@@ -102,12 +102,14 @@ where
     }
 }
 
-impl<E, S> Dataset<E> for SparseDatasetGeneric<E, S>
+impl<E, S> Dataset for SparseDatasetGeneric<E, S>
 where
     E: SparseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
     S: SparseStorage<E>,
 {
+    type VectorEncoder = E;
+
     /// Retrieves the components and values of the sparse vector at the specified index.
     ///
     /// This method returns a tuple containing slices of components and values
@@ -817,7 +819,7 @@ where
     }
 }
 
-impl<E> GrowableDataset<E> for SparseDatasetGrowable<E>
+impl<E> GrowableDataset for SparseDatasetGrowable<E>
 where
     E: SparseVectorEncoder,
     for<'a> E: VectorEncoder<EncodedVector<'a> = SparseEncodedVector<'a, E>>,
