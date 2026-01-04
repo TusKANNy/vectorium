@@ -74,9 +74,9 @@ pub type PlainDenseDataset<V, D> = ScalarDenseDataset<V, V, D>;
 pub type PlainDenseDatasetGrowable<V, D> = ScalarDenseDatasetGrowable<V, V, D>;
 
 // Useful type aliases for sparse dataset types
-pub type ScalarSparseDataset<C, V, D> = SparseDataset<ScalarSparseQuantizer<C, V, V, D>>;
-pub type ScalarSparseDatasetGrowable<C, V, D> =
-    SparseDatasetGrowable<ScalarSparseQuantizer<C, V, V, D>>;
+pub type ScalarSparseDataset<C, W, V, D> = SparseDataset<ScalarSparseQuantizer<C, W, V, D>>;
+pub type ScalarSparseDatasetGrowable<C, W, V, D> =
+    SparseDatasetGrowable<ScalarSparseQuantizer<C, W, V, D>>;
 
 pub type PlainSparseDataset<C, V, D> = SparseDataset<PlainSparseQuantizer<C, V, D>>;
 pub type PlainSparseDatasetGrowable<C, V, D> = SparseDatasetGrowable<PlainSparseQuantizer<C, V, D>>;
