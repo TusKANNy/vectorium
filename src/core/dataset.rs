@@ -1,6 +1,9 @@
-use crate::{Distance, Vector1D};
 use crate::core::sealed;
-use crate::{DenseVectorEncoder, PackedVectorEncoder, QueryEvaluator, QueryVectorFor, SparseVectorEncoder, VectorEncoder};
+use crate::{
+    DenseVectorEncoder, PackedVectorEncoder, QueryEvaluator, QueryVectorFor, SparseVectorEncoder,
+    VectorEncoder,
+};
+use crate::{Distance, Vector1D};
 
 use itertools::Itertools;
 
@@ -53,6 +56,7 @@ pub trait ConvertFrom<T>: Sized
 where
     Self: Dataset,
     T: Dataset,
+    // Enforce component-type compatibility between source and destination encoders.
     <T as Dataset>::Encoder: VectorEncoder<
         OutputComponentType = <<Self as Dataset>::Encoder as VectorEncoder>::OutputComponentType,
     >,
@@ -60,7 +64,15 @@ where
     fn convert_from(value: T) -> Self;
 }
 
-pub trait ConvertInto<T>: Sized {
+pub trait ConvertInto<T>: Sized
+where
+    Self: Dataset,
+    T: Dataset,
+    // Enforce component-type compatibility between source and destination encoders.
+    <T as Dataset>::Encoder: VectorEncoder<
+        OutputComponentType = <<Self as Dataset>::Encoder as VectorEncoder>::OutputComponentType,
+    >,
+{
     fn convert_into(self) -> T;
 }
 
@@ -78,6 +90,7 @@ impl<T, U> ConvertInto<U> for T
 where
     T: Dataset,
     U: Dataset + ConvertFrom<T>,
+    // Mirror ConvertFrom's compatibility rule so callers do not repeat the bound.
     <T as Dataset>::Encoder: VectorEncoder<
         OutputComponentType = <<U as Dataset>::Encoder as VectorEncoder>::OutputComponentType,
     >,
@@ -92,6 +105,7 @@ impl<T, U> TryConvertFrom<T> for U
 where
     T: Dataset,
     U: Dataset + ConvertFrom<T>,
+    // Same compatibility rule for fallible conversions.
     <T as Dataset>::Encoder: VectorEncoder<
         OutputComponentType = <<U as Dataset>::Encoder as VectorEncoder>::OutputComponentType,
     >,
@@ -108,6 +122,7 @@ impl<T, U> TryConvertInto<U> for T
 where
     T: Dataset,
     U: Dataset + TryConvertFrom<T>,
+    // Keep component-type compatibility implicit at the call site.
     <T as Dataset>::Encoder: VectorEncoder<
         OutputComponentType = <<U as Dataset>::Encoder as VectorEncoder>::OutputComponentType,
     >,
@@ -221,26 +236,18 @@ pub trait Dataset: sealed::Sealed {
 
     /// Get the representation of the vector with the given id.
     #[inline]
-    fn get<'a>(
-        &'a self,
-        id: VectorId,
-    ) -> <Self as Dataset>::Vector<'a> {
+    fn get<'a>(&'a self, id: VectorId) -> <Self as Dataset>::Vector<'a> {
         let range = self.range_from_id(id);
         self.get_by_range(range)
     }
 
     /// Get the representation of the vector with the given range.
-    fn get_by_range<'a>(
-        &'a self,
-        range: std::ops::Range<usize>,
-    ) -> <Self as Dataset>::Vector<'a>;
+    fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> <Self as Dataset>::Vector<'a>;
 
     fn prefetch(&self, range: std::ops::Range<usize>);
 
     /// Returns an iterator over all encoded vectors in the dataset.
-    fn iter<'a>(
-        &'a self,
-    ) -> impl Iterator<Item = <Self as Dataset>::Vector<'a>>;
+    fn iter<'a>(&'a self) -> impl Iterator<Item = <Self as Dataset>::Vector<'a>>;
 
     /// Performs a brute-force search to find the K-nearest neighbors (KNN) of the queried vector.
     ///
@@ -283,7 +290,8 @@ where
     T: Dataset,
 {
     type Encoder = T::Encoder;
-    type Vector<'a> = T::Vector<'a>
+    type Vector<'a>
+        = T::Vector<'a>
     where
         Self: 'a;
 
