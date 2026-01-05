@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 mod swizzle;
 
 use crate::PackedVector;
+use crate::core::sealed;
 use crate::distances::DotProduct;
 use crate::{ComponentType, FixedU8Q, SpaceUsage, SparseVector1D, ValueType, Vector1D};
 use crate::{PackedVectorEncoder, QueryEvaluator, QueryVectorFor, VectorEncoder};
@@ -36,6 +37,8 @@ pub struct DotVByteFixedU8Quantizer {
     component_mapping: Option<Box<[u16]>>, // Optional component remapping that improves compression. mapping[i] = new_index_of_component_i
 }
 
+impl sealed::Sealed for DotVByteFixedU8Quantizer {}
+
 impl DotVByteFixedU8Quantizer {
     #[inline]
     pub fn component_mapping(&self) -> Option<&[u16]> {
@@ -55,6 +58,7 @@ impl DotVByteFixedU8Quantizer {
 
 impl PackedVectorEncoder for DotVByteFixedU8Quantizer {
     type EncodingType = u64;
+    type EncodedVector<'a> = PackedVector<u64, &'a [u64]>;
 
     /// Encode a sparse vector (components + `FixedU8Q` values) into the packed DotVByte format
     /// and append it to `data`.
@@ -78,7 +82,7 @@ impl PackedVectorEncoder for DotVByteFixedU8Quantizer {
             .map(|v| v.to_bits())
             .collect(); // comvert to u8 representation (i.e., we want bytes of the FixedU8Q)
 
-        //If needed, remap components according to DotVByte quantizer mapping.
+        //If needed, remap components according to the DotVByte quantizer mapping.
         let mut q_components = if let Some(component_mapping) = self.component_mapping() {
             input_vector
                 .components_as_slice()
@@ -127,8 +131,6 @@ impl VectorEncoder for DotVByteFixedU8Quantizer {
         = DotVByteFixedU8QueryEvaluator<'a>
     where
         Self: 'a;
-
-    type EncodedVector<'a> = PackedVector<u64, &'a [u64]>;
 
     #[inline]
     fn new(input_dim: usize, output_dim: usize) -> Self {
@@ -233,12 +235,11 @@ impl<'a> DotVByteFixedU8QueryEvaluator<'a> {
     }
 }
 
-impl QueryEvaluator<DotVByteFixedU8Quantizer> for DotVByteFixedU8QueryEvaluator<'_> {
+impl<'a> QueryEvaluator<PackedVector<u64, &'a [u64]>, DotProduct>
+    for DotVByteFixedU8QueryEvaluator<'_>
+{
     #[inline]
-    fn compute_distance(
-        &self,
-        vector: <DotVByteFixedU8Quantizer as VectorEncoder>::EncodedVector<'_>,
-    ) -> <DotVByteFixedU8Quantizer as VectorEncoder>::Distance {
+    fn compute_distance(&self, vector: PackedVector<u64, &'a [u64]>) -> DotProduct {
         let dotvbyte_view = unsafe { DotVbyteFixedu8::from_unchecked_slice(vector.as_slice()) };
         DotProduct::from(dotvbyte_view.dot_product(&self.dense_query))
     }

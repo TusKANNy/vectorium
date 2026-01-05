@@ -1,5 +1,6 @@
 use crate::{Distance, Vector1D};
-use crate::{QueryEvaluator, QueryVectorFor, VectorEncoder};
+use crate::core::sealed;
+use crate::{DenseVectorEncoder, PackedVectorEncoder, QueryEvaluator, QueryVectorFor, SparseVectorEncoder, VectorEncoder};
 
 use itertools::Itertools;
 
@@ -107,7 +108,7 @@ where
 /// - `SparseDataset` in which we store variable-length sparse vectors, i.e., vectors for which we need to store component indices.
 /// - `PackedDataset` in which we store variable-length packed encodings (not `Vector1D`) concatenated in a single array and delimited by `offsets`.
 ///
-/// A quantizer is associated with the dataset, defining how input vectors
+/// An encoder is associated with the dataset, defining how input vectors
 /// are encoded and how queries are evaluated against the encoded vectors.
 /// Important: iterators iterate over all **encoded** representation of the
 /// vectors in the dataset.
@@ -149,8 +150,11 @@ where
 /// let v = dataset.get(0);
 /// assert_eq!(v.values_as_slice(), &[1.0, 0.0, 2.0]);
 /// ```
-pub trait Dataset {
+pub trait Dataset: sealed::Sealed {
     type Encoder: VectorEncoder;
+    type Vector<'a>
+    where
+        Self: 'a;
 
     fn quantizer(&self) -> &Self::Encoder;
 
@@ -177,7 +181,7 @@ pub trait Dataset {
     }
 
     /// Dimensionality of the encoded vectors (stored representation).
-    /// For example, this is equal to `m` for PQ quantizers, or the number of values per vector for scalar quantizers.
+    /// For example, this is equal to `m` for PQ encoders, or the number of values per vector for scalar encoders.
     #[inline]
     fn output_dim(&self) -> usize {
         self.quantizer().output_dim()
@@ -201,7 +205,7 @@ pub trait Dataset {
     fn get<'a>(
         &'a self,
         id: VectorId,
-    ) -> <<Self as Dataset>::Encoder as VectorEncoder>::EncodedVector<'a> {
+    ) -> <Self as Dataset>::Vector<'a> {
         let range = self.range_from_id(id);
         self.get_by_range(range)
     }
@@ -210,14 +214,14 @@ pub trait Dataset {
     fn get_by_range<'a>(
         &'a self,
         range: std::ops::Range<usize>,
-    ) -> <<Self as Dataset>::Encoder as VectorEncoder>::EncodedVector<'a>;
+    ) -> <Self as Dataset>::Vector<'a>;
 
     fn prefetch(&self, range: std::ops::Range<usize>);
 
     /// Returns an iterator over all encoded vectors in the dataset.
     fn iter<'a>(
         &'a self,
-    ) -> impl Iterator<Item = <<Self as Dataset>::Encoder as VectorEncoder>::EncodedVector<'a>>;
+    ) -> impl Iterator<Item = <Self as Dataset>::Vector<'a>>;
 
     /// Performs a brute-force search to find the K-nearest neighbors (KNN) of the queried vector.
     ///
@@ -233,6 +237,8 @@ pub trait Dataset {
     ) -> Vec<ScoredVector<<Self::Encoder as VectorEncoder>::Distance>>
     where
         QueryVector: QueryVectorFor<Self::Encoder> + ?Sized,
+        for<'a> <Self::Encoder as VectorEncoder>::Evaluator<'a>:
+            QueryEvaluator<Self::Vector<'a>, <Self::Encoder as VectorEncoder>::Distance>,
     {
         if k == 0 {
             return Vec::new();
@@ -251,6 +257,24 @@ pub trait Dataset {
     }
 }
 
+pub trait DenseDataset: Dataset
+where
+    Self::Encoder: DenseVectorEncoder,
+{
+}
+
+pub trait SparseDataset: Dataset
+where
+    Self::Encoder: SparseVectorEncoder,
+{
+}
+
+pub trait PackedDataset: Dataset
+where
+    Self::Encoder: PackedVectorEncoder,
+{
+}
+
 pub trait GrowableDataset: Dataset {
     /// Growable dataset API.
     ///
@@ -267,12 +291,12 @@ pub trait GrowableDataset: Dataset {
     /// dataset.push(DenseVector1D::new(vec![3.0, 4.0]));
     /// assert_eq!(dataset.len(), 2);
     /// ```
-    /// Create a new growable dataset with the given quantizer and dimensionality.
+    /// Create a new growable dataset with the given encoder and dimensionality.
     fn new(quantizer: <Self as Dataset>::Encoder) -> Self;
 
     /// Push a new vector into the dataset.
-    /// The vector must have the appropriate component and value types as defined by the quantizer.
-    /// The encoding defined by the quantizer is applied to the input vector before storing it in the dataset.
+    /// The vector must have the appropriate component and value types as defined by the encoder.
+    /// The encoding defined by the encoder is applied to the input vector before storing it in the dataset.
     fn push(
         &mut self,
         vec: impl Vector1D<

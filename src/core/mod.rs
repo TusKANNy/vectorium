@@ -3,3 +3,7 @@ pub mod distances;
 pub mod storage;
 pub mod vector1d;
 pub mod vector_encoder;
+
+pub(crate) mod sealed {
+    pub trait Sealed {}
+}

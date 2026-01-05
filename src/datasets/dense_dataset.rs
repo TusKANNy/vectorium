@@ -3,17 +3,13 @@ use serde::{Deserialize, Serialize};
 use crate::SpaceUsage;
 use crate::VectorId;
 use crate::utils::prefetch_read_slice;
+use crate::core::sealed;
 use crate::{Dataset, GrowableDataset};
 use crate::core::dataset::ConvertFrom;
 use crate::{DenseVectorEncoder, VectorEncoder};
 use crate::{DenseVector1D, Vector1D};
 
 use rayon::prelude::*;
-
-type DenseEncodedVector<'a, E> = DenseVector1D<
-    <E as VectorEncoder>::OutputValueType,
-    &'a [<E as VectorEncoder>::OutputValueType],
->;
 
 // Implementation of a growable dense dataset.
 pub type DenseDatasetGrowable<E> =
@@ -44,7 +40,6 @@ pub type DenseDataset<E> = DenseDatasetGeneric<E, Box<[<E as VectorEncoder>::Out
 pub struct DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     Data: AsRef<[E::OutputValueType]>,
 {
     n_vecs: usize,
@@ -52,15 +47,21 @@ where
     quantizer: E,
 }
 
+impl<E, Data> sealed::Sealed for DenseDatasetGeneric<E, Data>
+where
+    E: DenseVectorEncoder,
+    Data: AsRef<[E::OutputValueType]>,
+{
+}
+
 impl<E, Data> SpaceUsage for DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     E: SpaceUsage,
     Data: AsRef<[E::OutputValueType]> + SpaceUsage,
 {
     fn space_usage_bytes(&self) -> usize {
-        // Use size_of for the quantizer to avoid requiring every VectorEncoder to
+        // Use size_of for the encoder to avoid requiring every VectorEncoder to
         // implement `SpaceUsage`.
         self.n_vecs.space_usage_bytes()
             + self.quantizer.space_usage_bytes()
@@ -71,7 +72,6 @@ where
 impl<E, Data> DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     Data: AsRef<[E::OutputValueType]>,
 {
     /// Creates a DenseDatasetGeneric from raw data.
@@ -79,13 +79,13 @@ where
     /// # Arguments
     /// * `data` - The raw vector data (flattened)
     /// * `n_vecs` - Number of vectors
-    /// * `quantizer` - The quantizer to use
+    /// * `quantizer` - The encoder to use
     #[inline]
     pub fn from_raw(data: Data, n_vecs: usize, quantizer: E) -> Self {
         assert_eq!(
             data.as_ref().len(),
             n_vecs * quantizer.output_dim(),
-            "Data length must equal n_vecs * quantizer.output_dim()"
+            "Data length must equal n_vecs * encoder.output_dim()"
         );
         Self {
             n_vecs,
@@ -121,10 +121,12 @@ where
 impl<E, Data> Dataset for DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     Data: AsRef<[E::OutputValueType]>,
 {
     type Encoder = E;
+    type Vector<'a> = E::EncodedVector<'a>
+    where
+        Self: 'a;
 
     #[inline]
     fn quantizer(&self) -> &E {
@@ -143,7 +145,7 @@ where
 
     #[inline]
     fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> E::EncodedVector<'a> {
-        DenseVector1D::new(&self.data.as_ref()[range])
+        self.quantizer.encoded_from_slice(&self.data.as_ref()[range])
     }
 
     #[inline]
@@ -176,6 +178,13 @@ where
     fn iter<'a>(&'a self) -> impl Iterator<Item = E::EncodedVector<'a>> {
         DenseDatasetIter::new(self)
     }
+}
+
+impl<E, Data> crate::core::dataset::DenseDataset for DenseDatasetGeneric<E, Data>
+where
+    E: DenseVectorEncoder,
+    Data: AsRef<[E::OutputValueType]>,
+{
 }
 
 // impl<'a, E, B> DenseDatasetGeneric<E, B>
@@ -325,7 +334,6 @@ mod tests {
 impl<E> GrowableDataset for DenseDatasetGeneric<E, Vec<E::OutputValueType>>
 where
     E: DenseVectorEncoder,
-    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     E::OutputValueType: Default,
 {
     #[inline]
@@ -344,7 +352,7 @@ where
     ) {
         assert!(
             vec.len() == self.quantizer.input_dim(),
-            "Input vector' length doesn't match quantizer input dimensionality."
+            "Input vector length doesn't match encoder input dimensionality."
         );
 
         let input = DenseVector1D::new(vec.values_as_slice());
@@ -375,7 +383,6 @@ where
 impl<E> ConvertFrom<DenseDatasetGrowable<E>> for DenseDataset<E>
 where
     E: DenseVectorEncoder,
-    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
 {
     /// Converts a mutable dense dataset into an immutable one.
     ///
@@ -416,7 +423,6 @@ where
 impl<E> From<DenseDatasetGrowable<E>> for DenseDataset<E>
 where
     E: DenseVectorEncoder,
-    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
 {
     fn from(dataset: DenseDatasetGrowable<E>) -> Self {
         Self::convert_from(dataset)
@@ -426,7 +432,6 @@ where
 impl<E> ConvertFrom<DenseDataset<E>> for DenseDatasetGrowable<E>
 where
     E: DenseVectorEncoder,
-    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
 {
     /// Converts an immutable sparse dataset into a mutable one.
     ///
@@ -475,7 +480,6 @@ where
 impl<E> From<DenseDataset<E>> for DenseDatasetGrowable<E>
 where
     E: DenseVectorEncoder,
-    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
 {
     fn from(dataset: DenseDataset<E>) -> Self {
         Self::convert_from(dataset)
@@ -538,7 +542,6 @@ where
 impl<E, T> AsRef<[E::OutputValueType]> for DenseDatasetGeneric<E, T>
 where
     E: DenseVectorEncoder,
-    for<'a> E: VectorEncoder<EncodedVector<'a> = DenseEncodedVector<'a, E>>,
     T: AsRef<[E::OutputValueType]>,
 {
     fn as_ref(&self) -> &[E::OutputValueType] {
@@ -550,9 +553,9 @@ where
 pub struct DenseDatasetIter<'a, E>
 where
     E: DenseVectorEncoder,
-    for<'b> E: VectorEncoder<EncodedVector<'b> = DenseEncodedVector<'b, E>>,
 {
     data: &'a [E::OutputValueType],
+    encoder: &'a E,
     dim: usize,
     index: usize,
 }
@@ -560,7 +563,6 @@ where
 impl<'a, E> DenseDatasetIter<'a, E>
 where
     E: DenseVectorEncoder,
-    for<'b> E: VectorEncoder<EncodedVector<'b> = DenseEncodedVector<'b, E>>,
 {
     pub fn new<Data>(dataset: &'a DenseDatasetGeneric<E, Data>) -> Self
     where
@@ -568,6 +570,7 @@ where
     {
         Self {
             data: dataset.values(),
+            encoder: &dataset.quantizer,
             dim: dataset.quantizer.output_dim(),
             index: 0,
         }
@@ -577,7 +580,6 @@ where
 impl<'a, E> Iterator for DenseDatasetIter<'a, E>
 where
     E: DenseVectorEncoder,
-    for<'b> E: VectorEncoder<EncodedVector<'b> = DenseEncodedVector<'b, E>>,
 {
     type Item = E::EncodedVector<'a>;
 
@@ -591,7 +593,7 @@ where
         let end = std::cmp::min(start + self.dim, self.data.len());
         self.index = end;
 
-        Some(DenseVector1D::new(&self.data[start..end]))
+        Some(self.encoder.encoded_from_slice(&self.data[start..end]))
     }
 }
 
@@ -657,14 +659,6 @@ where
         InputValueType = In,
         OutputValueType = Out,
     >,
-    for<'a> ScalarDenseQuantizer<SrcIn, In, D>: VectorEncoder<
-        EncodedVector<'a> =
-            DenseEncodedVector<'a, ScalarDenseQuantizer<SrcIn, In, D>>,
-    >,
-    for<'a> ScalarDenseQuantizer<In, Out, D>: VectorEncoder<
-        EncodedVector<'a> =
-            DenseEncodedVector<'a, ScalarDenseQuantizer<In, Out, D>>,
-    >,
 {
     fn convert_from(source: DenseDataset<ScalarDenseQuantizer<SrcIn, In, D>>) -> Self {
         let n_vecs = source.len();
@@ -708,14 +702,6 @@ where
     ScalarDenseQuantizer<In, Out, D>: DenseVectorEncoder<
         InputValueType = In,
         OutputValueType = Out,
-    >,
-    for<'a> ScalarDenseQuantizer<SrcIn, In, D>: VectorEncoder<
-        EncodedVector<'a> =
-            DenseEncodedVector<'a, ScalarDenseQuantizer<SrcIn, In, D>>,
-    >,
-    for<'a> ScalarDenseQuantizer<In, Out, D>: VectorEncoder<
-        EncodedVector<'a> =
-            DenseEncodedVector<'a, ScalarDenseQuantizer<In, Out, D>>,
     >,
 {
     fn convert_from(source: DenseDatasetGrowable<ScalarDenseQuantizer<SrcIn, In, D>>) -> Self {

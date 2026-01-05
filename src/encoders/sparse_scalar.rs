@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
+use crate::core::sealed;
 use crate::distances::{
     Distance, DotProduct, dot_product_dense_sparse_unchecked,
     dot_product_sparse_with_merge_unchecked,
@@ -60,6 +61,8 @@ pub struct ScalarSparseQuantizer<C, InValue, OutValue, D> {
     _phantom: PhantomData<(C, InValue, OutValue, D)>,
 }
 
+impl<C, InValue, OutValue, D> sealed::Sealed for ScalarSparseQuantizer<C, InValue, OutValue, D> {}
+
 /// Scalar quantizer where input and output value types are the same.
 pub type ScalarSparseQuantizerSame<C, V, D> = ScalarSparseQuantizer<C, V, V, D>;
 
@@ -78,6 +81,8 @@ where
     OutValue: ValueType + Float + FromF32,
     D: ScalarSparseSupportedDistance,
 {
+    type EncodedVector<'a> = SparseVector1D<C, OutValue, &'a [C], &'a [OutValue]>;
+
     fn extend_with_encode<ValueContainer, ComponentContainer>(
         &self,
         input_vector: SparseVector1D<
@@ -101,6 +106,15 @@ where
             OutValue::from_f32_saturating(f32_val)
         }));
     }
+
+    #[inline]
+    fn encoded_from_slices<'a>(
+        &self,
+        components: &'a [C],
+        values: &'a [OutValue],
+    ) -> Self::EncodedVector<'a> {
+        SparseVector1D::new(components, values)
+    }
 }
 
 impl<C, InValue, OutValue, D> VectorEncoder for ScalarSparseQuantizer<C, InValue, OutValue, D>
@@ -123,8 +137,6 @@ where
         = ScalarSparseQueryEvaluator<'a, C, OutValue, D>
     where
         Self: 'a;
-
-    type EncodedVector<'a> = SparseVector1D<C, OutValue, &'a [C], &'a [OutValue]>;
 
     #[inline]
     fn new(input_dim: usize, output_dim: usize) -> Self {
@@ -233,21 +245,15 @@ where
     }
 }
 
-impl<'a, C, InValue, OutValue, D> QueryEvaluator<ScalarSparseQuantizer<C, InValue, OutValue, D>>
+impl<'a, C, OutValue, D> QueryEvaluator<SparseVector1D<C, OutValue, &'a [C], &'a [OutValue]>, D>
     for ScalarSparseQueryEvaluator<'a, C, OutValue, D>
 where
     C: ComponentType,
-    InValue: ValueType + Float,
     OutValue: ValueType + Float + FromF32,
     D: ScalarSparseSupportedDistance,
 {
     #[inline]
-    fn compute_distance(
-        &self,
-        vector: <ScalarSparseQuantizer<C, InValue, OutValue, D> as VectorEncoder>::EncodedVector<
-            '_,
-        >,
-    ) -> <ScalarSparseQuantizer<C, InValue, OutValue, D> as VectorEncoder>::Distance {
+    fn compute_distance(&self, vector: SparseVector1D<C, OutValue, &'a [C], &'a [OutValue]>) -> D {
         let query_sparse = SparseVector1D::new(self.query_components, self.query_values);
         D::compute_sparse(&self.dense_query, &query_sparse, &vector)
     }

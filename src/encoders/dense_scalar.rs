@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
+use crate::core::sealed;
 use crate::distances::{
     Distance, DotProduct, SquaredEuclideanDistance, dot_product_dense_unchecked,
     squared_euclidean_distance_dense_unchecked,
@@ -58,6 +59,8 @@ pub struct ScalarDenseQuantizer<In, Out, D> {
     _phantom: PhantomData<(In, Out, D)>,
 }
 
+impl<In, Out, D> sealed::Sealed for ScalarDenseQuantizer<In, Out, D> {}
+
 /// Scalar quantizer where input and output types are the same.
 pub type ScalarDenseQuantizerSame<V, D> = ScalarDenseQuantizer<V, V, D>;
 
@@ -86,6 +89,8 @@ where
     Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
 {
+    type EncodedVector<'a> = DenseVector1D<Out, &'a [Out]>;
+
     fn extend_with_encode<ValueContainer>(
         &self,
         input_vector: DenseVector1D<Self::InputValueType, impl AsRef<[Self::InputValueType]>>,
@@ -99,6 +104,11 @@ where
             let f32_val = in_val.to_f32().unwrap();
             Out::from_f32_saturating(f32_val)
         }));
+    }
+
+    #[inline]
+    fn encoded_from_slice<'a>(&self, values: &'a [Out]) -> Self::EncodedVector<'a> {
+        DenseVector1D::new(values)
     }
 }
 
@@ -121,7 +131,6 @@ where
         = ScalarDenseQueryEvaluator<Out, D>
     where
         Self: 'a;
-    type EncodedVector<'a> = DenseVector1D<Out, &'a [Out]>;
 
     #[inline]
     fn new(input_dim: usize, output_dim: usize) -> Self {
@@ -195,18 +204,14 @@ where
     }
 }
 
-impl<In, Out, D> QueryEvaluator<ScalarDenseQuantizer<In, Out, D>>
+impl<'a, Out, D> QueryEvaluator<DenseVector1D<Out, &'a [Out]>, D>
     for ScalarDenseQueryEvaluator<Out, D>
 where
-    In: ValueType + Float,
     Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
 {
     #[inline]
-    fn compute_distance(
-        &self,
-        vector: <ScalarDenseQuantizer<In, Out, D> as VectorEncoder>::EncodedVector<'_>,
-    ) -> <ScalarDenseQuantizer<In, Out, D> as VectorEncoder>::Distance {
+    fn compute_distance(&self, vector: DenseVector1D<Out, &'a [Out]>) -> D {
         D::compute_dense(
             DenseVector1D::new(self.query.as_slice()),
             DenseVector1D::new(vector.values_as_slice()),

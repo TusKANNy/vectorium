@@ -3,9 +3,10 @@ use serde::{Deserialize, Serialize};
 use crate::PackedEncoded;
 use crate::PackedVectorEncoder;
 use crate::SpaceUsage;
+use crate::core::dataset::ConvertFrom;
+use crate::core::sealed;
 use crate::utils::prefetch_read_slice;
 use crate::{Dataset, GrowableDataset, SparseVector1D, Vector1D, VectorId};
-use crate::core::dataset::ConvertFrom;
 
 use rayon::prelude::*;
 
@@ -22,7 +23,8 @@ pub type PackedDataset<E> =
 /// Vector boundaries are stored in `offsets`, exactly like in `SparseDataset`:
 /// - `offsets.len() == len() + 1`
 /// - `offsets[0] == 0`
-/// - vector `i` lives in `data[offsets[i]..offsets[i+1]]`
+/// - vector `i` lives in `data[offsets[i]..offsets[i+1]]`.
+///
 /// Packed dataset storing variable-length encodings with offsets.
 ///
 /// # Example
@@ -54,6 +56,15 @@ where
     data: Data,
     quantizer: E,
     nnz: usize,
+}
+
+impl<E, Offsets, Data> sealed::Sealed for PackedDatasetGeneric<E, Offsets, Data>
+where
+    E: PackedVectorEncoder,
+    Offsets: AsRef<[usize]>,
+    Data: AsRef<[E::EncodingType]>,
+    for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
+{
 }
 
 impl<E, Offsets, Data> PackedDatasetGeneric<E, Offsets, Data>
@@ -150,6 +161,10 @@ where
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     type Encoder = E;
+    type Vector<'a>
+        = E::EncodedVector<'a>
+    where
+        Self: 'a;
 
     #[inline]
     fn quantizer(&self) -> &E {
@@ -206,6 +221,16 @@ where
     }
 }
 
+impl<E, Offsets, Data> crate::core::dataset::PackedDataset
+    for PackedDatasetGeneric<E, Offsets, Data>
+where
+    E: PackedVectorEncoder,
+    Offsets: AsRef<[usize]>,
+    Data: AsRef<[E::EncodingType]>,
+    for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
+{
+}
+
 impl<E> ConvertFrom<PackedDatasetGrowable<E>> for PackedDataset<E>
 where
     E: PackedVectorEncoder,
@@ -246,22 +271,16 @@ where
     }
 }
 
-impl<QIn, S> ConvertFrom<crate::datasets::sparse_dataset::SparseDatasetGeneric<QIn, S>>
+impl<EIn, S> ConvertFrom<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
     for PackedDataset<crate::DotVByteFixedU8Quantizer>
 where
-    QIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
-    <QIn as crate::VectorEncoder>::OutputValueType: crate::ValueType + crate::Float,
-    for<'a> QIn: crate::VectorEncoder<
-            EncodedVector<'a> = crate::SparseVector1D<
-                u16,
-                <QIn as crate::VectorEncoder>::OutputValueType,
-                &'a [u16],
-                &'a [<QIn as crate::VectorEncoder>::OutputValueType],
-            >,
-        >,
-    S: crate::core::storage::SparseStorage<QIn>,
+    EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
+    <EIn as crate::VectorEncoder>::OutputValueType: crate::ValueType + crate::Float,
+    S: crate::core::storage::SparseStorage<EIn>,
 {
-    fn convert_from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<QIn, S>) -> Self {
+    fn convert_from(
+        dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>,
+    ) -> Self {
         use crate::SparseVectorEncoder;
         use crate::VectorEncoder;
         use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
@@ -273,16 +292,19 @@ where
 
         dotvbyte_quantizer.train(dataset.iter());
 
-        // Use a scalar quantizer to map values from `QIn::OutputValueType` into `FixedU8Q`.
+        // Use a scalar quantizer to map values from `EIn::OutputValueType` into `FixedU8Q`.
         let scalar =
-            <ScalarSparseQuantizer<u16, QIn::OutputValueType, FixedU8Q, DotProduct> as VectorEncoder>::new(
+            <ScalarSparseQuantizer<u16, EIn::OutputValueType, FixedU8Q, DotProduct> as VectorEncoder>::new(
                 dim, dim,
             );
 
         let mut growable = PackedDatasetGrowable::new(dotvbyte_quantizer);
 
         for v in dataset.iter() {
-            let v_fixedu8 = scalar.encode_vector(v); // convert to FixedU8Q representation
+            let v_fixedu8 = scalar.encode_vector(SparseVector1D::new(
+                v.components_as_slice(),
+                v.values_as_slice(),
+            )); // convert to FixedU8Q representation
 
             growable.push(v_fixedu8);
         }
@@ -313,22 +335,14 @@ where
     }
 }
 
-impl<QIn, S> From<crate::datasets::sparse_dataset::SparseDatasetGeneric<QIn, S>>
+impl<EIn, S> From<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
     for PackedDataset<crate::DotVByteFixedU8Quantizer>
 where
-    QIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
-    <QIn as crate::VectorEncoder>::OutputValueType: crate::ValueType + crate::Float,
-    for<'a> QIn: crate::VectorEncoder<
-            EncodedVector<'a> = crate::SparseVector1D<
-                u16,
-                <QIn as crate::VectorEncoder>::OutputValueType,
-                &'a [u16],
-                &'a [<QIn as crate::VectorEncoder>::OutputValueType],
-            >,
-        >,
-    S: crate::core::storage::SparseStorage<QIn>,
+    EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
+    <EIn as crate::VectorEncoder>::OutputValueType: crate::ValueType + crate::Float,
+    S: crate::core::storage::SparseStorage<EIn>,
 {
-    fn from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<QIn, S>) -> Self {
+    fn from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>) -> Self {
         Self::convert_from(dataset)
     }
 }

@@ -315,7 +315,7 @@ fn compute_dense_groundtruth<V, D>(
     k: usize,
 ) where
     V: vectorium::ValueType + Float + vectorium::FromF32 + vectorium::SpaceUsage,
-    D: vectorium::ScalarDenseSupportedDistance,
+    D: vectorium::ScalarDenseSupportedDistance + 'static,
 {
     // Read dataset and queries as f32
     let dataset_f32 = readers::read_npy_f32::<D>(&input_path).expect("failed to read dataset");
@@ -385,7 +385,7 @@ fn compute_sparse_groundtruth<C, V, D>(
         + std::fmt::Debug
         + num_traits::FromPrimitive,
     V: vectorium::ValueType + Float + vectorium::FromF32 + vectorium::SpaceUsage + std::fmt::Debug,
-    D: vectorium::ScalarSparseSupportedDistance,
+    D: vectorium::ScalarSparseSupportedDistance + 'static,
 {
     // Read sparse dataset from seismic binary format
     let dataset: PlainSparseDataset<C, V, D> =

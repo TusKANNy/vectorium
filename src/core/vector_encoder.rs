@@ -1,46 +1,51 @@
 use crate::numeric_markers::DenseComponent;
 use crate::{ComponentType, ValueType};
+use crate::core::sealed;
 use crate::{DenseVector1D, SparseVector1D, Vector1D, distances::Distance};
 
-/// Marker trait for types that are valid query vectors for a given encoder`E`.
+/// Marker trait for types that are valid query vectors for a given encoder `E`.
 ///
 /// This allows `VectorEncoder::query_evaluator` to remain on the base trait while
 /// still enforcing that dense/sparse/packed encoders only accept the corresponding
 /// concrete vector representations.
-pub trait QueryVectorFor<Q: VectorEncoder>:
-    Vector1D<Value = Q::QueryValueType, Component = Q::QueryComponentType>
+pub trait QueryVectorFor<E: VectorEncoder>:
+    Vector1D<Value = E::QueryValueType, Component = E::QueryComponentType>
 {
 }
 
-impl<Q, AV> QueryVectorFor<Q> for DenseVector1D<Q::QueryValueType, AV>
+impl<E, AV> QueryVectorFor<E> for DenseVector1D<E::QueryValueType, AV>
 where
-    Q: VectorEncoder<QueryComponentType = DenseComponent>,
-    AV: AsRef<[Q::QueryValueType]>,
+    E: VectorEncoder<QueryComponentType = DenseComponent>,
+    AV: AsRef<[E::QueryValueType]>,
 {
 }
 
-impl<Q, AC, AV> QueryVectorFor<Q>
-    for SparseVector1D<Q::QueryComponentType, Q::QueryValueType, AC, AV>
+impl<E, AC, AV> QueryVectorFor<E>
+    for SparseVector1D<E::QueryComponentType, E::QueryValueType, AC, AV>
 where
-    Q: SparseVectorEncoder,
-    AC: AsRef<[Q::QueryComponentType]>,
-    AV: AsRef<[Q::QueryValueType]>,
+    E: SparseVectorEncoder,
+    AC: AsRef<[E::QueryComponentType]>,
+    AV: AsRef<[E::QueryValueType]>,
 {
 }
 
-impl<Q, T> QueryVectorFor<Q> for &T
+impl<E, T> QueryVectorFor<E> for &T
 where
-    Q: VectorEncoder,
-    T: QueryVectorFor<Q> + ?Sized,
+    E: VectorEncoder,
+    T: QueryVectorFor<E> + ?Sized,
 {
 }
 
 /// A query evaluator computes distances between a query and encoded vectors.
-pub trait QueryEvaluator<Q: VectorEncoder>: Sized {
-    fn compute_distance(&self, vector: Q::EncodedVector<'_>) -> Q::Distance;
+pub trait QueryEvaluator<V, D: Distance>: Sized {
+    fn compute_distance(&self, vector: V) -> D;
 }
 
-pub trait VectorEncoder: Sized {
+/// Core encoder trait.
+///
+/// Note: in this crate, a "quantizer" is just a specific kind of encoder. The
+/// API uses "encoder" consistently.
+pub trait VectorEncoder: sealed::Sealed + Sized {
     type Distance: Distance;
 
     type QueryValueType: ValueType;
@@ -53,33 +58,26 @@ pub trait VectorEncoder: Sized {
     /// The query evaluator type for this encoder and distance.
     ///
     /// The evaluator may borrow the query vector, hence it is lifetime-parameterized.
-    type Evaluator<'a>: QueryEvaluator<Self>
+    type Evaluator<'a>
     where
         Self: 'a;
 
-    /// The encoded representation of dataset vectors produced by this quantizer.
-    ///
-    /// This is intentionally a *concrete* type chosen by the quantizer (e.g.
-    /// `DenseVector1D<.., &'a [..]>`, `SparseVector1D<..>`, `&'a [u64]`, ...).
-    ///
-    /// Datasets that store a specific representation can constrain this type.
-    type EncodedVector<'a>;
-
-    /// Create a new quantizer for input vectors of the given dimensionality `input_dim` and number of components in the quantized vector `output_dim`.
+    /// Create a new encoder for input vectors of the given dimensionality
+    /// `input_dim` and number of components in the encoded vector `output_dim`.
     fn new(input_dim: usize, output_dim: usize) -> Self;
 
-    /// Train the quantizer on a (sub)set of input vectors.
+    /// Train the encoder on a (sub)set of input vectors.
     ///
-    /// Some quantizers (e.g. k-means/PQ-like) need a training step before they
+    /// Some encoders (e.g. k-means/PQ-like) need a training step before they
     /// can be used effectively. This method exists to make that step explicit
-    /// and type-safe: the quantizer receives an iterator over raw input vectors.
+    /// and type-safe: the encoder receives an iterator over raw input vectors.
     ///
-    /// NOTE: `train` accepts a looser `Vector1D` bound because some quantizers
+    /// NOTE: `train` accepts a looser `Vector1D` bound because some encoders
     /// do not need the exact input component/value types. This avoids forcing
     /// callers to convert datasets into intermediate formats purely to satisfy
     /// strict type bounds.
     ///
-    /// Default implementation is a no-op for quantizers that do not require training.
+    /// Default implementation is a no-op for encoders that do not require training.
     #[inline]
     fn train<InputVector>(&mut self, _training_data: impl Iterator<Item = InputVector>)
     where
@@ -116,6 +114,9 @@ pub trait PackedVectorEncoder: VectorEncoder {
     /// Element type stored in the dataset backing array (e.g. `u64` for word-packed encodings).
     type EncodingType: Copy + Send + Sync + 'static;
 
+    /// Encoded vector view used by packed datasets.
+    type EncodedVector<'a>: crate::PackedEncoded<'a, Self::EncodingType>;
+
     /// Encode input sparse vectors into packed output words.
     fn extend_with_encode<AC, AV>(
         &self,
@@ -133,6 +134,18 @@ pub trait DenseVectorEncoder:
         OutputComponentType = DenseComponent,
     >
 {
+    /// Encoded vector view used by dense datasets.
+    type EncodedVector<'a>: Vector1D<
+        Component = DenseComponent,
+        Value = <Self as VectorEncoder>::OutputValueType,
+    >;
+
+    /// Wrap a slice of encoded values as an encoded vector view.
+    fn encoded_from_slice<'a>(
+        &self,
+        values: &'a [<Self as VectorEncoder>::OutputValueType],
+    ) -> Self::EncodedVector<'a>;
+
     /// Encode input vectors into output vectors.
     ///
     /// Implementations must append exactly `self.output_dim()` values to `values`.
@@ -178,7 +191,22 @@ pub trait DenseVectorEncoder:
     }
 }
 
-pub trait SparseVectorEncoder: VectorEncoder {
+pub trait SparseVectorEncoder:
+    VectorEncoder
+{
+    /// Encoded vector view used by sparse datasets.
+    type EncodedVector<'a>: Vector1D<
+        Component = <Self as VectorEncoder>::OutputComponentType,
+        Value = <Self as VectorEncoder>::OutputValueType,
+    >;
+
+    /// Wrap component and value slices as an encoded vector view.
+    fn encoded_from_slices<'a>(
+        &self,
+        components: &'a [<Self as VectorEncoder>::OutputComponentType],
+        values: &'a [<Self as VectorEncoder>::OutputValueType],
+    ) -> Self::EncodedVector<'a>;
+
     /// Encode input vectors into output vectors
     fn extend_with_encode<ValueContainer, ComponentContainer>(
         &self,
