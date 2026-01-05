@@ -49,7 +49,14 @@ pub type ScoredRangeSquaredEuclidean =
 
 // We define custom conversion traits because std `From`/`Into`/`TryFrom`/`TryInto` would
 // conflict with blanket impls when used for generic dataset conversions.
-pub trait ConvertFrom<T>: Sized {
+pub trait ConvertFrom<T>: Sized
+where
+    Self: Dataset,
+    T: Dataset,
+    <T as Dataset>::Encoder: VectorEncoder<
+        OutputComponentType = <<Self as Dataset>::Encoder as VectorEncoder>::OutputComponentType,
+    >,
+{
     fn convert_from(value: T) -> Self;
 }
 
@@ -69,7 +76,11 @@ pub trait TryConvertInto<T>: Sized {
 
 impl<T, U> ConvertInto<U> for T
 where
-    U: ConvertFrom<T>,
+    T: Dataset,
+    U: Dataset + ConvertFrom<T>,
+    <T as Dataset>::Encoder: VectorEncoder<
+        OutputComponentType = <<U as Dataset>::Encoder as VectorEncoder>::OutputComponentType,
+    >,
 {
     #[inline]
     fn convert_into(self) -> U {
@@ -79,7 +90,11 @@ where
 
 impl<T, U> TryConvertFrom<T> for U
 where
-    U: ConvertFrom<T>,
+    T: Dataset,
+    U: Dataset + ConvertFrom<T>,
+    <T as Dataset>::Encoder: VectorEncoder<
+        OutputComponentType = <<U as Dataset>::Encoder as VectorEncoder>::OutputComponentType,
+    >,
 {
     type Error = core::convert::Infallible;
 
@@ -91,7 +106,11 @@ where
 
 impl<T, U> TryConvertInto<U> for T
 where
-    U: TryConvertFrom<T>,
+    T: Dataset,
+    U: Dataset + TryConvertFrom<T>,
+    <T as Dataset>::Encoder: VectorEncoder<
+        OutputComponentType = <<U as Dataset>::Encoder as VectorEncoder>::OutputComponentType,
+    >,
 {
     type Error = U::Error;
 
@@ -156,7 +175,7 @@ pub trait Dataset: sealed::Sealed {
     where
         Self: 'a;
 
-    fn quantizer(&self) -> &Self::Encoder;
+    fn encoder(&self) -> &Self::Encoder;
 
     /// Get a query evaluator for the given query vector.
     #[inline]
@@ -167,7 +186,7 @@ pub trait Dataset: sealed::Sealed {
     where
         QueryVector: QueryVectorFor<Self::Encoder> + ?Sized,
     {
-        self.quantizer().query_evaluator(query)
+        self.encoder().query_evaluator(query)
     }
 
     fn shape(&self) -> (usize, usize) {
@@ -177,14 +196,14 @@ pub trait Dataset: sealed::Sealed {
     /// Dimensionality of the input vectors (original vector space).
     #[inline]
     fn input_dim(&self) -> usize {
-        self.quantizer().input_dim()
+        self.encoder().input_dim()
     }
 
     /// Dimensionality of the encoded vectors (stored representation).
     /// For example, this is equal to `m` for PQ encoders, or the number of values per vector for scalar encoders.
     #[inline]
     fn output_dim(&self) -> usize {
-        self.quantizer().output_dim()
+        self.encoder().output_dim()
     }
 
     fn len(&self) -> usize;
@@ -244,7 +263,7 @@ pub trait Dataset: sealed::Sealed {
             return Vec::new();
         }
 
-        let evaluator = self.quantizer().query_evaluator(query);
+        let evaluator = self.encoder().query_evaluator(query);
 
         self.iter()
             .enumerate()
@@ -257,19 +276,71 @@ pub trait Dataset: sealed::Sealed {
     }
 }
 
-pub trait DenseDataset: Dataset
+impl<T> sealed::Sealed for &T where T: Dataset {}
+
+impl<T> Dataset for &T
+where
+    T: Dataset,
+{
+    type Encoder = T::Encoder;
+    type Vector<'a> = T::Vector<'a>
+    where
+        Self: 'a;
+
+    #[inline]
+    fn encoder(&self) -> &Self::Encoder {
+        (*self).encoder()
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        (*self).len()
+    }
+
+    #[inline]
+    fn nnz(&self) -> usize {
+        (*self).nnz()
+    }
+
+    #[inline]
+    fn range_from_id(&self, id: VectorId) -> std::ops::Range<usize> {
+        (*self).range_from_id(id)
+    }
+
+    #[inline]
+    fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId {
+        (*self).id_from_range(range)
+    }
+
+    #[inline]
+    fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> Self::Vector<'a> {
+        (*self).get_by_range(range)
+    }
+
+    #[inline]
+    fn prefetch(&self, range: std::ops::Range<usize>) {
+        (*self).prefetch(range)
+    }
+
+    #[inline]
+    fn iter<'a>(&'a self) -> impl Iterator<Item = Self::Vector<'a>> {
+        (*self).iter()
+    }
+}
+
+pub trait DenseDatasetTrait: Dataset
 where
     Self::Encoder: DenseVectorEncoder,
 {
 }
 
-pub trait SparseDataset: Dataset
+pub trait SparseDatasetTrait: Dataset
 where
     Self::Encoder: SparseVectorEncoder,
 {
 }
 
-pub trait PackedDataset: Dataset
+pub trait PackedDatasetTrait: Dataset
 where
     Self::Encoder: PackedVectorEncoder,
 {

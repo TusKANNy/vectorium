@@ -210,7 +210,7 @@ where
         offsets[index]..offsets[index + 1]
     }
 
-    fn quantizer(&self) -> &E {
+    fn encoder(&self) -> &E {
         &self.quantizer
     }
 
@@ -376,7 +376,7 @@ where
     // }
 }
 
-impl<E, S> crate::core::dataset::SparseDataset for SparseDatasetGeneric<E, S>
+impl<E, S> crate::core::dataset::SparseDatasetTrait for SparseDatasetGeneric<E, S>
 where
     E: SparseVectorEncoder,
     S: SparseStorage<E>,

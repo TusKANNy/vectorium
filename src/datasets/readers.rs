@@ -66,7 +66,7 @@ impl std::error::Error for ReaderError {}
 /// use vectorium::distances::SquaredEuclideanDistance;
 ///
 /// let dataset = read_npy_f32::<SquaredEuclideanDistance>("vectors.npy")?;
-/// let evaluator = dataset.quantizer().get_query_evaluator(&query);
+/// let evaluator = dataset.encoder().get_query_evaluator(&query);
 /// ```
 pub fn read_npy_f32<D>(filename: impl AsRef<Path>) -> Result<PlainDenseDataset<f32, D>, ReaderError>
 where

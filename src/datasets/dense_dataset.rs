@@ -129,7 +129,7 @@ where
         Self: 'a;
 
     #[inline]
-    fn quantizer(&self) -> &E {
+    fn encoder(&self) -> &E {
         &self.quantizer
     }
 
@@ -180,7 +180,7 @@ where
     }
 }
 
-impl<E, Data> crate::core::dataset::DenseDataset for DenseDatasetGeneric<E, Data>
+impl<E, Data> crate::core::dataset::DenseDatasetTrait for DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
     Data: AsRef<[E::OutputValueType]>,
