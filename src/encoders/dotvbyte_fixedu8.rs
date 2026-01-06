@@ -7,7 +7,7 @@ use crate::PackedVector;
 use crate::core::sealed;
 use crate::distances::DotProduct;
 use crate::{ComponentType, FixedU8Q, SpaceUsage, SparseVector1D, ValueType, Vector1D};
-use crate::{PackedVectorEncoder, QueryEvaluator, QueryVectorFor, VectorEncoder};
+use crate::{PackedVectorEncoder, QueryEvaluator, VectorEncoder};
 use num_traits::{AsPrimitive, ToPrimitive};
 
 use rusty_perm::PermApply as _;
@@ -120,12 +120,22 @@ impl VectorEncoder for DotVByteFixedU8Quantizer {
 
     type QueryValueType = f32;
     type QueryComponentType = u16;
-
     type InputValueType = FixedU8Q;
     type InputComponentType = u16;
-
     type OutputValueType = FixedU8Q;
     type OutputComponentType = u16;
+
+    type InputVectorType<'a> = SparseVector1D<u16, FixedU8Q, &'a [u16], &'a [FixedU8Q]>
+    where
+        Self: 'a;
+
+    type EncodedVectorType<'a> = PackedVector<u64, &'a [u64]>
+    where
+        Self: 'a;
+
+    type QueryVectorType<'a> = SparseVector1D<u16, f32, &'a [u16], &'a [f32]>
+    where
+        Self: 'a;
 
     type Evaluator<'a>
         = DotVByteFixedU8QueryEvaluator<'a>
@@ -145,10 +155,10 @@ impl VectorEncoder for DotVByteFixedU8Quantizer {
     }
 
     #[inline]
-    fn query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Self::Evaluator<'a>
-    where
-        QueryVector: QueryVectorFor<Self> + ?Sized,
-    {
+    fn query_evaluator<'a>(
+        &'a self,
+        query: &'a Self::QueryVectorType<'a>,
+    ) -> Self::Evaluator<'a> {
         DotVByteFixedU8QueryEvaluator::new(query, self)
     }
 
@@ -172,14 +182,6 @@ impl VectorEncoder for DotVByteFixedU8Quantizer {
         let component_mapping: Vec<u16> = permutation.iter().map(|i| *i as u16).collect();
         self.component_mapping = Some(component_mapping.into_boxed_slice());
     }
-}
-
-/// Allow sparse query vectors (`SparseVector1D<u16, f32, ..>`) for DotVByte quantization.
-impl<AC, AV> QueryVectorFor<DotVByteFixedU8Quantizer> for SparseVector1D<u16, f32, AC, AV>
-where
-    AC: AsRef<[u16]>,
-    AV: AsRef<[f32]>,
-{
 }
 
 #[derive(Debug, Clone)]

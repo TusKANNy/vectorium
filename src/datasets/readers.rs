@@ -224,7 +224,7 @@ where
             values.push(v);
         }
 
-        let sparse_vec = SparseVector1D::new(components, values);
+        let sparse_vec = SparseVector1D::new(components.as_slice(), values.as_slice());
         data.push(sparse_vec);
     }
 

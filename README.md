@@ -15,9 +15,11 @@ use vectorium::{
 
 let encoder = PlainDenseQuantizer::<f32, DotProduct>::new(3);
 let mut dataset = PlainDenseDatasetGrowable::new(encoder);
+let v0 = vec![1.0, 0.0, 2.0];
+let v1 = vec![0.5, 1.5, 0.0];
 
-dataset.push(DenseVector1D::new(vec![1.0, 0.0, 2.0]));
-dataset.push(DenseVector1D::new(vec![0.5, 1.5, 0.0]));
+dataset.push(DenseVector1D::new(v0.as_slice()));
+dataset.push(DenseVector1D::new(v1.as_slice()));
 
 let v = dataset.get(0);
 assert_eq!(v.values_as_slice(), &[1.0, 0.0, 2.0]);
@@ -38,8 +40,8 @@ use vectorium::{
 let encoder = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);
 let mut dataset = PlainSparseDatasetGrowable::new(encoder);
 
-dataset.push(SparseVector1D::new(vec![1_u16, 3], vec![1.0, 2.0]));
-dataset.push(SparseVector1D::new(vec![0_u16, 4], vec![0.5, 3.5]));
+dataset.push(SparseVector1D::new(&[1_u16, 3], &[1.0, 2.0]));
+dataset.push(SparseVector1D::new(&[0_u16, 4], &[0.5, 3.5]));
 
 let frozen: PlainSparseDataset<u16, f32, DotProduct> = dataset.into();
 let v = frozen.get(0);

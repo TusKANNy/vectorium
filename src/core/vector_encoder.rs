@@ -1,40 +1,7 @@
+use crate::core::sealed;
 use crate::numeric_markers::DenseComponent;
 use crate::{ComponentType, ValueType};
-use crate::core::sealed;
 use crate::{DenseVector1D, SparseVector1D, Vector1D, distances::Distance};
-
-/// Marker trait for types that are valid query vectors for a given encoder `E`.
-///
-/// This allows `VectorEncoder::query_evaluator` to remain on the base trait while
-/// still enforcing that dense/sparse/packed encoders only accept the corresponding
-/// concrete vector representations.
-pub trait QueryVectorFor<E: VectorEncoder>:
-    Vector1D<Value = E::QueryValueType, Component = E::QueryComponentType>
-{
-}
-
-impl<E, AV> QueryVectorFor<E> for DenseVector1D<E::QueryValueType, AV>
-where
-    E: VectorEncoder<QueryComponentType = DenseComponent>,
-    AV: AsRef<[E::QueryValueType]>,
-{
-}
-
-impl<E, AC, AV> QueryVectorFor<E>
-    for SparseVector1D<E::QueryComponentType, E::QueryValueType, AC, AV>
-where
-    E: SparseVectorEncoder,
-    AC: AsRef<[E::QueryComponentType]>,
-    AV: AsRef<[E::QueryValueType]>,
-{
-}
-
-impl<E, T> QueryVectorFor<E> for &T
-where
-    E: VectorEncoder,
-    T: QueryVectorFor<E> + ?Sized,
-{
-}
 
 /// A query evaluator computes distances between a query and encoded vectors.
 pub trait QueryEvaluator<V, D: Distance>: Sized {
@@ -54,6 +21,29 @@ pub trait VectorEncoder: sealed::Sealed + Sized {
     type InputComponentType: ComponentType;
     type OutputValueType: ValueType;
     type OutputComponentType: ComponentType;
+
+    /// Canonical input vector view used by this encoder.
+    type InputVectorType<'a>: Vector1D<
+            Component = Self::InputComponentType,
+            Value = Self::InputValueType,
+        > + 'a
+    where
+        Self: 'a;
+
+    /// Canonical encoded vector view used by this encoder.
+    ///
+    /// Note: packed encoders may use a non-`Vector1D` view.
+    type EncodedVectorType<'a>: 'a
+    where
+        Self: 'a;
+
+    /// Canonical query vector view used by this encoder.
+    type QueryVectorType<'a>: Vector1D<
+            Component = Self::QueryComponentType,
+            Value = Self::QueryValueType,
+        > + 'a
+    where
+        Self: 'a;
 
     /// The query evaluator type for this encoder and distance.
     ///
@@ -79,16 +69,17 @@ pub trait VectorEncoder: sealed::Sealed + Sized {
     ///
     /// Default implementation is a no-op for encoders that do not require training.
     #[inline]
-    fn train<InputVector>(&mut self, _training_data: impl Iterator<Item = InputVector>)
+    fn train<TrainVector>(&mut self, _training_data: impl Iterator<Item = TrainVector>)
     where
-        InputVector: Vector1D,
+        TrainVector: Vector1D,
     {
     }
 
     /// Get a query evaluator for the given distance type
-    fn query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Self::Evaluator<'a>
-    where
-        QueryVector: QueryVectorFor<Self> + ?Sized;
+    fn query_evaluator<'a>(
+        &'a self,
+        query: &'a Self::QueryVectorType<'a>,
+    ) -> Self::Evaluator<'a>;
 
     /// Dimensionality of the encoded vector space.
     ///
@@ -191,9 +182,7 @@ pub trait DenseVectorEncoder:
     }
 }
 
-pub trait SparseVectorEncoder:
-    VectorEncoder
-{
+pub trait SparseVectorEncoder: VectorEncoder {
     /// Encoded vector view used by sparse datasets.
     type EncodedVector<'a>: Vector1D<
         Component = <Self as VectorEncoder>::OutputComponentType,

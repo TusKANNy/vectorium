@@ -4,6 +4,7 @@
 #![feature(float_algebraic)]
 #![feature(gen_blocks)]
 #![feature(yield_expr)]
+#![feature(associated_type_defaults)]
 #![doc = include_str!("../README.md")]
 
 use num_traits::{AsPrimitive, ToPrimitive};
@@ -41,8 +42,7 @@ pub use core::vector1d::{PackedEncoded, PackedVector};
 pub use core::distances::{Distance, DotProduct, SquaredEuclideanDistance};
 
 pub use core::vector_encoder::{
-    DenseVectorEncoder, PackedVectorEncoder, QueryEvaluator, QueryVectorFor, SparseVectorEncoder,
-    VectorEncoder,
+    DenseVectorEncoder, PackedVectorEncoder, QueryEvaluator, SparseVectorEncoder, VectorEncoder,
 };
 
 pub use encoders::dense_scalar::{

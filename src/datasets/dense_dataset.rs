@@ -29,7 +29,8 @@ pub type DenseDataset<E> = DenseDatasetGeneric<E, Box<[<E as VectorEncoder>::Out
 ///
 /// let quantizer = PlainDenseQuantizer::<f32, DotProduct>::new(3);
 /// let mut dataset = DenseDatasetGrowable::new(quantizer);
-/// dataset.push(DenseVector1D::new(vec![1.0, 0.0, 2.0]));
+/// let v0 = vec![1.0, 0.0, 2.0];
+/// dataset.push(DenseVector1D::new(v0.as_slice()));
 ///
 /// let frozen: DenseDataset<_> = dataset.into();
 /// let range = frozen.range_from_id(0);
@@ -124,7 +125,8 @@ where
     Data: AsRef<[E::OutputValueType]>,
 {
     type Encoder = E;
-    type Vector<'a> = E::EncodedVector<'a>
+    type EncodedVectorType<'a>
+        = E::EncodedVector<'a>
     where
         Self: 'a;
 
@@ -144,7 +146,10 @@ where
     }
 
     #[inline]
-    fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> E::EncodedVector<'a> {
+    fn get_by_range<'a>(
+        &'a self,
+        range: std::ops::Range<usize>,
+    ) -> E::EncodedVector<'a> {
         self.quantizer.encoded_from_slice(&self.data.as_ref()[range])
     }
 
@@ -346,10 +351,7 @@ where
     }
 
     #[inline]
-    fn push(
-        &mut self,
-        vec: impl Vector1D<Component = E::InputComponentType, Value = E::InputValueType>,
-    ) {
+    fn push<'a>(&mut self, vec: <Self as Dataset>::InputVectorType<'a>) {
         assert!(
             vec.len() == self.quantizer.input_dim(),
             "Input vector length doesn't match encoder input dimensionality."

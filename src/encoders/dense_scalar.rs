@@ -8,7 +8,7 @@ use crate::distances::{
 };
 use crate::numeric_markers::DenseComponent;
 use crate::{DenseVector1D, Float, FromF32, SpaceUsage, ValueType, Vector1D};
-use crate::{DenseVectorEncoder, QueryEvaluator, QueryVectorFor, VectorEncoder};
+use crate::{DenseVectorEncoder, QueryEvaluator, VectorEncoder};
 
 /// Marker trait for distance types supported by scalar dense quantizers.
 /// Provides the computation method specific to dense vectors.
@@ -124,6 +124,18 @@ where
     type QueryComponentType = DenseComponent;
     type InputValueType = In;
     type InputComponentType = DenseComponent;
+    type InputVectorType<'a> = DenseVector1D<In, &'a [In]>
+    where
+        Self: 'a;
+
+    type EncodedVectorType<'a> = DenseVector1D<Out, &'a [Out]>
+    where
+        Self: 'a;
+
+    type QueryVectorType<'a> = DenseVector1D<f32, &'a [f32]>
+    where
+        Self: 'a;
+
     type OutputValueType = Out;
     type OutputComponentType = DenseComponent;
 
@@ -142,10 +154,10 @@ where
     }
 
     #[inline]
-    fn query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Self::Evaluator<'a>
-    where
-        QueryVector: QueryVectorFor<Self> + ?Sized,
-    {
+    fn query_evaluator<'a>(
+        &'a self,
+        query: &'a Self::QueryVectorType<'a>,
+    ) -> Self::Evaluator<'a> {
         assert_eq!(
             query.len(),
             self.input_dim(),

@@ -6,7 +6,7 @@ use crate::SpaceUsage;
 use crate::core::dataset::ConvertFrom;
 use crate::core::sealed;
 use crate::utils::prefetch_read_slice;
-use crate::{Dataset, GrowableDataset, SparseVector1D, Vector1D, VectorId};
+use crate::{Dataset, GrowableDataset, SparseVector1D, Vector1D, VectorEncoder, VectorId};
 
 use rayon::prelude::*;
 
@@ -36,7 +36,7 @@ pub type PackedDataset<E> =
 ///
 /// let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);
 /// let mut sparse = PlainSparseDatasetGrowable::new(quantizer);
-/// sparse.push(SparseVector1D::new(vec![1_u16, 3], vec![1.0, 2.0]));
+/// sparse.push(SparseVector1D::new(&[1_u16, 3], &[1.0, 2.0]));
 ///
 /// let frozen: vectorium::PlainSparseDataset<u16, f32, DotProduct> = sparse.into();
 /// let packed: PackedDataset<DotVByteFixedU8Quantizer> = frozen.into();
@@ -86,7 +86,7 @@ where
 
     /// Parallel iterator over dataset encoded vectors.
     ///
-    /// Each item is a `E::EncodedVector<'_>` borrowing its slice from the dataset `data`.
+    /// Each item is an `E::EncodedVector<'_>` borrowing its slice from the dataset `data`.
     #[inline]
     pub fn par_iter(&self) -> impl IndexedParallelIterator<Item = E::EncodedVector<'_>> + '_ {
         let offsets = self.offsets.as_ref();
@@ -118,10 +118,7 @@ where
     }
 
     #[inline]
-    fn push(
-        &mut self,
-        vec: impl Vector1D<Component = E::InputComponentType, Value = E::InputValueType>,
-    ) {
+    fn push<'a>(&mut self, vec: <Self as Dataset>::InputVectorType<'a>) {
         let components = vec.components_as_slice();
         let values = vec.values_as_slice();
         assert_eq!(
@@ -161,7 +158,7 @@ where
     for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     type Encoder = E;
-    type Vector<'a>
+    type EncodedVectorType<'a>
         = E::EncodedVector<'a>
     where
         Self: 'a;
@@ -202,7 +199,10 @@ where
     }
 
     #[inline]
-    fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> E::EncodedVector<'a> {
+    fn get_by_range<'a>(
+        &'a self,
+        range: std::ops::Range<usize>,
+    ) -> E::EncodedVector<'a> {
         let slice = &self.data.as_ref()[range];
         E::EncodedVector::from_slice(slice)
     }
@@ -306,7 +306,10 @@ where
                 v.values_as_slice(),
             )); // convert to FixedU8Q representation
 
-            growable.push(v_fixedu8);
+            growable.push(SparseVector1D::new(
+                v_fixedu8.components_as_slice(),
+                v_fixedu8.values_as_slice(),
+            ));
         }
 
         let mut packed: PackedDataset<crate::DotVByteFixedU8Quantizer> = growable.into();
@@ -387,7 +390,7 @@ mod tests {
 
         let dataset: PackedDataset<DotVByteFixedU8Quantizer> = frozen.into();
 
-        let query = SparseVector1D::new(vec![1_u16, 10, 11], vec![2.0_f32, 3.0, 4.0]);
+        let query = SparseVector1D::new(&[1_u16, 10, 11][..], &[2.0_f32, 3.0, 4.0][..]);
         let evaluator = dataset.encoder().query_evaluator(&query);
 
         let d0 = evaluator.compute_distance(dataset.get(0)).distance();
@@ -411,15 +414,15 @@ mod tests {
         let mut growable = PackedDatasetGrowable::new(quantizer);
 
         growable.push(SparseVector1D::new(
-            vec![1_u16, 4],
-            vec![
+            &[1_u16, 4],
+            &[
                 FixedU8Q::from_f32_saturating(1.0),
                 FixedU8Q::from_f32_saturating(2.0),
             ],
         ));
         growable.push(SparseVector1D::new(
-            vec![2_u16],
-            vec![FixedU8Q::from_f32_saturating(3.0)],
+            &[2_u16],
+            &[FixedU8Q::from_f32_saturating(3.0)],
         ));
 
         let frozen: PackedDataset<DotVByteFixedU8Quantizer> = growable.into();
@@ -428,8 +431,8 @@ mod tests {
 
         let mut growable_again: PackedDatasetGrowable<DotVByteFixedU8Quantizer> = frozen.into();
         growable_again.push(SparseVector1D::new(
-            vec![7_u16],
-            vec![FixedU8Q::from_f32_saturating(4.0)],
+            &[7_u16],
+            &[FixedU8Q::from_f32_saturating(4.0)],
         ));
 
         assert_eq!(growable_again.len(), 3);

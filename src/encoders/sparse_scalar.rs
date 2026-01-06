@@ -10,7 +10,7 @@ use crate::utils::is_strictly_sorted;
 use crate::{
     ComponentType, DenseVector1D, Float, FromF32, SpaceUsage, SparseVector1D, ValueType, Vector1D,
 };
-use crate::{QueryEvaluator, QueryVectorFor, SparseVectorEncoder, VectorEncoder};
+use crate::{QueryEvaluator, SparseVectorEncoder, VectorEncoder};
 
 /// Marker trait for distance types supported by scalar sparse quantizers.
 /// Provides the computation method specific to sparse vectors.
@@ -130,6 +130,18 @@ where
     type QueryComponentType = C;
     type InputValueType = InValue;
     type InputComponentType = C;
+    type InputVectorType<'a> = SparseVector1D<C, InValue, &'a [C], &'a [InValue]>
+    where
+        Self: 'a;
+
+    type EncodedVectorType<'a> = SparseVector1D<C, OutValue, &'a [C], &'a [OutValue]>
+    where
+        Self: 'a;
+
+    type QueryVectorType<'a> = SparseVector1D<C, f32, &'a [C], &'a [f32]>
+    where
+        Self: 'a;
+
     type OutputValueType = OutValue;
     type OutputComponentType = C;
 
@@ -151,10 +163,10 @@ where
         }
     }
 
-    fn query_evaluator<'a, QueryVector>(&'a self, query: &'a QueryVector) -> Self::Evaluator<'a>
-    where
-        QueryVector: QueryVectorFor<Self> + ?Sized,
-    {
+    fn query_evaluator<'a>(
+        &'a self,
+        query: &'a Self::QueryVectorType<'a>,
+    ) -> Self::Evaluator<'a> {
         ScalarSparseQueryEvaluator::new(query, self)
     }
 
