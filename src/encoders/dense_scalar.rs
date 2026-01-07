@@ -156,7 +156,7 @@ where
     #[inline]
     fn query_evaluator<'a>(
         &'a self,
-        query: &'a Self::QueryVectorType<'a>,
+        query: Self::QueryVectorType<'a>,
     ) -> Self::Evaluator<'a> {
         assert_eq!(
             query.len(),

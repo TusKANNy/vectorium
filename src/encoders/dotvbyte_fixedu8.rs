@@ -155,7 +155,7 @@ impl VectorEncoder for DotVByteFixedU8Quantizer {
     #[inline]
     fn query_evaluator<'a>(
         &'a self,
-        query: &'a Self::QueryVectorType<'a>,
+        query: Self::QueryVectorType<'a>,
     ) -> Self::Evaluator<'a> {
         DotVByteFixedU8QueryEvaluator::new(query, self)
     }
@@ -190,9 +190,9 @@ pub struct DotVByteFixedU8QueryEvaluator<'a> {
 
 impl<'a> DotVByteFixedU8QueryEvaluator<'a> {
     #[inline]
-    pub fn new<QueryVector>(query: &'a QueryVector, quantizer: &DotVByteFixedU8Quantizer) -> Self
+    pub fn new<QueryVector>(query: QueryVector, quantizer: &DotVByteFixedU8Quantizer) -> Self
     where
-        QueryVector: Vector1D<Component = u16, Value = f32> + ?Sized,
+        QueryVector: Vector1D<Component = u16, Value = f32>,
     {
         // xxxxx_TODO: need a merge-based dot product computation when there are too high dimensionality.
 

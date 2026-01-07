@@ -202,7 +202,7 @@ pub trait Dataset: sealed::Sealed {
     #[inline]
     fn query_evaluator<'a>(
         &'a self,
-        query: &'a <Self::Encoder as VectorEncoder>::QueryVectorType<'a>,
+        query: <Self::Encoder as VectorEncoder>::QueryVectorType<'a>,
     ) -> <<Self as Dataset>::Encoder as VectorEncoder>::Evaluator<'a> {
         self.encoder().query_evaluator(query)
     }
@@ -264,7 +264,7 @@ pub trait Dataset: sealed::Sealed {
     #[inline]
     fn search<'a>(
         &'a self,
-        query: &'a <Self::Encoder as VectorEncoder>::QueryVectorType<'a>,
+        query: <Self::Encoder as VectorEncoder>::QueryVectorType<'a>,
         k: usize,
     ) -> Vec<ScoredVector<<Self::Encoder as VectorEncoder>::Distance>>
     where

@@ -183,7 +183,7 @@ where
 
     fn query_evaluator<'a>(
         &'a self,
-        query: &'a Self::QueryVectorType<'a>,
+        query: Self::QueryVectorType<'a>,
     ) -> Self::Evaluator<'a> {
         ScalarSparseQueryEvaluator::new(query, self)
     }
@@ -209,8 +209,7 @@ where
     D: ScalarSparseSupportedDistance,
 {
     dense_query: Option<DenseVector1D<f32, Vec<f32>>>,
-    query_components: &'a [C],
-    query_values: &'a [f32],
+    query: SparseVector1D<C, f32, &'a [C], &'a [f32]>,
     _phantom: PhantomData<(OutValue, D)>,
 }
 
@@ -220,12 +219,11 @@ where
     OutValue: ValueType + Float + FromF32,
     D: ScalarSparseSupportedDistance,
 {
-    pub fn new<QueryVector, InValue>(
-        query: &'a QueryVector,
+    pub fn new<InValue>(
+        query: SparseVector1D<C, f32, &'a [C], &'a [f32]>,
         quantizer: &ScalarSparseQuantizer<C, InValue, OutValue, D>,
     ) -> Self
     where
-        QueryVector: Vector1D<Value = f32, Component = C> + ?Sized,
         InValue: ValueType + Float,
     {
         let max_c = query
@@ -268,8 +266,7 @@ where
 
         Self {
             dense_query,
-            query_components: query.components_as_slice(),
-            query_values: query.values_as_slice(),
+            query,
             _phantom: PhantomData,
         }
     }
@@ -284,8 +281,7 @@ where
 {
     #[inline]
     fn compute_distance(&self, vector: SparseVector1D<C, OutValue, &'a [C], &'a [OutValue]>) -> D {
-        let query_sparse = SparseVector1D::new(self.query_components, self.query_values);
-        D::compute_sparse(&self.dense_query, &query_sparse, &vector)
+        D::compute_sparse(&self.dense_query, &self.query, &vector)
     }
 }
 

@@ -74,10 +74,7 @@ pub trait VectorEncoder: sealed::Sealed + Sized {
     }
 
     /// Get a query evaluator for the given distance type
-    fn query_evaluator<'a>(
-        &'a self,
-        query: &'a Self::QueryVectorType<'a>,
-    ) -> Self::Evaluator<'a>;
+    fn query_evaluator<'a>(&'a self, query: Self::QueryVectorType<'a>) -> Self::Evaluator<'a>;
 
     /// Dimensionality of the encoded vector space.
     ///

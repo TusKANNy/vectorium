@@ -413,7 +413,7 @@ mod tests {
         let dataset: PackedDataset<DotVByteFixedU8Quantizer> = frozen.into();
 
         let query = SparseVector1D::new(&[1_u16, 10, 11][..], &[2.0_f32, 3.0, 4.0][..]);
-        let evaluator = dataset.encoder().query_evaluator(&query);
+        let evaluator = dataset.encoder().query_evaluator(query);
 
         let d0 = evaluator.compute_distance(dataset.get(0)).distance();
         let d1 = evaluator.compute_distance(dataset.get(1)).distance();
