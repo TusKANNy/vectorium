@@ -126,7 +126,7 @@ where
 {
     type Encoder = E;
     type EncodedVectorType<'a>
-        = E::EncodedVector<'a>
+        = E::EncodedVectorType<'a>
     where
         Self: 'a;
 
@@ -149,7 +149,7 @@ where
     fn get_by_range<'a>(
         &'a self,
         range: std::ops::Range<usize>,
-    ) -> E::EncodedVector<'a> {
+    ) -> E::EncodedVectorType<'a> {
         self.quantizer.encoded_from_slice(&self.data.as_ref()[range])
     }
 
@@ -180,7 +180,7 @@ where
     }
 
     #[inline]
-    fn iter<'a>(&'a self) -> impl Iterator<Item = E::EncodedVector<'a>> {
+    fn iter<'a>(&'a self) -> impl Iterator<Item = E::EncodedVectorType<'a>> {
         DenseDatasetIter::new(self)
     }
 }
@@ -583,7 +583,7 @@ impl<'a, E> Iterator for DenseDatasetIter<'a, E>
 where
     E: DenseVectorEncoder,
 {
-    type Item = E::EncodedVector<'a>;
+    type Item = E::EncodedVectorType<'a>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {

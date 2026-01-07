@@ -10,7 +10,7 @@ use crate::utils::is_strictly_sorted;
 use crate::{
     ComponentType, DenseVector1D, Float, FromF32, SpaceUsage, SparseVector1D, ValueType, Vector1D,
 };
-use crate::{QueryEvaluator, SparseVectorEncoder, VectorEncoder};
+use crate::{QueryEvaluator, QueryFromEncoded, SparseVectorEncoder, VectorEncoder};
 
 /// Marker trait for distance types supported by scalar sparse quantizers.
 /// Provides the computation method specific to sparse vectors.
@@ -81,8 +81,6 @@ where
     OutValue: ValueType + Float + FromF32,
     D: ScalarSparseSupportedDistance,
 {
-    type EncodedVector<'a> = SparseVector1D<C, OutValue, &'a [C], &'a [OutValue]>;
-
     fn extend_with_encode<ValueContainer, ComponentContainer>(
         &self,
         input_vector: SparseVector1D<
@@ -112,8 +110,22 @@ where
         &self,
         components: &'a [C],
         values: &'a [OutValue],
-    ) -> Self::EncodedVector<'a> {
+    ) -> Self::EncodedVectorType<'a> {
         SparseVector1D::new(components, values)
+    }
+}
+
+impl<C, InValue, D> QueryFromEncoded for ScalarSparseQuantizer<C, InValue, f32, D>
+where
+    C: ComponentType,
+    InValue: ValueType + Float,
+    D: ScalarSparseSupportedDistance,
+{
+    fn query_from_encoded<'a>(
+        &self,
+        encoded: &'a Self::EncodedVectorType<'a>,
+    ) -> Self::QueryVectorType<'a> {
+        SparseVector1D::new(encoded.components_as_slice(), encoded.values_as_slice())
     }
 }
 

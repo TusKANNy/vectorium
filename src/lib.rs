@@ -42,7 +42,8 @@ pub use core::vector1d::{PackedEncoded, PackedVector};
 pub use core::distances::{Distance, DotProduct, SquaredEuclideanDistance};
 
 pub use core::vector_encoder::{
-    DenseVectorEncoder, PackedVectorEncoder, QueryEvaluator, SparseVectorEncoder, VectorEncoder,
+    DenseVectorEncoder, PackedVectorEncoder, QueryEvaluator, QueryFromEncoded, SparseVectorEncoder,
+    VectorEncoder,
 };
 
 pub use encoders::dense_scalar::{

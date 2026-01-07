@@ -8,7 +8,7 @@ use crate::distances::{
 };
 use crate::numeric_markers::DenseComponent;
 use crate::{DenseVector1D, Float, FromF32, SpaceUsage, ValueType, Vector1D};
-use crate::{DenseVectorEncoder, QueryEvaluator, VectorEncoder};
+use crate::{DenseVectorEncoder, QueryEvaluator, QueryFromEncoded, VectorEncoder};
 
 /// Marker trait for distance types supported by scalar dense quantizers.
 /// Provides the computation method specific to dense vectors.
@@ -89,8 +89,6 @@ where
     Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
 {
-    type EncodedVector<'a> = DenseVector1D<Out, &'a [Out]>;
-
     fn extend_with_encode<ValueContainer>(
         &self,
         input_vector: DenseVector1D<Self::InputValueType, impl AsRef<[Self::InputValueType]>>,
@@ -107,7 +105,7 @@ where
     }
 
     #[inline]
-    fn encoded_from_slice<'a>(&self, values: &'a [Out]) -> Self::EncodedVector<'a> {
+    fn encoded_from_slice<'a>(&self, values: &'a [Out]) -> Self::EncodedVectorType<'a> {
         DenseVector1D::new(values)
     }
 }
@@ -174,6 +172,19 @@ where
     #[inline]
     fn input_dim(&self) -> usize {
         self.d
+    }
+}
+
+impl<In, D> QueryFromEncoded for ScalarDenseQuantizer<In, f32, D>
+where
+    In: ValueType + Float,
+    D: ScalarDenseSupportedDistance,
+{
+    fn query_from_encoded<'a>(
+        &self,
+        encoded: &'a Self::EncodedVectorType<'a>,
+    ) -> Self::QueryVectorType<'a> {
+        DenseVector1D::new(encoded.values_as_slice())
     }
 }
 

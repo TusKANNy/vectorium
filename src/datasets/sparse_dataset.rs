@@ -115,7 +115,7 @@ where
 {
     type Encoder = E;
     type EncodedVectorType<'a>
-        = E::EncodedVector<'a>
+        = E::EncodedVectorType<'a>
     where
         Self: 'a;
 
@@ -149,7 +149,7 @@ where
     fn get_by_range<'a>(
         &'a self,
         range: std::ops::Range<usize>,
-    ) -> E::EncodedVector<'a> {
+    ) -> E::EncodedVectorType<'a> {
         let components = self.storage.components().as_ref();
         let values = self.storage.values().as_ref();
         unsafe { assert_unchecked(components.len() == values.len()) };
@@ -271,7 +271,7 @@ where
     ///     assert_eq!(vec.values_as_slice(), v.as_slice());
     /// }
     /// ```
-    fn iter<'a>(&'a self) -> impl Iterator<Item = E::EncodedVector<'a>> {
+    fn iter<'a>(&'a self) -> impl Iterator<Item = E::EncodedVectorType<'a>> {
         let offsets = self.storage.offsets().as_ref();
         let components = self.storage.components().as_ref();
         let values = self.storage.values().as_ref();
@@ -784,7 +784,7 @@ where
 
 /// A struct to iterate over the *raw* sparse dataset storage as slice-backed `SparseVector1D`.
 ///
-/// This iterator is independent from the encoder’s `EncodedVector` choice and is
+/// This iterator is independent from the encoder’s `EncodedVectorType` choice and is
 /// used by internal utilities (including the parallel iterator plumbing).
 #[derive(Clone)]
 pub struct SparseDatasetIter<'a, C, V>

@@ -6,9 +6,17 @@ use crate::SpaceUsage;
 use crate::core::dataset::ConvertFrom;
 use crate::core::sealed;
 use crate::utils::prefetch_read_slice;
-use crate::{Dataset, GrowableDataset, SparseVector1D, Vector1D, VectorEncoder, VectorId};
+use crate::{Dataset, GrowableDataset, SparseVector1D, VectorEncoder, VectorId};
 
 use rayon::prelude::*;
+
+#[inline]
+fn packed_from_slice<'a, E>(slice: &'a [E::EncodingType]) -> E::EncodedVectorType<'a>
+where
+    E: PackedVectorEncoder,
+{
+    <E::EncodedVectorType<'a> as PackedEncoded<'a, E::EncodingType>>::from_slice(slice)
+}
 
 /// A growable packed dataset.
 pub type PackedDatasetGrowable<E> =
@@ -50,7 +58,6 @@ where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::EncodingType]>,
-    for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     offsets: Offsets,
     data: Data,
@@ -63,7 +70,6 @@ where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::EncodingType]>,
-    for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
 }
 
@@ -72,7 +78,6 @@ where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::EncodingType]>,
-    for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     #[inline]
     pub fn offsets(&self) -> &[usize] {
@@ -86,9 +91,11 @@ where
 
     /// Parallel iterator over dataset encoded vectors.
     ///
-    /// Each item is an `E::EncodedVector<'_>` borrowing its slice from the dataset `data`.
+    /// Each item is an `E::EncodedVectorType<'_>` borrowing its slice from the dataset `data`.
     #[inline]
-    pub fn par_iter(&self) -> impl IndexedParallelIterator<Item = E::EncodedVector<'_>> + '_ {
+    pub fn par_iter(
+        &self,
+    ) -> impl IndexedParallelIterator<Item = E::EncodedVectorType<'_>> + '_ {
         let offsets = self.offsets.as_ref();
         let data = self.data.as_ref();
 
@@ -96,7 +103,7 @@ where
         offsets.par_windows(2).map(move |window| {
             let start = window[0];
             let end = window[1];
-            E::EncodedVector::from_slice(&data[start..end])
+            packed_from_slice::<E>(&data[start..end])
         })
     }
 }
@@ -105,7 +112,6 @@ impl<E> GrowableDataset
     for PackedDatasetGeneric<E, Vec<usize>, Vec<<E as PackedVectorEncoder>::EncodingType>>
 where
     E: PackedVectorEncoder,
-    for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     #[inline]
     fn new(quantizer: E) -> Self {
@@ -140,7 +146,6 @@ where
     E: SpaceUsage,
     Offsets: AsRef<[usize]> + SpaceUsage,
     Data: AsRef<[E::EncodingType]> + SpaceUsage,
-    for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     fn space_usage_bytes(&self) -> usize {
         self.quantizer.space_usage_bytes()
@@ -155,11 +160,10 @@ where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::EncodingType]>,
-    for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     type Encoder = E;
     type EncodedVectorType<'a>
-        = E::EncodedVector<'a>
+        = E::EncodedVectorType<'a>
     where
         Self: 'a;
 
@@ -202,9 +206,9 @@ where
     fn get_by_range<'a>(
         &'a self,
         range: std::ops::Range<usize>,
-    ) -> E::EncodedVector<'a> {
+    ) -> E::EncodedVectorType<'a> {
         let slice = &self.data.as_ref()[range];
-        E::EncodedVector::from_slice(slice)
+        packed_from_slice::<E>(slice)
     }
 
     #[inline]
@@ -212,12 +216,12 @@ where
         prefetch_read_slice(&self.data.as_ref()[range]);
     }
 
-    fn iter<'a>(&'a self) -> impl Iterator<Item = E::EncodedVector<'a>> {
+    fn iter<'a>(&'a self) -> impl Iterator<Item = E::EncodedVectorType<'a>> {
         let offsets = self.offsets.as_ref();
         let data = self.data.as_ref();
         offsets
             .windows(2)
-            .map(move |w| E::EncodedVector::from_slice(&data[w[0]..w[1]]))
+            .map(move |w| packed_from_slice::<E>(&data[w[0]..w[1]]))
     }
 }
 
@@ -227,14 +231,12 @@ where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::EncodingType]>,
-    for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
 }
 
 impl<E> ConvertFrom<PackedDatasetGrowable<E>> for PackedDataset<E>
 where
     E: PackedVectorEncoder,
-    for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     fn convert_from(dataset: PackedDatasetGrowable<E>) -> Self {
         PackedDatasetGeneric {
@@ -249,7 +251,6 @@ where
 impl<E> From<PackedDatasetGrowable<E>> for PackedDataset<E>
 where
     E: PackedVectorEncoder,
-    for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     fn from(dataset: PackedDatasetGrowable<E>) -> Self {
         Self::convert_from(dataset)
@@ -259,7 +260,6 @@ where
 impl<E> From<PackedDataset<E>> for PackedDatasetGrowable<E>
 where
     E: PackedVectorEncoder,
-    for<'a> E::EncodedVector<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     fn from(dataset: PackedDataset<E>) -> Self {
         PackedDatasetGeneric {

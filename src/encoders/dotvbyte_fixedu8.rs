@@ -58,7 +58,6 @@ impl DotVByteFixedU8Quantizer {
 
 impl PackedVectorEncoder for DotVByteFixedU8Quantizer {
     type EncodingType = u64;
-    type EncodedVector<'a> = PackedVector<u64, &'a [u64]>;
 
     /// Encode a sparse vector (components + `FixedU8Q` values) into the packed DotVByte format
     /// and append it to `data`.

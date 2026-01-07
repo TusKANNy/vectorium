@@ -98,15 +98,28 @@ pub trait VectorEncoder: sealed::Sealed + Sized {
     fn input_dim(&self) -> usize;
 }
 
+/// Bridge trait for cases where a dataset's encoded vector can be reused as a query without
+/// re-encoding or allocation. This exists because Rust cannot express equality constraints
+/// between associated types (e.g., `EncodedVectorType == QueryVectorType`) in `where` clauses,
+/// even when they are effectively the same for certain encoders (like sparse f32 quantizers).
+/// Implementations must be explicit and are typically valid only for specific encoders (e.g.,
+/// `OutValue = f32`), not for quantized outputs that require conversion.
+pub trait QueryFromEncoded: VectorEncoder {
+    fn query_from_encoded<'a>(
+        &self,
+        encoded: &'a Self::EncodedVectorType<'a>,
+    ) -> Self::QueryVectorType<'a>;
+}
+
 /// A packed encoder whose encoded representation is a packed slice of fixed-width elements.
 ///
 /// This is meant to be used together with a `PackedDataset` (variable-length by offsets).
-pub trait PackedVectorEncoder: VectorEncoder {
+pub trait PackedVectorEncoder: VectorEncoder
+where
+    for<'a> Self::EncodedVectorType<'a>: crate::PackedEncoded<'a, Self::EncodingType>,
+{
     /// Element type stored in the dataset backing array (e.g. `u64` for word-packed encodings).
     type EncodingType: Copy + Send + Sync + 'static;
-
-    /// Encoded vector view used by packed datasets.
-    type EncodedVector<'a>: crate::PackedEncoded<'a, Self::EncodingType>;
 
     /// Encode input sparse vectors into packed output words.
     fn extend_with_encode<AC, AV>(
@@ -124,18 +137,17 @@ pub trait DenseVectorEncoder:
         InputComponentType = DenseComponent,
         OutputComponentType = DenseComponent,
     >
-{
-    /// Encoded vector view used by dense datasets.
-    type EncodedVector<'a>: Vector1D<
+where
+    for<'a> Self::EncodedVectorType<'a>: Vector1D<
         Component = DenseComponent,
         Value = <Self as VectorEncoder>::OutputValueType,
-    >;
-
+    >,
+{
     /// Wrap a slice of encoded values as an encoded vector view.
     fn encoded_from_slice<'a>(
         &self,
         values: &'a [<Self as VectorEncoder>::OutputValueType],
-    ) -> Self::EncodedVector<'a>;
+    ) -> Self::EncodedVectorType<'a>;
 
     /// Encode input vectors into output vectors.
     ///
@@ -182,19 +194,25 @@ pub trait DenseVectorEncoder:
     }
 }
 
-pub trait SparseVectorEncoder: VectorEncoder {
-    /// Encoded vector view used by sparse datasets.
-    type EncodedVector<'a>: Vector1D<
+pub trait SparseVectorEncoder: VectorEncoder
+where
+    for<'a> Self::EncodedVectorType<'a>: Vector1D<
         Component = <Self as VectorEncoder>::OutputComponentType,
         Value = <Self as VectorEncoder>::OutputValueType,
-    >;
+    >,
+{
+    /// Encoded vector view used by sparse datasets.
+    ///
+    /// This is `VectorEncoder::EncodedVectorType` for sparse encoders.
+    ///
+    /// Note: packed encoders should not implement this trait.
 
     /// Wrap component and value slices as an encoded vector view.
     fn encoded_from_slices<'a>(
         &self,
         components: &'a [<Self as VectorEncoder>::OutputComponentType],
         values: &'a [<Self as VectorEncoder>::OutputValueType],
-    ) -> Self::EncodedVector<'a>;
+    ) -> Self::EncodedVectorType<'a>;
 
     /// Encode input vectors into output vectors
     fn extend_with_encode<ValueContainer, ComponentContainer>(
