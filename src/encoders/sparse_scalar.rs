@@ -123,14 +123,14 @@ where
     C: ComponentType,
     InValue: ValueType + Float,
     D: ScalarSparseSupportedDistance,
-    D: 'static,
-    for<'a> <ScalarSparseQuantizer<C, InValue, f32, D> as VectorEncoder>::EncodedVectorType<'a>:
-        Vector1D<Component = C, Value = f32>,
 {
-    fn query_from_encoded<'a>(
+    fn query_from_encoded<'a, V>(
         &self,
-        encoded: &'a Self::EncodedVectorType<'a>,
-    ) -> Self::QueryVectorType<'a> {
+        encoded: &'a V,
+    ) -> Self::QueryVectorType<'a>
+    where
+        V: Vector1D<Component = C, Value = f32> + ?Sized,
+    {
         SparseVector1D::new(encoded.components_as_slice(), encoded.values_as_slice())
     }
 }

@@ -103,10 +103,12 @@ pub trait VectorEncoder: sealed::Sealed + Sized {
 /// Implementations must be explicit and are typically valid only for specific encoders (e.g.,
 /// `OutValue = f32`), not for quantized outputs that require conversion.
 pub trait QueryFromEncoded: VectorEncoder {
-    fn query_from_encoded<'a>(
+    fn query_from_encoded<'a, V>(
         &self,
-        encoded: &'a Self::EncodedVectorType<'a>,
-    ) -> Self::QueryVectorType<'a>;
+        encoded: &'a V,
+    ) -> Self::QueryVectorType<'a>
+    where
+        V: Vector1D<Component = Self::OutputComponentType, Value = Self::OutputValueType> + ?Sized;
 }
 
 /// A packed encoder whose encoded representation is a packed slice of fixed-width elements.
