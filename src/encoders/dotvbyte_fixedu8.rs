@@ -129,8 +129,7 @@ impl VectorEncoder for DotVByteFixedU8Quantizer {
         Self: 'a;
 
     type EncodedVectorType<'a> = PackedVector<u64, &'a [u64]>
-    where
-        Self: 'a;
+    ;
 
     type QueryVectorType<'a> = SparseVector1D<u16, f32, &'a [u16], &'a [f32]>
     where

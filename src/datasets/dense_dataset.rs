@@ -6,6 +6,7 @@ use crate::utils::prefetch_read_slice;
 use crate::core::sealed;
 use crate::{Dataset, GrowableDataset};
 use crate::core::dataset::ConvertFrom;
+use crate::numeric_markers::DenseComponent;
 use crate::{DenseVectorEncoder, VectorEncoder};
 use crate::{DenseVector1D, Vector1D};
 
@@ -123,6 +124,7 @@ impl<E, Data> Dataset for DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
     Data: AsRef<[E::OutputValueType]>,
+    for<'a> E::EncodedVectorType<'a>: Vector1D<Component = DenseComponent, Value = E::OutputValueType>,
 {
     type Encoder = E;
     type EncodedVectorType<'a>
@@ -189,6 +191,7 @@ impl<E, Data> crate::core::dataset::DenseDatasetTrait for DenseDatasetGeneric<E,
 where
     E: DenseVectorEncoder,
     Data: AsRef<[E::OutputValueType]>,
+    for<'a> E::EncodedVectorType<'a>: Vector1D<Component = DenseComponent, Value = E::OutputValueType>,
 {
 }
 
@@ -340,6 +343,7 @@ impl<E> GrowableDataset for DenseDatasetGeneric<E, Vec<E::OutputValueType>>
 where
     E: DenseVectorEncoder,
     E::OutputValueType: Default,
+    for<'a> E::EncodedVectorType<'a>: Vector1D<Component = DenseComponent, Value = E::OutputValueType>,
 {
     #[inline]
     fn new(quantizer: E) -> Self {
@@ -385,6 +389,7 @@ where
 impl<E> ConvertFrom<DenseDatasetGrowable<E>> for DenseDataset<E>
 where
     E: DenseVectorEncoder,
+    for<'a> E::EncodedVectorType<'a>: Vector1D<Component = DenseComponent, Value = E::OutputValueType>,
 {
     /// Converts a mutable dense dataset into an immutable one.
     ///
@@ -425,6 +430,7 @@ where
 impl<E> From<DenseDatasetGrowable<E>> for DenseDataset<E>
 where
     E: DenseVectorEncoder,
+    for<'a> E::EncodedVectorType<'a>: Vector1D<Component = DenseComponent, Value = E::OutputValueType>,
 {
     fn from(dataset: DenseDatasetGrowable<E>) -> Self {
         Self::convert_from(dataset)
@@ -434,6 +440,7 @@ where
 impl<E> ConvertFrom<DenseDataset<E>> for DenseDatasetGrowable<E>
 where
     E: DenseVectorEncoder,
+    for<'a> E::EncodedVectorType<'a>: Vector1D<Component = DenseComponent, Value = E::OutputValueType>,
 {
     /// Converts an immutable sparse dataset into a mutable one.
     ///
@@ -482,6 +489,7 @@ where
 impl<E> From<DenseDataset<E>> for DenseDatasetGrowable<E>
 where
     E: DenseVectorEncoder,
+    for<'a> E::EncodedVectorType<'a>: Vector1D<Component = DenseComponent, Value = E::OutputValueType>,
 {
     fn from(dataset: DenseDataset<E>) -> Self {
         Self::convert_from(dataset)
@@ -582,6 +590,7 @@ where
 impl<'a, E> Iterator for DenseDatasetIter<'a, E>
 where
     E: DenseVectorEncoder,
+    E::EncodedVectorType<'a>: Vector1D<Component = DenseComponent, Value = E::OutputValueType>,
 {
     type Item = E::EncodedVectorType<'a>;
 
@@ -613,6 +622,10 @@ where
     D: ScalarDenseSupportedDistance,
     SrcIn: ValueType + Float,
     SrcData: AsRef<[In]> + crate::SpaceUsage,
+    for<'a> <ScalarDenseQuantizer<SrcIn, In, D> as VectorEncoder>::EncodedVectorType<'a>:
+        Vector1D<Component = DenseComponent, Value = In>,
+    for<'a> <ScalarDenseQuantizer<In, Out, D> as VectorEncoder>::EncodedVectorType<'a>:
+        Vector1D<Component = DenseComponent, Value = Out>,
 {
     fn convert_from(
         source: &DenseDatasetGeneric<ScalarDenseQuantizer<SrcIn, In, D>, SrcData>,
@@ -661,6 +674,10 @@ where
         InputValueType = In,
         OutputValueType = Out,
     >,
+    for<'a> <ScalarDenseQuantizer<SrcIn, In, D> as VectorEncoder>::EncodedVectorType<'a>:
+        Vector1D<Component = DenseComponent, Value = In>,
+    for<'a> <ScalarDenseQuantizer<In, Out, D> as VectorEncoder>::EncodedVectorType<'a>:
+        Vector1D<Component = DenseComponent, Value = Out>,
 {
     fn convert_from(source: DenseDataset<ScalarDenseQuantizer<SrcIn, In, D>>) -> Self {
         let n_vecs = source.len();
@@ -705,6 +722,10 @@ where
         InputValueType = In,
         OutputValueType = Out,
     >,
+    for<'a> <ScalarDenseQuantizer<SrcIn, In, D> as VectorEncoder>::EncodedVectorType<'a>:
+        Vector1D<Component = DenseComponent, Value = In>,
+    for<'a> <ScalarDenseQuantizer<In, Out, D> as VectorEncoder>::EncodedVectorType<'a>:
+        Vector1D<Component = DenseComponent, Value = Out>,
 {
     fn convert_from(source: DenseDatasetGrowable<ScalarDenseQuantizer<SrcIn, In, D>>) -> Self {
         let n_vecs = source.len();

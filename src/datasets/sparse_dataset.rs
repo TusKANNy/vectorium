@@ -112,6 +112,10 @@ impl<E, S> Dataset for SparseDatasetGeneric<E, S>
 where
     E: SparseVectorEncoder,
     S: SparseStorage<E>,
+    for<'a> E::EncodedVectorType<'a>: Vector1D<
+        Component = E::OutputComponentType,
+        Value = E::OutputValueType,
+    >,
 {
     type Encoder = E;
     type EncodedVectorType<'a>
@@ -386,6 +390,10 @@ impl<E, S> crate::core::dataset::SparseDatasetTrait for SparseDatasetGeneric<E, 
 where
     E: SparseVectorEncoder,
     S: SparseStorage<E>,
+    for<'a> E::EncodedVectorType<'a>: Vector1D<
+        Component = E::OutputComponentType,
+        Value = E::OutputValueType,
+    >,
 {
 }
 
@@ -443,6 +451,10 @@ where
 impl<E> ConvertFrom<SparseDatasetGrowable<E>> for SparseDataset<E>
 where
     E: SparseVectorEncoder,
+    for<'a> E::EncodedVectorType<'a>: Vector1D<
+        Component = E::OutputComponentType,
+        Value = E::OutputValueType,
+    >,
 {
     /// Converts a mutable sparse dataset into an immutable one.
     ///
@@ -478,6 +490,10 @@ where
 impl<E> From<SparseDatasetGrowable<E>> for SparseDataset<E>
 where
     E: SparseVectorEncoder,
+    for<'a> E::EncodedVectorType<'a>: Vector1D<
+        Component = E::OutputComponentType,
+        Value = E::OutputValueType,
+    >,
 {
     fn from(dataset: SparseDatasetGrowable<E>) -> Self {
         Self::convert_from(dataset)
@@ -487,6 +503,10 @@ where
 impl<E> ConvertFrom<SparseDataset<E>> for SparseDatasetGrowable<E>
 where
     E: SparseVectorEncoder,
+    for<'a> E::EncodedVectorType<'a>: Vector1D<
+        Component = E::OutputComponentType,
+        Value = E::OutputValueType,
+    >,
 {
     /// Converts an immutable sparse dataset into a mutable one.
     ///
@@ -526,6 +546,10 @@ where
 impl<E> From<SparseDataset<E>> for SparseDatasetGrowable<E>
 where
     E: SparseVectorEncoder,
+    for<'a> E::EncodedVectorType<'a>: Vector1D<
+        Component = E::OutputComponentType,
+        Value = E::OutputValueType,
+    >,
 {
     fn from(dataset: SparseDataset<E>) -> Self {
         Self::convert_from(dataset)
@@ -685,6 +709,10 @@ where
         OutputComponentType = C,
         OutputValueType = DstOut,
     >,
+    for<'a> <crate::ScalarSparseQuantizer<C, Mid, DstOut, D> as VectorEncoder>::EncodedVectorType<'a>:
+        Vector1D<Component = C, Value = DstOut>,
+    for<'a> <crate::ScalarSparseQuantizer<C, SrcIn, Mid, D> as VectorEncoder>::EncodedVectorType<'a>:
+        Vector1D<Component = C, Value = Mid>,
     SrcStorage: SparseStorage<crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>>,
     DstStorage: SparseStorage<crate::ScalarSparseQuantizer<C, Mid, DstOut, D>>
         + From<GrowableSparseStorage<crate::ScalarSparseQuantizer<C, Mid, DstOut, D>>>,
@@ -745,6 +773,10 @@ where
         OutputComponentType = C,
         OutputValueType = DstOut,
     >,
+    for<'a> <crate::ScalarSparseQuantizer<C, SrcIn, Mid, D> as VectorEncoder>::EncodedVectorType<'a>:
+        Vector1D<Component = C, Value = Mid>,
+    for<'a> <crate::ScalarSparseQuantizer<C, Mid, DstOut, D> as VectorEncoder>::EncodedVectorType<'a>:
+        Vector1D<Component = C, Value = DstOut>,
 {
     fn convert_from(
         source: SparseDataset<crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>>,
@@ -774,6 +806,10 @@ where
         OutputComponentType = C,
         OutputValueType = DstOut,
     >,
+    for<'a> <crate::ScalarSparseQuantizer<C, SrcIn, Mid, D> as VectorEncoder>::EncodedVectorType<'a>:
+        Vector1D<Component = C, Value = Mid>,
+    for<'a> <crate::ScalarSparseQuantizer<C, Mid, DstOut, D> as VectorEncoder>::EncodedVectorType<'a>:
+        Vector1D<Component = C, Value = DstOut>,
 {
     fn convert_from(
         source: SparseDatasetGrowable<crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>>,
@@ -822,6 +858,10 @@ where
 impl<E> GrowableDataset for SparseDatasetGrowable<E>
 where
     E: SparseVectorEncoder,
+    for<'a> E::EncodedVectorType<'a>: Vector1D<
+        Component = E::OutputComponentType,
+        Value = E::OutputValueType,
+    >,
 {
     /// For SparseDataset, the dimensionality `d` may be 0 if unknown when creating a new dataset.
     fn new(quantizer: E) -> Self {

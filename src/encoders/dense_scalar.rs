@@ -105,7 +105,10 @@ where
     }
 
     #[inline]
-    fn encoded_from_slice<'a>(&self, values: &'a [Out]) -> Self::EncodedVectorType<'a> {
+    fn encoded_from_slice<'a>(&self, values: &'a [Out]) -> Self::EncodedVectorType<'a>
+    where
+        Self::EncodedVectorType<'a>: Vector1D<Component = DenseComponent, Value = Out>,
+    {
         DenseVector1D::new(values)
     }
 }
@@ -127,8 +130,7 @@ where
         Self: 'a;
 
     type EncodedVectorType<'a> = DenseVector1D<Out, &'a [Out]>
-    where
-        Self: 'a;
+    ;
 
     type QueryVectorType<'a> = DenseVector1D<f32, &'a [f32]>
     where
@@ -179,6 +181,9 @@ impl<In, D> QueryFromEncoded for ScalarDenseQuantizer<In, f32, D>
 where
     In: ValueType + Float,
     D: ScalarDenseSupportedDistance,
+    D: 'static,
+    for<'a> <ScalarDenseQuantizer<In, f32, D> as VectorEncoder>::EncodedVectorType<'a>:
+        Vector1D<Component = DenseComponent, Value = f32>,
 {
     fn query_from_encoded<'a>(
         &self,

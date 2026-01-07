@@ -110,7 +110,10 @@ where
         &self,
         components: &'a [C],
         values: &'a [OutValue],
-    ) -> Self::EncodedVectorType<'a> {
+    ) -> Self::EncodedVectorType<'a>
+    where
+        Self::EncodedVectorType<'a>: Vector1D<Component = C, Value = OutValue>,
+    {
         SparseVector1D::new(components, values)
     }
 }
@@ -120,6 +123,9 @@ where
     C: ComponentType,
     InValue: ValueType + Float,
     D: ScalarSparseSupportedDistance,
+    D: 'static,
+    for<'a> <ScalarSparseQuantizer<C, InValue, f32, D> as VectorEncoder>::EncodedVectorType<'a>:
+        Vector1D<Component = C, Value = f32>,
 {
     fn query_from_encoded<'a>(
         &self,
@@ -147,8 +153,7 @@ where
         Self: 'a;
 
     type EncodedVectorType<'a> = SparseVector1D<C, OutValue, &'a [C], &'a [OutValue]>
-    where
-        Self: 'a;
+    ;
 
     type QueryVectorType<'a> = SparseVector1D<C, f32, &'a [C], &'a [f32]>
     where

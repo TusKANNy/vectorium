@@ -33,9 +33,7 @@ pub trait VectorEncoder: sealed::Sealed + Sized {
     /// Canonical encoded vector view used by this encoder.
     ///
     /// Note: packed encoders may use a non-`Vector1D` view.
-    type EncodedVectorType<'a>: 'a
-    where
-        Self: 'a;
+    type EncodedVectorType<'a>: 'a;
 
     /// Canonical query vector view used by this encoder.
     type QueryVectorType<'a>: Vector1D<
@@ -114,10 +112,7 @@ pub trait QueryFromEncoded: VectorEncoder {
 /// A packed encoder whose encoded representation is a packed slice of fixed-width elements.
 ///
 /// This is meant to be used together with a `PackedDataset` (variable-length by offsets).
-pub trait PackedVectorEncoder: VectorEncoder
-where
-    for<'a> Self::EncodedVectorType<'a>: crate::PackedEncoded<'a, Self::EncodingType>,
-{
+pub trait PackedVectorEncoder: VectorEncoder {
     /// Element type stored in the dataset backing array (e.g. `u64` for word-packed encodings).
     type EncodingType: Copy + Send + Sync + 'static;
 
@@ -137,17 +132,17 @@ pub trait DenseVectorEncoder:
         InputComponentType = DenseComponent,
         OutputComponentType = DenseComponent,
     >
-where
-    for<'a> Self::EncodedVectorType<'a>: Vector1D<
-        Component = DenseComponent,
-        Value = <Self as VectorEncoder>::OutputValueType,
-    >,
 {
     /// Wrap a slice of encoded values as an encoded vector view.
     fn encoded_from_slice<'a>(
         &self,
         values: &'a [<Self as VectorEncoder>::OutputValueType],
-    ) -> Self::EncodedVectorType<'a>;
+    ) -> Self::EncodedVectorType<'a>
+    where
+        Self::EncodedVectorType<'a>: Vector1D<
+            Component = DenseComponent,
+            Value = <Self as VectorEncoder>::OutputValueType,
+        >;
 
     /// Encode input vectors into output vectors.
     ///
@@ -195,11 +190,6 @@ where
 }
 
 pub trait SparseVectorEncoder: VectorEncoder
-where
-    for<'a> Self::EncodedVectorType<'a>: Vector1D<
-        Component = <Self as VectorEncoder>::OutputComponentType,
-        Value = <Self as VectorEncoder>::OutputValueType,
-    >,
 {
     /// Encoded vector view used by sparse datasets.
     ///
@@ -212,7 +202,12 @@ where
         &self,
         components: &'a [<Self as VectorEncoder>::OutputComponentType],
         values: &'a [<Self as VectorEncoder>::OutputValueType],
-    ) -> Self::EncodedVectorType<'a>;
+    ) -> Self::EncodedVectorType<'a>
+    where
+        Self::EncodedVectorType<'a>: Vector1D<
+            Component = <Self as VectorEncoder>::OutputComponentType,
+            Value = <Self as VectorEncoder>::OutputValueType,
+        >;
 
     /// Encode input vectors into output vectors
     fn extend_with_encode<ValueContainer, ComponentContainer>(

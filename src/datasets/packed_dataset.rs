@@ -6,7 +6,7 @@ use crate::SpaceUsage;
 use crate::core::dataset::ConvertFrom;
 use crate::core::sealed;
 use crate::utils::prefetch_read_slice;
-use crate::{Dataset, GrowableDataset, SparseVector1D, VectorEncoder, VectorId};
+use crate::{Dataset, GrowableDataset, SparseVector1D, Vector1D, VectorId};
 
 use rayon::prelude::*;
 
@@ -14,6 +14,7 @@ use rayon::prelude::*;
 fn packed_from_slice<'a, E>(slice: &'a [E::EncodingType]) -> E::EncodedVectorType<'a>
 where
     E: PackedVectorEncoder,
+    for<'b> E::EncodedVectorType<'b>: PackedEncoded<'b, E::EncodingType>,
 {
     <E::EncodedVectorType<'a> as PackedEncoded<'a, E::EncodingType>>::from_slice(slice)
 }
@@ -58,6 +59,7 @@ where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::EncodingType]>,
+    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     offsets: Offsets,
     data: Data,
@@ -70,6 +72,7 @@ where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::EncodingType]>,
+    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
 {
 }
 
@@ -78,6 +81,7 @@ where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::EncodingType]>,
+    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     #[inline]
     pub fn offsets(&self) -> &[usize] {
@@ -95,7 +99,10 @@ where
     #[inline]
     pub fn par_iter(
         &self,
-    ) -> impl IndexedParallelIterator<Item = E::EncodedVectorType<'_>> + '_ {
+    ) -> impl IndexedParallelIterator<Item = E::EncodedVectorType<'_>> + '_
+    where
+        for<'a> E::EncodedVectorType<'a>: Send,
+    {
         let offsets = self.offsets.as_ref();
         let data = self.data.as_ref();
 
@@ -112,6 +119,7 @@ impl<E> GrowableDataset
     for PackedDatasetGeneric<E, Vec<usize>, Vec<<E as PackedVectorEncoder>::EncodingType>>
 where
     E: PackedVectorEncoder,
+    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     #[inline]
     fn new(quantizer: E) -> Self {
@@ -146,6 +154,7 @@ where
     E: SpaceUsage,
     Offsets: AsRef<[usize]> + SpaceUsage,
     Data: AsRef<[E::EncodingType]> + SpaceUsage,
+    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     fn space_usage_bytes(&self) -> usize {
         self.quantizer.space_usage_bytes()
@@ -160,6 +169,7 @@ where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::EncodingType]>,
+    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     type Encoder = E;
     type EncodedVectorType<'a>
@@ -231,12 +241,14 @@ where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::EncodingType]>,
+    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
 {
 }
 
 impl<E> ConvertFrom<PackedDatasetGrowable<E>> for PackedDataset<E>
 where
     E: PackedVectorEncoder,
+    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     fn convert_from(dataset: PackedDatasetGrowable<E>) -> Self {
         PackedDatasetGeneric {
@@ -251,6 +263,7 @@ where
 impl<E> From<PackedDatasetGrowable<E>> for PackedDataset<E>
 where
     E: PackedVectorEncoder,
+    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     fn from(dataset: PackedDatasetGrowable<E>) -> Self {
         Self::convert_from(dataset)
@@ -260,6 +273,7 @@ where
 impl<E> From<PackedDataset<E>> for PackedDatasetGrowable<E>
 where
     E: PackedVectorEncoder,
+    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     fn from(dataset: PackedDataset<E>) -> Self {
         PackedDatasetGeneric {
@@ -276,6 +290,10 @@ impl<EIn, S> ConvertFrom<crate::datasets::sparse_dataset::SparseDatasetGeneric<E
 where
     EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
     <EIn as crate::VectorEncoder>::OutputValueType: crate::ValueType + crate::Float,
+    for<'a> <EIn as crate::VectorEncoder>::EncodedVectorType<'a>: crate::Vector1D<
+        Component = <EIn as crate::VectorEncoder>::OutputComponentType,
+        Value = <EIn as crate::VectorEncoder>::OutputValueType,
+    >,
     S: crate::core::storage::SparseStorage<EIn>,
 {
     fn convert_from(
@@ -343,6 +361,10 @@ impl<EIn, S> From<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
 where
     EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
     <EIn as crate::VectorEncoder>::OutputValueType: crate::ValueType + crate::Float,
+    for<'a> <EIn as crate::VectorEncoder>::EncodedVectorType<'a>: crate::Vector1D<
+        Component = <EIn as crate::VectorEncoder>::OutputComponentType,
+        Value = <EIn as crate::VectorEncoder>::OutputValueType,
+    >,
     S: crate::core::storage::SparseStorage<EIn>,
 {
     fn from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>) -> Self {
