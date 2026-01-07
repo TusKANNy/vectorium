@@ -188,6 +188,7 @@ where
     ) -> Self::QueryVectorType<'a>
     where
         V: Vector1D<Component = DenseComponent, Value = f32> + ?Sized,
+        D: 'a,
     {
         DenseVector1D::new(encoded.values_as_slice())
     }
