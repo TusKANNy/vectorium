@@ -123,6 +123,7 @@ where
     C: ComponentType,
     InValue: ValueType + Float,
     D: ScalarSparseSupportedDistance,
+    D: 'static,
 {
     fn query_from_encoded<'a, V>(
         &self,
@@ -130,7 +131,6 @@ where
     ) -> Self::QueryVectorType<'a>
     where
         V: Vector1D<Component = C, Value = f32> + ?Sized,
-        D: 'a,
     {
         SparseVector1D::new(encoded.components_as_slice(), encoded.values_as_slice())
     }

@@ -181,6 +181,7 @@ impl<In, D> QueryFromEncoded for ScalarDenseQuantizer<In, f32, D>
 where
     In: ValueType + Float,
     D: ScalarDenseSupportedDistance,
+    D: 'static,
 {
     fn query_from_encoded<'a, V>(
         &self,
@@ -188,7 +189,6 @@ where
     ) -> Self::QueryVectorType<'a>
     where
         V: Vector1D<Component = DenseComponent, Value = f32> + ?Sized,
-        D: 'a,
     {
         DenseVector1D::new(encoded.values_as_slice())
     }
