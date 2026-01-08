@@ -144,7 +144,6 @@ where
     D: ScalarSparseSupportedDistance,
 {
     type Distance = D;
-
     type QueryValueType = f32;
     type QueryComponentType = C;
     type InputValueType = InValue;
@@ -272,13 +271,15 @@ where
     }
 }
 
-impl<'a, C, OutValue, D> QueryEvaluator<SparseVector1D<C, OutValue, &'a [C], &'a [OutValue]>, D>
+impl<'a, C, OutValue, D> QueryEvaluator<SparseVector1D<C, OutValue, &'a [C], &'a [OutValue]>>
     for ScalarSparseQueryEvaluator<'a, C, OutValue, D>
 where
     C: ComponentType,
     OutValue: ValueType + Float + FromF32,
     D: ScalarSparseSupportedDistance,
 {
+    type Distance = D;
+
     #[inline]
     fn compute_distance(&self, vector: SparseVector1D<C, OutValue, &'a [C], &'a [OutValue]>) -> D {
         D::compute_sparse(&self.dense_query, &self.query, &vector)

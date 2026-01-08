@@ -120,7 +120,6 @@ where
     D: ScalarDenseSupportedDistance,
 {
     type Distance = D;
-
     type QueryValueType = f32;
     type QueryComponentType = DenseComponent;
     type InputValueType = In;
@@ -233,12 +232,14 @@ where
     }
 }
 
-impl<'a, Out, D> QueryEvaluator<DenseVector1D<Out, &'a [Out]>, D>
+impl<'a, Out, D> QueryEvaluator<DenseVector1D<Out, &'a [Out]>>
     for ScalarDenseQueryEvaluator<Out, D>
 where
     Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
 {
+    type Distance = D;
+
     #[inline]
     fn compute_distance(&self, vector: DenseVector1D<Out, &'a [Out]>) -> D {
         D::compute_dense(

@@ -4,8 +4,9 @@ use crate::{ComponentType, ValueType};
 use crate::{DenseVector1D, SparseVector1D, Vector1D, distances::Distance};
 
 /// A query evaluator computes distances between a query and encoded vectors.
-pub trait QueryEvaluator<V, D: Distance>: Sized {
-    fn compute_distance(&self, vector: V) -> D;
+pub trait QueryEvaluator<V>: Sized {
+    type Distance: Distance;
+    fn compute_distance(&self, vector: V) -> Self::Distance;
 }
 
 /// Core encoder trait.
@@ -14,7 +15,6 @@ pub trait QueryEvaluator<V, D: Distance>: Sized {
 /// API uses "encoder" consistently.
 pub trait VectorEncoder: sealed::Sealed + Sized {
     type Distance: Distance;
-
     type QueryValueType: ValueType;
     type QueryComponentType: ComponentType;
     type InputValueType: ValueType;
@@ -33,7 +33,9 @@ pub trait VectorEncoder: sealed::Sealed + Sized {
     /// Canonical encoded vector view used by this encoder.
     ///
     /// Note: packed encoders may use a non-`Vector1D` view.
-    type EncodedVectorType<'a>: 'a;
+    type EncodedVectorType<'a>: 'a
+    where
+        Self: 'a;
 
     /// Canonical query vector view used by this encoder.
     type QueryVectorType<'a>: Vector1D<

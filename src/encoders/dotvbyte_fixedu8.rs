@@ -116,7 +116,6 @@ impl PackedVectorEncoder for DotVByteFixedU8Quantizer {
 
 impl VectorEncoder for DotVByteFixedU8Quantizer {
     type Distance = DotProduct;
-
     type QueryValueType = f32;
     type QueryComponentType = u16;
     type InputValueType = FixedU8Q;
@@ -235,9 +234,10 @@ impl<'a> DotVByteFixedU8QueryEvaluator<'a> {
     }
 }
 
-impl<'a> QueryEvaluator<PackedVector<u64, &'a [u64]>, DotProduct>
-    for DotVByteFixedU8QueryEvaluator<'_>
+impl<'a> QueryEvaluator<PackedVector<u64, &'a [u64]>> for DotVByteFixedU8QueryEvaluator<'_>
 {
+    type Distance = DotProduct;
+
     #[inline]
     fn compute_distance(&self, vector: PackedVector<u64, &'a [u64]>) -> DotProduct {
         let dotvbyte_view = unsafe { DotVbyteFixedu8::from_unchecked_slice(vector.as_slice()) };

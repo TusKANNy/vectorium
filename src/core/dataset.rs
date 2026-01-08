@@ -269,7 +269,10 @@ pub trait Dataset: sealed::Sealed {
     ) -> Vec<ScoredVector<<Self::Encoder as VectorEncoder>::Distance>>
     where
         for<'b> <Self::Encoder as VectorEncoder>::Evaluator<'b>:
-            QueryEvaluator<Self::EncodedVectorType<'b>, <Self::Encoder as VectorEncoder>::Distance>,
+            QueryEvaluator<
+                Self::EncodedVectorType<'b>,
+                Distance = <Self::Encoder as VectorEncoder>::Distance,
+            >,
     {
         if k == 0 {
             return Vec::new();
