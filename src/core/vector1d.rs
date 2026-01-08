@@ -255,7 +255,7 @@ where
     }
 
     #[inline]
-    pub fn view(&self) -> PackedVectorView<'_, T> {
+    pub fn as_view(&self) -> PackedVectorView<'_, T> {
         PackedVectorView::new(&self.data)
     }
 
@@ -271,7 +271,7 @@ where
     T: SpaceUsage + Copy,
 {
     fn from(owned: &'a PackedVectorOwned<T>) -> Self {
-        owned.view()
+        owned.as_view()
     }
 }
 

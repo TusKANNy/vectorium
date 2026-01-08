@@ -199,9 +199,6 @@ where
     debug_assert!(is_strictly_sorted(query.components()));
     debug_assert!(is_strictly_sorted(vector.components()));
 
-    let v_components = vector.components();
-    let v_values = vector.values();
-
     let mut result = 0.0;
     let mut v_iter = vector.iter();
     let mut current = v_iter.next();
