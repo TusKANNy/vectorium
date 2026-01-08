@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::PackedEncoded;
-use crate::PackedVectorEncoder;
+use crate::{PackedVectorEncoder, VectorEncoder};
 use crate::SpaceUsage;
 use crate::core::dataset::ConvertFrom;
 use crate::core::sealed;
@@ -132,7 +132,7 @@ where
     }
 
     #[inline]
-    fn push<'a>(&mut self, vec: <Self as Dataset>::InputVectorType<'a>) {
+    fn push<'a>(&mut self, vec: <E as VectorEncoder>::InputVectorType<'a>) {
         let components = vec.components_as_slice();
         let values = vec.values_as_slice();
         assert_eq!(
@@ -172,10 +172,6 @@ where
     for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     type Encoder = E;
-    type EncodedVectorType<'a>
-        = E::EncodedVectorType<'a>
-    where
-        Self: 'a;
 
     #[inline]
     fn encoder(&self) -> &E {

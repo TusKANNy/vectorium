@@ -186,15 +186,6 @@ where
 /// ```
 pub trait Dataset: sealed::Sealed {
     type Encoder: VectorEncoder;
-    type InputVectorType<'a> = <Self::Encoder as VectorEncoder>::InputVectorType<'a>
-    where
-        Self: 'a;
-    type EncodedVectorType<'a> = <Self::Encoder as VectorEncoder>::EncodedVectorType<'a>
-    where
-        Self: 'a;
-    type QueryVectorType<'a> = <Self::Encoder as VectorEncoder>::QueryVectorType<'a>
-    where
-        Self: 'a;
 
     fn encoder(&self) -> &Self::Encoder;
 
@@ -239,7 +230,7 @@ pub trait Dataset: sealed::Sealed {
 
     /// Get the representation of the vector with the given id.
     #[inline]
-    fn get<'a>(&'a self, id: VectorId) -> <Self as Dataset>::EncodedVectorType<'a> {
+    fn get<'a>(&'a self, id: VectorId) -> <Self::Encoder as VectorEncoder>::EncodedVectorType<'a> {
         let range = self.range_from_id(id);
         self.get_by_range(range)
     }
@@ -248,12 +239,14 @@ pub trait Dataset: sealed::Sealed {
     fn get_by_range<'a>(
         &'a self,
         range: std::ops::Range<usize>,
-    ) -> <Self as Dataset>::EncodedVectorType<'a>;
+    ) -> <Self::Encoder as VectorEncoder>::EncodedVectorType<'a>;
 
     fn prefetch(&self, range: std::ops::Range<usize>);
 
     /// Returns an iterator over all encoded vectors in the dataset.
-    fn iter<'a>(&'a self) -> impl Iterator<Item = <Self as Dataset>::EncodedVectorType<'a>>;
+    fn iter<'a>(
+        &'a self,
+    ) -> impl Iterator<Item = <Self::Encoder as VectorEncoder>::EncodedVectorType<'a>>;
 
     /// Performs a brute-force search to find the K-nearest neighbors (KNN) of the queried vector.
     ///
@@ -270,7 +263,7 @@ pub trait Dataset: sealed::Sealed {
     where
         for<'b> <Self::Encoder as VectorEncoder>::Evaluator<'b>:
             QueryEvaluator<
-                Self::EncodedVectorType<'b>,
+                <Self::Encoder as VectorEncoder>::EncodedVectorType<'b>,
                 Distance = <Self::Encoder as VectorEncoder>::Distance,
             >,
     {
@@ -298,18 +291,6 @@ where
     T: Dataset,
 {
     type Encoder = T::Encoder;
-    type InputVectorType<'a>
-        = T::InputVectorType<'a>
-    where
-        Self: 'a;
-    type EncodedVectorType<'a>
-        = T::EncodedVectorType<'a>
-    where
-        Self: 'a;
-    type QueryVectorType<'a>
-        = T::QueryVectorType<'a>
-    where
-        Self: 'a;
 
     #[inline]
     fn encoder(&self) -> &Self::Encoder {
@@ -340,7 +321,7 @@ where
     fn get_by_range<'a>(
         &'a self,
         range: std::ops::Range<usize>,
-    ) -> Self::EncodedVectorType<'a> {
+    ) -> <Self::Encoder as VectorEncoder>::EncodedVectorType<'a> {
         (*self).get_by_range(range)
     }
 
@@ -350,7 +331,9 @@ where
     }
 
     #[inline]
-    fn iter<'a>(&'a self) -> impl Iterator<Item = Self::EncodedVectorType<'a>> {
+    fn iter<'a>(
+        &'a self,
+    ) -> impl Iterator<Item = <Self::Encoder as VectorEncoder>::EncodedVectorType<'a>> {
         (*self).iter()
     }
 }
@@ -397,5 +380,5 @@ pub trait GrowableDataset: Dataset {
     /// Push a new vector into the dataset.
     /// The vector must have the appropriate component and value types as defined by the encoder.
     /// The encoding defined by the encoder is applied to the input vector before storing it in the dataset.
-    fn push<'a>(&mut self, vec: Self::InputVectorType<'a>);
+    fn push<'a>(&mut self, vec: <Self::Encoder as VectorEncoder>::InputVectorType<'a>);
 }

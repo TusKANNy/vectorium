@@ -48,7 +48,7 @@ pub trait VectorEncoder: sealed::Sealed + Sized {
     /// The query evaluator type for this encoder and distance.
     ///
     /// The evaluator may borrow the query vector, hence it is lifetime-parameterized.
-    type Evaluator<'a>
+    type Evaluator<'a>: QueryEvaluator<Self::EncodedVectorType<'a>, Distance = Self::Distance>
     where
         Self: 'a;
 

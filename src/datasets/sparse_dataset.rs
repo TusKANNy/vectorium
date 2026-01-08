@@ -118,10 +118,6 @@ where
     >,
 {
     type Encoder = E;
-    type EncodedVectorType<'a>
-        = E::EncodedVectorType<'a>
-    where
-        Self: 'a;
 
     /// Retrieves the components and values of the sparse vector at the specified index.
     ///
@@ -905,7 +901,7 @@ where
     /// assert_eq!(dataset.input_dim(), 5);
     /// assert_eq!(dataset.nnz(), 3);
     /// ```
-    fn push<'a>(&mut self, vec: <Self as Dataset>::InputVectorType<'a>) {
+    fn push<'a>(&mut self, vec: <E as VectorEncoder>::InputVectorType<'a>) {
         let components = vec.components_as_slice();
         let values = vec.values_as_slice();
 

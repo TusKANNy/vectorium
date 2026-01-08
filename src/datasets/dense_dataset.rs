@@ -127,10 +127,6 @@ where
     for<'a> E::EncodedVectorType<'a>: Vector1D<Component = DenseComponent, Value = E::OutputValueType>,
 {
     type Encoder = E;
-    type EncodedVectorType<'a>
-        = E::EncodedVectorType<'a>
-    where
-        Self: 'a;
 
     #[inline]
     fn encoder(&self) -> &E {
@@ -148,10 +144,7 @@ where
     }
 
     #[inline]
-    fn get_by_range<'a>(
-        &'a self,
-        range: std::ops::Range<usize>,
-    ) -> E::EncodedVectorType<'a> {
+    fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> E::EncodedVectorType<'a> {
         self.quantizer.encoded_from_slice(&self.data.as_ref()[range])
     }
 
@@ -355,7 +348,7 @@ where
     }
 
     #[inline]
-    fn push<'a>(&mut self, vec: <Self as Dataset>::InputVectorType<'a>) {
+    fn push<'a>(&mut self, vec: <E as VectorEncoder>::InputVectorType<'a>) {
         assert!(
             vec.len() == self.quantizer.input_dim(),
             "Input vector length doesn't match encoder input dimensionality."
