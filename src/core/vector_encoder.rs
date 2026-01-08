@@ -16,6 +16,8 @@ pub trait QueryEvaluator {
 pub trait VectorEncoder: Send + Sync + SpaceUsage {
     type Distance: Copy + Ord;
 
+    type InputVector<'a>: Vector1DViewTrait;
+
     type QueryVector<'a>: Vector1DViewTrait
     where
         Self: 'a;
@@ -34,20 +36,26 @@ pub trait VectorEncoder: Send + Sync + SpaceUsage {
     fn output_dim(&self) -> usize;
 }
 
-pub trait DenseVectorEncoder: VectorEncoder {
+pub trait DenseVectorEncoder:
+    for<'a> VectorEncoder<InputVector<'a> = DenseVector1DView<'a, Self::InputValueType>>
+{
     type InputValueType: ValueType;
     type OutputValueType: ValueType;
 
     fn encode_vector<'a>(
         &self,
-        input: DenseVector1DView<'a, Self::InputValueType>,
+        input: Self::InputVector<'a>,
     ) -> DenseVector1DOwned<Self::OutputValueType>;
 
     /// Create a view from raw slice data.
     fn create_view<'a>(&self, data: &'a [Self::OutputValueType]) -> Self::EncodedVector<'a>;
 }
 
-pub trait SparseVectorEncoder: VectorEncoder {
+pub trait SparseVectorEncoder:
+    for<'a> VectorEncoder<
+    InputVector<'a> = SparseVector1DView<'a, Self::InputComponentType, Self::InputValueType>,
+>
+{
     type InputComponentType: ComponentType;
     type InputValueType: ValueType;
     type OutputComponentType: ComponentType;
@@ -55,7 +63,7 @@ pub trait SparseVectorEncoder: VectorEncoder {
 
     fn encode_vector<'a>(
         &self,
-        input: SparseVector1DView<'a, Self::InputComponentType, Self::InputValueType>,
+        input: Self::InputVector<'a>,
     ) -> SparseVector1DOwned<Self::OutputComponentType, Self::OutputValueType>;
 
     /// Create a view from raw component and value slices.
@@ -66,14 +74,18 @@ pub trait SparseVectorEncoder: VectorEncoder {
     ) -> Self::EncodedVector<'a>;
 }
 
-pub trait PackedVectorEncoder: VectorEncoder {
+pub trait PackedVectorEncoder:
+    for<'a> VectorEncoder<
+    InputVector<'a> = SparseVector1DView<'a, Self::InputComponentType, Self::InputValueType>,
+>
+{
     type InputComponentType: ComponentType;
     type InputValueType: ValueType;
     type PackedValueType: ValueType + SpaceUsage;
 
     fn encode_vector<'a>(
         &self,
-        input: SparseVector1DView<'a, Self::InputComponentType, Self::InputValueType>,
+        input: Self::InputVector<'a>,
     ) -> PackedVectorOwned<Self::PackedValueType>;
 
     /// Create a view from raw packed data.

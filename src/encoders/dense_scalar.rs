@@ -144,6 +144,7 @@ where
     D: ScalarDenseSupportedDistance,
 {
     type Distance = D;
+    type InputVector<'a> = DenseVector1DView<'a, In>;
     type QueryVector<'a> = DenseVector1DView<'a, f32>;
     type EncodedVector<'a> = DenseVector1DView<'a, Out>;
 

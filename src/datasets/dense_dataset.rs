@@ -156,8 +156,6 @@ impl<E> GrowableDataset for DenseDatasetGeneric<E, Vec<E::OutputValueType>>
 where
     E: DenseVectorEncoder,
 {
-    type InputVector<'a> = DenseVector1DView<'a, E::InputValueType>;
-
     fn new(quantizer: E) -> Self {
         Self {
             n_vecs: 0,
@@ -166,7 +164,7 @@ where
         }
     }
 
-    fn push<'a>(&mut self, vec: Self::InputVector<'a>) {
+    fn push<'a>(&mut self, vec: E::InputVector<'a>) {
         let encoded = self.quantizer.encode_vector(vec);
         self.data.extend_from_slice(encoded.values());
         self.n_vecs += 1;

@@ -2,8 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
 use crate::core::vector_encoder::{
-    DenseVector1DOwned, QueryEvaluator, SparseVector1DOwned, SparseVectorEncoder,
-    VectorEncoder,
+    DenseVector1DOwned, QueryEvaluator, SparseVector1DOwned, SparseVectorEncoder, VectorEncoder,
 };
 use crate::core::vector1d::SparseVector1DView;
 use crate::distances::{
@@ -123,6 +122,7 @@ where
     D: ScalarSparseSupportedDistance,
 {
     type Distance = D;
+    type InputVector<'a> = SparseVector1DView<'a, C, InValue>;
     type QueryVector<'a> = SparseVector1DView<'a, C, f32>;
     type EncodedVector<'a> = SparseVector1DView<'a, C, OutValue>;
 

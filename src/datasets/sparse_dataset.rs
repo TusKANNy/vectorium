@@ -703,8 +703,6 @@ where
     E: SparseVectorEncoder,
     for<'a> E::EncodedVector<'a>: Vector1DViewTrait,
 {
-    type InputVector<'a> = SparseVector1DView<'a, E::InputComponentType, E::InputValueType>;
-
     /// For SparseDataset, the dimensionality `d` may be 0 if unknown when creating a new dataset.
     fn new(quantizer: E) -> Self {
         Self {
@@ -747,7 +745,7 @@ where
     /// assert_eq!(dataset.input_dim(), 5);
     /// assert_eq!(dataset.nnz(), 3);
     /// ```
-    fn push<'a>(&mut self, vec: Self::InputVector<'a>) {
+    fn push<'a>(&mut self, vec: E::InputVector<'a>) {
         let components = vec.components();
         let values = vec.values();
 

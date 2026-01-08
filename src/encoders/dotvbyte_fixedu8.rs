@@ -137,6 +137,7 @@ impl DotVByteFixedU8Quantizer {
 
 impl VectorEncoder for DotVByteFixedU8Quantizer {
     type Distance = DotProduct;
+    type InputVector<'a> = SparseVector1DView<'a, u16, FixedU8Q>;
     type QueryVector<'a> = SparseVector1DView<'a, u16, f32>;
     type EncodedVector<'a> = PackedVectorView<'a, u64>;
 

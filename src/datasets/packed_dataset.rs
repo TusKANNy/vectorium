@@ -132,8 +132,6 @@ impl<E> GrowableDataset
 where
     E: PackedVectorEncoder,
 {
-    type InputVector<'a> = SparseVector1DView<'a, E::InputComponentType, E::InputValueType>;
-
     #[inline]
     fn new(quantizer: E) -> Self {
         Self {
@@ -145,7 +143,7 @@ where
     }
 
     #[inline]
-    fn push<'a>(&mut self, vec: Self::InputVector<'a>) {
+    fn push<'a>(&mut self, vec: E::InputVector<'a>) {
         self.nnz += vec.components().len(); // Capture length before move if needed? Copy view is cheap.
 
         let encoded = self.quantizer.encode_vector(vec);

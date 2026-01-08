@@ -37,16 +37,17 @@ impl<D: Ord> Ord for ScoredRange<D> {
 
 pub type ScoredVector<D> = ScoredItemGeneric<D, VectorId>;
 
-pub trait ConvertFrom<T> {
+pub trait ConvertFrom<T: Dataset>: Dataset {
     fn convert_from(value: T) -> Self;
 }
 
-pub trait ConvertInto<T> {
+pub trait ConvertInto<T: Dataset>: Dataset {
     fn convert_into(self) -> T;
 }
 
 impl<T, U> ConvertInto<U> for T
 where
+    T: Dataset,
     U: ConvertFrom<T>,
 {
     fn convert_into(self) -> U {
@@ -172,11 +173,9 @@ where
 }
 
 pub trait GrowableDataset: Dataset {
-    type InputVector<'a>;
-
     /// Create a new growable dataset with the given encoder.
     fn new(encoder: Self::Encoder) -> Self;
 
     /// Push a new vector into the dataset.
-    fn push<'a>(&mut self, vec: Self::InputVector<'a>);
+    fn push<'a>(&mut self, vec: <Self::Encoder as VectorEncoder>::InputVector<'a>);
 }
