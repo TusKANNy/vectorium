@@ -3,11 +3,13 @@ use std::marker::PhantomData;
 
 mod swizzle;
 
-use crate::PackedVector;
 use crate::core::sealed;
+use crate::core::vector_encoder::{
+    PackedVectorEncoder, PackedVectorOwned, QueryEvaluator, VectorEncoder,
+};
+use crate::core::vector1d::{PackedVectorView, SparseVector1DView};
 use crate::distances::DotProduct;
-use crate::{ComponentType, FixedU8Q, SpaceUsage, SparseVector1D, ValueType, Vector1D};
-use crate::{PackedVectorEncoder, QueryEvaluator, VectorEncoder};
+use crate::{FixedU8Q, SpaceUsage};
 use num_traits::{AsPrimitive, ToPrimitive};
 
 use rusty_perm::PermApply as _;
@@ -57,39 +59,27 @@ impl DotVByteFixedU8Quantizer {
 }
 
 impl PackedVectorEncoder for DotVByteFixedU8Quantizer {
-    type EncodingType = u64;
+    type InputComponentType = u16;
+    type InputValueType = FixedU8Q;
+    type PackedValueType = u64;
 
-    /// Encode a sparse vector (components + `FixedU8Q` values) into the packed DotVByte format
-    /// and append it to `data`.
-    ///
-    /// The packed representation is appended as a sequence of `u64` words; its length depends
-    /// on the vector components and is therefore variable.
-    #[inline]
-    fn extend_with_encode<AC, AV>(
+    fn encode_vector<'a>(
         &self,
-        input_vector: SparseVector1D<Self::InputComponentType, Self::InputValueType, AC, AV>,
-        data: &mut Vec<Self::EncodingType>,
-    ) where
-        AC: AsRef<[Self::InputComponentType]>,
-        AV: AsRef<[Self::InputValueType]>,
-    {
+        input: SparseVector1DView<'a, Self::InputComponentType, Self::InputValueType>,
+    ) -> PackedVectorOwned<Self::PackedValueType> {
         let mut encoded_u8 = Vec::new();
 
-        let mut q_values: Vec<_> = input_vector
-            .values_as_slice()
-            .iter()
-            .map(|v| v.to_bits())
-            .collect(); // comvert to u8 representation (i.e., we want bytes of the FixedU8Q)
+        let mut q_values: Vec<_> = input.values().iter().map(|v| v.to_bits()).collect();
 
         //If needed, remap components according to the DotVByte quantizer mapping.
         let mut q_components = if let Some(component_mapping) = self.component_mapping() {
-            input_vector
-                .components_as_slice()
+            input
+                .components()
                 .iter()
                 .map(|&c| component_mapping[c as usize])
                 .collect::<Vec<u16>>()
         } else {
-            input_vector.components_as_slice().to_vec()
+            input.components().to_vec()
         };
 
         // Sort components and values by component index.
@@ -102,45 +92,28 @@ impl PackedVectorEncoder for DotVByteFixedU8Quantizer {
         DotVbyteFixedu8::push_vector(&mut encoded_u8, &mut q_components, &mut q_values);
 
         assert!(
-            encoded_u8.len() % size_of::<u64>() == 0,
+            encoded_u8.len() % std::mem::size_of::<u64>() == 0,
             "encoded_u8 length ({}) is not a multiple of 8",
             encoded_u8.len()
         );
 
+        let mut data = Vec::with_capacity(encoded_u8.len() / 8);
         for chunk in encoded_u8.chunks_exact(8) {
             let word = u64::from_le_bytes(chunk.try_into().unwrap()); // choose LE/BE/NE
             data.push(word);
         }
+
+        PackedVectorOwned::new(data)
+    }
+
+    fn create_view<'a>(&self, data: &'a [Self::PackedValueType]) -> Self::EncodedVector<'a> {
+        PackedVectorView::new(data)
     }
 }
 
-impl VectorEncoder for DotVByteFixedU8Quantizer {
-    type Distance = DotProduct;
-    type QueryValueType = f32;
-    type QueryComponentType = u16;
-    type InputValueType = FixedU8Q;
-    type InputComponentType = u16;
-    type OutputValueType = FixedU8Q;
-    type OutputComponentType = u16;
-
-    type InputVectorType<'a> = SparseVector1D<u16, FixedU8Q, &'a [u16], &'a [FixedU8Q]>
-    where
-        Self: 'a;
-
-    type EncodedVectorType<'a> = PackedVector<u64, &'a [u64]>
-    ;
-
-    type QueryVectorType<'a> = SparseVector1D<u16, f32, &'a [u16], &'a [f32]>
-    where
-        Self: 'a;
-
-    type Evaluator<'a>
-        = DotVByteFixedU8QueryEvaluator<'a>
-    where
-        Self: 'a;
-
+impl DotVByteFixedU8Quantizer {
     #[inline]
-    fn new(input_dim: usize, output_dim: usize) -> Self {
+    pub fn new(input_dim: usize, output_dim: usize) -> Self {
         assert_eq!(
             input_dim, output_dim,
             "DotVByteFixedU8Quantizer requires input_dim == output_dim"
@@ -151,11 +124,28 @@ impl VectorEncoder for DotVByteFixedU8Quantizer {
         }
     }
 
-    #[inline]
-    fn query_evaluator<'a>(
-        &'a self,
-        query: Self::QueryVectorType<'a>,
-    ) -> Self::Evaluator<'a> {
+    pub fn train<'a>(
+        &mut self,
+        training_data: impl Iterator<Item = SparseVector1DView<'a, u16, FixedU8Q>>,
+    ) {
+        let components_iter = training_data.map(|v| v.components());
+        let permutation = permute_components_with_bisection(self.input_dim(), components_iter);
+        let component_mapping: Vec<u16> = permutation.iter().map(|i| *i as u16).collect();
+        self.component_mapping = Some(component_mapping.into_boxed_slice());
+    }
+}
+
+impl VectorEncoder for DotVByteFixedU8Quantizer {
+    type Distance = DotProduct;
+    type QueryVector<'a> = SparseVector1DView<'a, u16, f32>;
+    type EncodedVector<'a> = PackedVectorView<'a, u64>;
+
+    type Evaluator<'a>
+        = DotVByteFixedU8QueryEvaluator<'a>
+    where
+        Self: 'a;
+
+    fn query_evaluator<'a>(&'a self, query: Self::QueryVector<'a>) -> Self::Evaluator<'a> {
         DotVByteFixedU8QueryEvaluator::new(query, self)
     }
 
@@ -168,17 +158,6 @@ impl VectorEncoder for DotVByteFixedU8Quantizer {
     fn input_dim(&self) -> usize {
         self.dim
     }
-
-    fn train<InputVector>(&mut self, training_data: impl Iterator<Item = InputVector>)
-    where
-        InputVector: Vector1D,
-        InputVector::Component: ComponentType,
-        InputVector::Value: ValueType,
-    {
-        let permutation = permute_components_with_bisection(self.input_dim(), training_data);
-        let component_mapping: Vec<u16> = permutation.iter().map(|i| *i as u16).collect();
-        self.component_mapping = Some(component_mapping.into_boxed_slice());
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -189,14 +168,12 @@ pub struct DotVByteFixedU8QueryEvaluator<'a> {
 
 impl<'a> DotVByteFixedU8QueryEvaluator<'a> {
     #[inline]
-    pub fn new<QueryVector>(query: QueryVector, quantizer: &DotVByteFixedU8Quantizer) -> Self
-    where
-        QueryVector: Vector1D<Component = u16, Value = f32>,
-    {
-        // xxxxx_TODO: need a merge-based dot product computation when there are too high dimensionality.
-
+    pub fn new(
+        query: SparseVector1DView<'a, u16, f32>,
+        quantizer: &DotVByteFixedU8Quantizer,
+    ) -> Self {
         let max_c = query
-            .components_as_slice()
+            .components()
             .iter()
             .map(|c| c.as_())
             .max()
@@ -208,15 +185,15 @@ impl<'a> DotVByteFixedU8QueryEvaluator<'a> {
         );
 
         assert_eq!(
-            query.components_as_slice().len(),
-            query.values_as_slice().len(),
+            query.components().len(),
+            query.values().len(),
             "Query vector components and values length mismatch."
         );
 
         // Densify the remapped query vector
         let mut vec = vec![0.0; quantizer.dim];
-        let query_components = query.components_as_slice();
-        let query_values = query.values_as_slice();
+        let query_components = query.components();
+        let query_values = query.values();
 
         for (&c, &v) in query_components.iter().zip(query_values.iter()) {
             let mapped_component = if let Some(component_mapping) = quantizer.component_mapping() {
@@ -234,13 +211,13 @@ impl<'a> DotVByteFixedU8QueryEvaluator<'a> {
     }
 }
 
-impl<'a> QueryEvaluator<PackedVector<u64, &'a [u64]>> for DotVByteFixedU8QueryEvaluator<'_>
-{
+impl<'a> QueryEvaluator for DotVByteFixedU8QueryEvaluator<'a> {
     type Distance = DotProduct;
+    type EncodedVector<'v> = PackedVectorView<'v, u64>;
 
     #[inline]
-    fn compute_distance(&self, vector: PackedVector<u64, &'a [u64]>) -> DotProduct {
-        let dotvbyte_view = unsafe { DotVbyteFixedu8::from_unchecked_slice(vector.as_slice()) };
+    fn compute_distance(&mut self, vector: Self::EncodedVector<'_>) -> DotProduct {
+        let dotvbyte_view = unsafe { DotVbyteFixedu8::from_unchecked_slice(vector.data()) };
         DotProduct::from(dotvbyte_view.dot_product(&self.dense_query))
     }
 }

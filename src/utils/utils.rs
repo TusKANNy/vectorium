@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::hash::Hash;
 
-use crate::{ComponentType, ValueType, Vector1D};
+use crate::ComponentType;
 use rgb::forward::Doc;
 
 #[inline]
@@ -45,14 +45,13 @@ pub fn intersection<T: Eq + Hash + Clone>(s: &[T], groundtruth: &[T]) -> usize {
 
 /// Compute a permutation of components using recursive graph bisection.
 /// Components that often appear together in documents will be grouped close together.
-pub(crate) fn permute_components_with_bisection<C, V, InputVector>(
+pub(crate) fn permute_components_with_bisection<C, Item>(
     dim: usize,
-    vectors: impl Iterator<Item = InputVector>,
+    vectors: impl Iterator<Item = Item>,
 ) -> Box<[usize]>
 where
-    InputVector: Vector1D<Component = C, Value = V>,
     C: ComponentType,
-    V: ValueType,
+    Item: AsRef<[C]>,
 {
     // One Doc for each component. RGB's terminology is the opposite of what we need for SparseVectors.
     let mut components = Vec::with_capacity(dim);
@@ -67,7 +66,7 @@ where
 
     let mut doc_count = 0usize;
     for (doc_id, vector) in vectors.enumerate() {
-        for &component_id in vector.components_as_slice().iter() {
+        for &component_id in vector.as_ref().iter() {
             let component_idx: usize = component_id.as_();
             components[component_idx].terms.push(doc_id as u32);
         }
@@ -102,16 +101,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::permute_components_with_bisection;
-    use crate::SparseVector1D;
 
     #[test]
     fn permute_components_with_bisection_returns_permutation() {
-        let vectors = vec![
-            SparseVector1D::new(vec![0_u16, 2], vec![1.0_f32, 2.0]),
-            SparseVector1D::new(vec![1_u16, 3], vec![3.0_f32, 4.0]),
-        ];
+        let vectors_components = vec![vec![0_u16, 2], vec![1_u16, 3]];
 
-        let perm = permute_components_with_bisection(4, vectors.into_iter());
+        let perm = permute_components_with_bisection(4, vectors_components.into_iter());
         assert_eq!(perm.len(), 4);
 
         let mut seen = vec![false; 4];

@@ -35,9 +35,10 @@ pub use utils::numeric_markers::{Float, FromF32};
 pub use utils::space_usage::SpaceUsage;
 
 #[allow(non_snake_case)]
-pub use core::vector1d::{DenseVector1D, SparseVector1D, Vector1D};
-
-pub use core::vector1d::{PackedEncoded, PackedVector};
+pub use core::vector1d::{
+    DenseVector1DOwned, DenseVector1DView, PackedVectorOwned, PackedVectorView,
+    SparseVector1DOwned, SparseVector1DView, Vector1DViewTrait,
+};
 
 pub use core::distances::{Distance, DotProduct, SquaredEuclideanDistance};
 
@@ -54,8 +55,7 @@ pub use encoders::dense_scalar::{
 pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Quantizer, DotVByteFixedU8QueryEvaluator};
 pub use encoders::sparse_scalar::{
     PlainSparseQuantizer, PlainSparseQuantizerDotProduct, ScalarSparseQuantizer,
-    ScalarSparseQuantizerDotProduct, ScalarSparseQuantizerSame, ScalarSparseQueryEvaluator,
-    ScalarSparseSupportedDistance,
+    ScalarSparseQuantizerDotProduct, ScalarSparseQueryEvaluator, ScalarSparseSupportedDistance,
 };
 
 pub use core::dataset::{Dataset, GrowableDataset, VectorId};

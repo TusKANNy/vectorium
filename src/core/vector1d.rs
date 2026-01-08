@@ -1,245 +1,277 @@
-use crate::numeric_markers::DenseComponent;
 use crate::{ComponentType, SpaceUsage, ValueType};
 
-pub trait Vector1D {
-    type Component: ComponentType;
-    type Value: ValueType;
+/// Marker trait for vector views.
+/// Does not mandate any accessor methods, just marks the type as a vector view.
+pub trait Vector1DViewTrait {}
 
-    fn len(&self) -> usize;
+impl<T: Vector1DViewTrait> Vector1DViewTrait for &T {}
+impl<T: Vector1DViewTrait> Vector1DViewTrait for &mut T {}
 
-    #[inline]
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    fn components_as_slice(&self) -> &[Self::Component];
-    fn values_as_slice(&self) -> &[Self::Value];
+/// A view over a dense vector (slice of values).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DenseVector1DView<'a, V: ValueType> {
+    values: &'a [V],
 }
 
-impl<T> Vector1D for &T
-where
-    T: Vector1D + ?Sized,
-{
-    type Component = T::Component;
-    type Value = T::Value;
-
+impl<'a, V: ValueType> DenseVector1DView<'a, V> {
     #[inline]
-    fn len(&self) -> usize {
-        (**self).len()
+    pub fn new(values: &'a [V]) -> Self {
+        Self { values }
     }
-
     #[inline]
-    fn components_as_slice(&self) -> &[Self::Component] {
-        (**self).components_as_slice()
+    pub fn len(&self) -> usize {
+        self.values.len()
     }
-
     #[inline]
-    fn values_as_slice(&self) -> &[Self::Value] {
-        (**self).values_as_slice()
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+    #[inline]
+    pub fn values(&self) -> &'a [V] {
+        self.values
+    }
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = V> + '_ {
+        self.values.iter().copied()
+    }
+    #[inline]
+    pub fn to_owned(&self) -> DenseVector1DOwned<V> {
+        DenseVector1DOwned::new(self.values.to_vec())
     }
 }
+
+impl<'a, V: ValueType> Vector1DViewTrait for DenseVector1DView<'a, V> {}
+
+/// A view over a sparse vector (slices of components and values).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SparseVector1DView<'a, C: ComponentType, V: ValueType> {
+    components: &'a [C],
+    values: &'a [V],
+}
+
+impl<'a, C: ComponentType, V: ValueType> SparseVector1DView<'a, C, V> {
+    #[inline]
+    pub fn new(components: &'a [C], values: &'a [V]) -> Self {
+        debug_assert_eq!(components.len(), values.len());
+        Self { components, values }
+    }
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.components.len()
+    }
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.components.is_empty()
+    }
+    #[inline]
+    pub fn components(&self) -> &'a [C] {
+        self.components
+    }
+    #[inline]
+    pub fn values(&self) -> &'a [V] {
+        self.values
+    }
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = (C, V)> + '_ {
+        self.components
+            .iter()
+            .copied()
+            .zip(self.values.iter().copied())
+    }
+    #[inline]
+    pub fn to_owned(&self) -> SparseVector1DOwned<C, V> {
+        SparseVector1DOwned::new(self.components.to_vec(), self.values.to_vec())
+    }
+}
+
+impl<'a, C: ComponentType, V: ValueType> Vector1DViewTrait for SparseVector1DView<'a, C, V> {}
+
+/// A view over a packed vector.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PackedVectorView<'a, T: SpaceUsage + Copy> {
+    data: &'a [T],
+}
+
+impl<'a, T: SpaceUsage + Copy> PackedVectorView<'a, T> {
+    #[inline]
+    pub fn new(data: &'a [T]) -> Self {
+        Self { data }
+    }
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+    #[inline]
+    pub fn data(&self) -> &'a [T] {
+        self.data
+    }
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = T> + '_ {
+        self.data.iter().copied()
+    }
+    #[inline]
+    pub fn to_owned(&self) -> PackedVectorOwned<T> {
+        PackedVectorOwned::new(self.data.to_vec())
+    }
+}
+impl<'a, T: SpaceUsage + Copy> Vector1DViewTrait for PackedVectorView<'a, T> {}
+
+// --- Owned Structs ---
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct DenseVector1D<V, AV>
-where
-    V: ValueType,
-    AV: AsRef<[V]>,
-{
-    values: AV,
-    _phantom: std::marker::PhantomData<V>,
+pub struct DenseVector1DOwned<V: ValueType> {
+    values: Vec<V>,
 }
 
-impl<V, AV> DenseVector1D<V, AV>
-where
-    V: ValueType,
-    AV: AsRef<[V]>,
-{
+impl<V: ValueType> DenseVector1DOwned<V> {
     #[inline]
-    pub fn new(values: AV) -> Self {
-        Self {
-            values,
-            _phantom: std::marker::PhantomData,
-        }
+    pub fn new(values: Vec<V>) -> Self {
+        Self { values }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    #[inline]
+    pub fn values(&self) -> &[V] {
+        &self.values
     }
 
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = V> + '_ {
-        self.values.as_ref().iter().copied()
+        self.values.iter().copied()
+    }
+
+    #[inline]
+    pub fn as_view(&self) -> DenseVector1DView<'_, V> {
+        DenseVector1DView::new(&self.values)
     }
 }
+impl<V: ValueType> Vector1DViewTrait for DenseVector1DOwned<V> {}
 
-impl<V, AV> Vector1D for DenseVector1D<V, AV>
-where
-    V: ValueType,
-    AV: AsRef<[V]>,
-{
-    type Component = DenseComponent;
-    type Value = V;
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.values.as_ref().len()
-    }
-
-    #[inline]
-    fn values_as_slice(&self) -> &[Self::Value] {
-        self.values.as_ref()
-    }
-
-    #[inline(always)]
-    fn components_as_slice(&self) -> &[Self::Component] {
-        // DenseComponent is a zero-sized type; return empty slice
-        &[]
+impl<'a, V: ValueType> From<&'a DenseVector1DOwned<V>> for DenseVector1DView<'a, V> {
+    fn from(owned: &'a DenseVector1DOwned<V>) -> Self {
+        owned.as_view()
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SparseVector1D<C, V, AC, AV>
-where
-    C: ComponentType,
-    V: ValueType,
-    AC: AsRef<[C]>,
-    AV: AsRef<[V]>,
-{
-    components: AC,
-    values: AV,
-    _phantom: std::marker::PhantomData<(C, V)>,
+pub struct SparseVector1DOwned<C: ComponentType, V: ValueType> {
+    components: Vec<C>,
+    values: Vec<V>,
 }
 
-impl<C, V, AC, AV> SparseVector1D<C, V, AC, AV>
-where
-    C: ComponentType,
-    V: ValueType,
-    AC: AsRef<[C]>,
-    AV: AsRef<[V]>,
-{
+impl<C: ComponentType, V: ValueType> SparseVector1DOwned<C, V> {
     #[inline]
-    pub fn new(components: AC, values: AV) -> Self {
+    pub fn new(components: Vec<C>, values: Vec<V>) -> Self {
         assert!(
-            components.as_ref().len() == values.as_ref().len(),
+            components.len() == values.len(),
             "Components and values must have the same length"
         );
+        Self { components, values }
+    }
 
-        SparseVector1D {
-            components,
-            values,
-            _phantom: std::marker::PhantomData,
-        }
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.components.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.components.is_empty()
+    }
+
+    #[inline]
+    pub fn components(&self) -> &[C] {
+        &self.components
+    }
+
+    #[inline]
+    pub fn values(&self) -> &[V] {
+        &self.values
     }
 
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = (C, V)> + '_ {
         self.components
-            .as_ref()
             .iter()
             .copied()
-            .zip(self.values.as_ref().iter().copied())
-    }
-}
-
-mod packed_sealed {
-    pub trait Sealed {}
-}
-
-/// Implemented only for the crate-provided packed vector view.
-///
-/// This is a sealed trait: external types cannot implement it. It is used to
-/// enforce that `PackedDataset` can only expose `PackedVector` as encoded vectors.
-pub trait PackedEncoded<'a, T>: packed_sealed::Sealed + Send {
-    fn from_slice(slice: &'a [T]) -> Self;
-}
-
-/// A packed vector view/container.
-///
-/// This is intentionally minimal: it only provides access to the underlying
-/// packed representation as a slice of `T`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PackedVector<T, AT>
-where
-    T: SpaceUsage + Copy,
-    AT: AsRef<[T]>,
-{
-    data: AT,
-    _phantom: std::marker::PhantomData<T>,
-}
-
-impl<T, AT> PackedVector<T, AT>
-where
-    T: SpaceUsage + Copy,
-    AT: AsRef<[T]>,
-{
-    #[inline]
-    pub fn new(data: AT) -> Self {
-        Self {
-            data,
-            _phantom: std::marker::PhantomData,
-        }
+            .zip(self.values.iter().copied())
     }
 
     #[inline]
-    pub fn as_slice(&self) -> &[T] {
-        self.data.as_ref()
+    pub fn as_view(&self) -> SparseVector1DView<'_, C, V> {
+        SparseVector1DView::new(&self.components, &self.values)
+    }
+}
+impl<C: ComponentType, V: ValueType> Vector1DViewTrait for SparseVector1DOwned<C, V> {}
+
+impl<'a, C: ComponentType, V: ValueType> From<&'a SparseVector1DOwned<C, V>>
+    for SparseVector1DView<'a, C, V>
+{
+    fn from(owned: &'a SparseVector1DOwned<C, V>) -> Self {
+        owned.as_view()
+    }
+}
+
+// PackedVectorOwned
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackedVectorOwned<T>
+where
+    T: SpaceUsage + Copy,
+{
+    data: Vec<T>,
+}
+
+impl<T> PackedVectorOwned<T>
+where
+    T: SpaceUsage + Copy,
+{
+    #[inline]
+    pub fn new(data: Vec<T>) -> Self {
+        Self { data }
     }
 
-    /// Returns the length of the packed version of the sparse vector. It's the length of the packed data, not the number of components or values in the original vector.
     #[inline]
     pub fn len(&self) -> usize {
-        self.data.as_ref().len()
+        self.data.len()
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.data.as_ref().is_empty()
+        self.data.is_empty()
+    }
+
+    #[inline]
+    pub fn data(&self) -> &[T] {
+        &self.data
+    }
+
+    #[inline]
+    pub fn view(&self) -> PackedVectorView<'_, T> {
+        PackedVectorView::new(&self.data)
+    }
+
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = T> + '_ {
+        self.data.iter().copied()
     }
 }
+impl<T> Vector1DViewTrait for PackedVectorOwned<T> where T: SpaceUsage + Copy {}
 
-impl<T, AT> AsRef<[T]> for PackedVector<T, AT>
+impl<'a, T> From<&'a PackedVectorOwned<T>> for PackedVectorView<'a, T>
 where
     T: SpaceUsage + Copy,
-    AT: AsRef<[T]>,
 {
-    #[inline]
-    fn as_ref(&self) -> &[T] {
-        self.data.as_ref()
-    }
-}
-
-impl<T> packed_sealed::Sealed for PackedVector<T, &[T]> where T: SpaceUsage + Copy {}
-
-impl<'a, T> PackedEncoded<'a, T> for PackedVector<T, &'a [T]>
-where
-    T: SpaceUsage + Copy + Send + Sync,
-{
-    #[inline]
-    fn from_slice(slice: &'a [T]) -> Self {
-        PackedVector::new(slice)
-    }
-}
-
-impl<C, V, AC, AV> Vector1D for SparseVector1D<C, V, AC, AV>
-where
-    C: ComponentType,
-    V: ValueType,
-    AC: AsRef<[C]>,
-    AV: AsRef<[V]>,
-{
-    type Component = C;
-    type Value = V;
-
-    /// Returns the length of the sparse array.
-    #[inline(always)]
-    fn len(&self) -> usize {
-        self.components.as_ref().len()
-    }
-
-    #[inline(always)]
-    fn components_as_slice(&self) -> &[Self::Component] {
-        self.components.as_ref()
-    }
-
-    #[inline(always)]
-    fn values_as_slice(&self) -> &[Self::Value] {
-        self.values.as_ref()
+    fn from(owned: &'a PackedVectorOwned<T>) -> Self {
+        owned.view()
     }
 }
 
@@ -248,26 +280,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dense_vector_basic() {
+    fn dense_vector_owned_basic() {
         let values = vec![1.0f32, 2.0, 3.0];
-        let v = DenseVector1D::new(values.clone());
+        let v = DenseVector1DOwned::new(values.clone());
         assert_eq!(v.len(), 3);
-        assert_eq!(v.values_as_slice(), values.as_slice());
-        assert!(v.components_as_slice().is_empty());
+        assert_eq!(v.values(), values.as_slice());
 
-        let v = DenseVector1D::new(&values);
-        assert_eq!(v.len(), 3);
-        assert_eq!(v.values_as_slice(), values.as_slice());
-        assert!(v.components_as_slice().is_empty());
+        let iter_vals: Vec<_> = v.iter().collect();
+        assert_eq!(iter_vals, values);
+
+        let view = v.as_view();
+        assert_eq!(view.values(), values.as_slice());
     }
 
     #[test]
-    fn sparse_vector_basic() {
+    fn dense_vector_view_basic() {
+        let values = vec![1.0f32, 2.0, 3.0];
+        let v = DenseVector1DView::new(&values);
+        assert_eq!(v.len(), 3);
+        assert_eq!(v.values(), values.as_slice());
+
+        let owned = v.to_owned();
+        assert_eq!(owned.values(), values.as_slice());
+    }
+
+    #[test]
+    fn sparse_vector_owned_basic() {
         let comps = vec![0usize, 2usize];
         let vals = vec![1.0f32, 3.0f32];
-        let v = SparseVector1D::new(comps.clone(), vals.clone());
+        let v = SparseVector1DOwned::new(comps.clone(), vals.clone());
         assert_eq!(v.len(), 2);
-        assert_eq!(v.components_as_slice(), comps.as_slice());
-        assert_eq!(v.values_as_slice(), vals.as_slice());
+        assert_eq!(v.components(), comps.as_slice());
+        assert_eq!(v.values(), vals.as_slice());
+
+        let iter_vals: Vec<_> = v.iter().collect();
+        assert_eq!(iter_vals, vec![(0, 1.0), (2, 3.0)]);
+
+        let view = v.as_view();
+        assert_eq!(view.components(), comps.as_slice());
+        assert_eq!(view.values(), vals.as_slice());
+    }
+
+    #[test]
+    fn sparse_vector_view_basic() {
+        let comps = vec![0usize, 2usize];
+        let vals = vec![1.0f32, 3.0f32];
+        let v = SparseVector1DView::new(&comps, &vals);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v.components(), comps.as_slice());
+        assert_eq!(v.values(), vals.as_slice());
+
+        let owned = v.to_owned();
+        assert_eq!(owned.components(), comps.as_slice());
+        assert_eq!(owned.values(), vals.as_slice());
     }
 }

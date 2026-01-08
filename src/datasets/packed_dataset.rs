@@ -1,31 +1,21 @@
 use serde::{Deserialize, Serialize};
 
-use crate::PackedEncoded;
-use crate::{PackedVectorEncoder, VectorEncoder};
+use crate::PackedVectorEncoder;
 use crate::SpaceUsage;
-use crate::core::dataset::ConvertFrom;
 use crate::core::sealed;
+use crate::core::vector1d::SparseVector1DView;
 use crate::utils::prefetch_read_slice;
-use crate::{Dataset, GrowableDataset, SparseVector1D, Vector1D, VectorId};
+use crate::{Dataset, GrowableDataset, VectorId};
 
 use rayon::prelude::*;
 
-#[inline]
-fn packed_from_slice<'a, E>(slice: &'a [E::EncodingType]) -> E::EncodedVectorType<'a>
-where
-    E: PackedVectorEncoder,
-    for<'b> E::EncodedVectorType<'b>: PackedEncoded<'b, E::EncodingType>,
-{
-    <E::EncodedVectorType<'a> as PackedEncoded<'a, E::EncodingType>>::from_slice(slice)
-}
-
 /// A growable packed dataset.
 pub type PackedDatasetGrowable<E> =
-    PackedDatasetGeneric<E, Vec<usize>, Vec<<E as PackedVectorEncoder>::EncodingType>>;
+    PackedDatasetGeneric<E, Vec<usize>, Vec<<E as PackedVectorEncoder>::PackedValueType>>;
 
 /// An immutable packed dataset.
 pub type PackedDataset<E> =
-    PackedDatasetGeneric<E, Box<[usize]>, Box<[<E as PackedVectorEncoder>::EncodingType]>>;
+    PackedDatasetGeneric<E, Box<[usize]>, Box<[<E as PackedVectorEncoder>::PackedValueType]>>;
 
 /// Dataset storing variable-length packed encodings in a single concatenated `data` array.
 ///
@@ -40,26 +30,25 @@ pub type PackedDataset<E> =
 /// ```
 /// use vectorium::{
 ///     Dataset, DotProduct, DotVByteFixedU8Quantizer, GrowableDataset, PackedDataset,
-///     PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1D, VectorEncoder,
+///     PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1DView, VectorEncoder,
 /// };
 ///
 /// let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);
 /// let mut sparse = PlainSparseDatasetGrowable::new(quantizer);
-/// sparse.push(SparseVector1D::new(&[1_u16, 3], &[1.0, 2.0]));
+/// sparse.push(SparseVector1DView::new(&[1_u16, 3], &[1.0, 2.0]));
 ///
 /// let frozen: vectorium::PlainSparseDataset<u16, f32, DotProduct> = sparse.into();
 /// let packed: PackedDataset<DotVByteFixedU8Quantizer> = frozen.into();
 /// let range = packed.range_from_id(0);
 /// let v = packed.get_by_range(range);
-/// assert!(!v.as_slice().is_empty());
+/// assert!(!v.data().is_empty());
 /// ```
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct PackedDatasetGeneric<E, Offsets, Data>
 where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::EncodingType]>,
-    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
+    Data: AsRef<[E::PackedValueType]>,
 {
     offsets: Offsets,
     data: Data,
@@ -71,8 +60,7 @@ impl<E, Offsets, Data> sealed::Sealed for PackedDatasetGeneric<E, Offsets, Data>
 where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::EncodingType]>,
-    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
+    Data: AsRef<[E::PackedValueType]>,
 {
 }
 
@@ -80,8 +68,7 @@ impl<E, Offsets, Data> PackedDatasetGeneric<E, Offsets, Data>
 where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::EncodingType]>,
-    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
+    Data: AsRef<[E::PackedValueType]>,
 {
     #[inline]
     pub fn offsets(&self) -> &[usize] {
@@ -89,19 +76,44 @@ where
     }
 
     #[inline]
-    pub fn data(&self) -> &[E::EncodingType] {
+    pub fn data(&self) -> &[E::PackedValueType] {
         self.data.as_ref()
+    }
+
+    #[inline]
+    pub fn nnz(&self) -> usize {
+        self.nnz
+    }
+
+    #[inline]
+    pub fn range_from_id(&self, id: VectorId) -> std::ops::Range<usize> {
+        let index = id as usize;
+        let offsets = self.offsets.as_ref();
+        assert!(index + 1 < offsets.len(), "Index out of bounds.");
+        offsets[index]..offsets[index + 1]
+    }
+
+    #[inline]
+    pub fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId {
+        let offsets = self.offsets.as_ref();
+        let idx = offsets.binary_search(&range.start).unwrap();
+        assert_eq!(
+            offsets[idx + 1],
+            range.end,
+            "Range does not match vector boundaries."
+        );
+        idx as VectorId
     }
 
     /// Parallel iterator over dataset encoded vectors.
     ///
-    /// Each item is an `E::EncodedVectorType<'_>` borrowing its slice from the dataset `data`.
+    /// Each item is an `E::EncodedVector<'_>` borrowing its slice from the dataset `data`.
     #[inline]
-    pub fn par_iter(
-        &self,
-    ) -> impl IndexedParallelIterator<Item = E::EncodedVectorType<'_>> + '_
+    pub fn par_iter(&self) -> impl IndexedParallelIterator<Item = E::EncodedVector<'_>> + '_
     where
-        for<'a> E::EncodedVectorType<'a>: Send,
+        for<'a> E::EncodedVector<'a>: Send,
+        Offsets: Sync,
+        Data: Sync,
     {
         let offsets = self.offsets.as_ref();
         let data = self.data.as_ref();
@@ -110,17 +122,18 @@ where
         offsets.par_windows(2).map(move |window| {
             let start = window[0];
             let end = window[1];
-            packed_from_slice::<E>(&data[start..end])
+            self.quantizer.create_view(&data[start..end])
         })
     }
 }
 
 impl<E> GrowableDataset
-    for PackedDatasetGeneric<E, Vec<usize>, Vec<<E as PackedVectorEncoder>::EncodingType>>
+    for PackedDatasetGeneric<E, Vec<usize>, Vec<<E as PackedVectorEncoder>::PackedValueType>>
 where
     E: PackedVectorEncoder,
-    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
 {
+    type InputVector<'a> = SparseVector1DView<'a, E::InputComponentType, E::InputValueType>;
+
     #[inline]
     fn new(quantizer: E) -> Self {
         Self {
@@ -132,19 +145,12 @@ where
     }
 
     #[inline]
-    fn push<'a>(&mut self, vec: <E as VectorEncoder>::InputVectorType<'a>) {
-        let components = vec.components_as_slice();
-        let values = vec.values_as_slice();
-        assert_eq!(
-            components.len(),
-            values.len(),
-            "PackedDatasetGrowable expects sparse vectors with explicit components"
-        );
+    fn push<'a>(&mut self, vec: Self::InputVector<'a>) {
+        self.nnz += vec.components().len(); // Capture length before move if needed? Copy view is cheap.
 
-        let input = SparseVector1D::new(components, values);
-        self.quantizer.extend_with_encode(input, &mut self.data);
+        let encoded = self.quantizer.encode_vector(vec);
+        self.data.extend_from_slice(encoded.data());
         self.offsets.push(self.data.len());
-        self.nnz += components.len();
     }
 }
 
@@ -153,8 +159,7 @@ where
     E: PackedVectorEncoder,
     E: SpaceUsage,
     Offsets: AsRef<[usize]> + SpaceUsage,
-    Data: AsRef<[E::EncodingType]> + SpaceUsage,
-    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
+    Data: AsRef<[E::PackedValueType]> + SpaceUsage,
 {
     fn space_usage_bytes(&self) -> usize {
         self.quantizer.space_usage_bytes()
@@ -168,8 +173,7 @@ impl<E, Offsets, Data> Dataset for PackedDatasetGeneric<E, Offsets, Data>
 where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::EncodingType]>,
-    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
+    Data: AsRef<[E::PackedValueType]>,
 {
     type Encoder = E;
 
@@ -184,50 +188,28 @@ where
     }
 
     #[inline]
-    fn nnz(&self) -> usize {
-        self.nnz
+    fn get(&self, index: usize) -> E::EncodedVector<'_> {
+        let range = self.range_from_id(index as VectorId);
+        self.get_by_range(range)
     }
 
     #[inline]
-    fn range_from_id(&self, id: VectorId) -> std::ops::Range<usize> {
-        let index = id as usize;
-        let offsets = self.offsets.as_ref();
-        assert!(index + 1 < offsets.len(), "Index out of bounds.");
-        offsets[index]..offsets[index + 1]
-    }
-
-    #[inline]
-    fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId {
-        let offsets = self.offsets.as_ref();
-        let idx = offsets.binary_search(&range.start).unwrap();
-        assert_eq!(
-            offsets[idx + 1],
-            range.end,
-            "Range does not match vector boundaries."
-        );
-        idx as VectorId
-    }
-
-    #[inline]
-    fn get_by_range<'a>(
-        &'a self,
-        range: std::ops::Range<usize>,
-    ) -> E::EncodedVectorType<'a> {
+    fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> E::EncodedVector<'a> {
         let slice = &self.data.as_ref()[range];
-        packed_from_slice::<E>(slice)
+        self.quantizer.create_view(slice)
     }
 
     #[inline]
-    fn prefetch(&self, range: std::ops::Range<usize>) {
+    fn prefetch_with_range(&self, range: std::ops::Range<usize>) {
         prefetch_read_slice(&self.data.as_ref()[range]);
     }
 
-    fn iter<'a>(&'a self) -> impl Iterator<Item = E::EncodedVectorType<'a>> {
+    fn iter<'a>(&'a self) -> impl Iterator<Item = E::EncodedVector<'a>> {
         let offsets = self.offsets.as_ref();
         let data = self.data.as_ref();
         offsets
             .windows(2)
-            .map(move |w| packed_from_slice::<E>(&data[w[0]..w[1]]))
+            .map(move |w| self.quantizer.create_view(&data[w[0]..w[1]]))
     }
 }
 
@@ -236,17 +218,15 @@ impl<E, Offsets, Data> crate::core::dataset::PackedDatasetTrait
 where
     E: PackedVectorEncoder,
     Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::EncodingType]>,
-    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
+    Data: AsRef<[E::PackedValueType]>,
 {
 }
 
-impl<E> ConvertFrom<PackedDatasetGrowable<E>> for PackedDataset<E>
+impl<E> From<PackedDatasetGrowable<E>> for PackedDataset<E>
 where
     E: PackedVectorEncoder,
-    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
 {
-    fn convert_from(dataset: PackedDatasetGrowable<E>) -> Self {
+    fn from(dataset: PackedDatasetGrowable<E>) -> Self {
         PackedDatasetGeneric {
             offsets: dataset.offsets.into_boxed_slice(),
             data: dataset.data.into_boxed_slice(),
@@ -256,20 +236,9 @@ where
     }
 }
 
-impl<E> From<PackedDatasetGrowable<E>> for PackedDataset<E>
-where
-    E: PackedVectorEncoder,
-    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
-{
-    fn from(dataset: PackedDatasetGrowable<E>) -> Self {
-        Self::convert_from(dataset)
-    }
-}
-
 impl<E> From<PackedDataset<E>> for PackedDatasetGrowable<E>
 where
     E: PackedVectorEncoder,
-    for<'a> E::EncodedVectorType<'a>: PackedEncoded<'a, E::EncodingType>,
 {
     fn from(dataset: PackedDataset<E>) -> Self {
         PackedDatasetGeneric {
@@ -281,90 +250,47 @@ where
     }
 }
 
-impl<EIn, S> ConvertFrom<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
+impl<EIn, S> From<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
     for PackedDataset<crate::DotVByteFixedU8Quantizer>
 where
     EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
-    <EIn as crate::VectorEncoder>::OutputValueType: crate::ValueType + crate::Float,
-    for<'a> <EIn as crate::VectorEncoder>::EncodedVectorType<'a>: crate::Vector1D<
-        Component = <EIn as crate::VectorEncoder>::OutputComponentType,
-        Value = <EIn as crate::VectorEncoder>::OutputValueType,
-    >,
+    EIn::OutputValueType: crate::ValueType + crate::Float,
+    for<'a> EIn::EncodedVector<'a>: crate::Vector1DViewTrait,
     S: crate::core::storage::SparseStorage<EIn>,
 {
-    fn convert_from(
-        dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>,
-    ) -> Self {
+    fn from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>) -> Self {
         use crate::SparseVectorEncoder;
-        use crate::VectorEncoder;
         use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
         use crate::{DotProduct, FixedU8Q};
 
         let dim = dataset.output_dim();
-        let mut dotvbyte_quantizer =
-            <crate::DotVByteFixedU8Quantizer as VectorEncoder>::new(dim, dim);
-
-        dotvbyte_quantizer.train(dataset.iter());
-
         // Use a scalar quantizer to map values from `EIn::OutputValueType` into `FixedU8Q`.
         let scalar =
-            <ScalarSparseQuantizer<u16, EIn::OutputValueType, FixedU8Q, DotProduct> as VectorEncoder>::new(
-                dim, dim,
-            );
+            ScalarSparseQuantizer::<u16, EIn::OutputValueType, FixedU8Q, DotProduct>::new(dim, dim);
+
+        // Pre-quantize to FixedU8Q to satisfy DotVByte training requirements and reuse for insertion
+        let quantized_data: Vec<_> =
+            crate::datasets::sparse_dataset::SparseDatasetIter::new(&dataset)
+                .map(|v| scalar.encode_vector(SparseVector1DView::new(v.components(), v.values())))
+                .collect();
+
+        let mut dotvbyte_quantizer = crate::DotVByteFixedU8Quantizer::new(dim, dim);
+
+        dotvbyte_quantizer.train(
+            quantized_data
+                .iter()
+                .map(|v| SparseVector1DView::new(v.components(), v.values())),
+        );
 
         let mut growable = PackedDatasetGrowable::new(dotvbyte_quantizer);
 
-        for v in dataset.iter() {
-            let v_fixedu8 = scalar.encode_vector(SparseVector1D::new(
-                v.components_as_slice(),
-                v.values_as_slice(),
-            )); // convert to FixedU8Q representation
-
-            growable.push(SparseVector1D::new(
-                v_fixedu8.components_as_slice(),
-                v_fixedu8.values_as_slice(),
-            ));
+        for v in quantized_data {
+            growable.push(SparseVector1DView::new(v.components(), v.values()));
         }
 
         let mut packed: PackedDataset<crate::DotVByteFixedU8Quantizer> = growable.into();
         packed.nnz = dataset.nnz();
         packed
-
-        // Old direct encoding path (kept for reference):
-        // let mut offsets: Vec<usize> = Vec::with_capacity(dataset.len() + 1);
-        // offsets.push(0);
-        // let mut data = Vec::with_capacity(dataset.nnz() / 3); // overallocate, estimated 21 bits per entry
-        //
-        // for v in dataset.iter() {
-        //     let v_fixedu8 = scalar.quantize_vector(v); // convert to FixedU8Q representation
-        //
-        //     dotvbyte_quantizer.extend_with_encode(v_fixedu8, &mut data);
-        //
-        //     offsets.push(data.len());
-        // }
-        //
-        // Self {
-        //     offsets: offsets.into_boxed_slice(),
-        //     data: data.into_boxed_slice(),
-        //     quantizer: dotvbyte_quantizer,
-        //     nnz: dataset.nnz(),
-        // }
-    }
-}
-
-impl<EIn, S> From<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
-    for PackedDataset<crate::DotVByteFixedU8Quantizer>
-where
-    EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
-    <EIn as crate::VectorEncoder>::OutputValueType: crate::ValueType + crate::Float,
-    for<'a> <EIn as crate::VectorEncoder>::EncodedVectorType<'a>: crate::Vector1D<
-        Component = <EIn as crate::VectorEncoder>::OutputComponentType,
-        Value = <EIn as crate::VectorEncoder>::OutputValueType,
-    >,
-    S: crate::core::storage::SparseStorage<EIn>,
-{
-    fn from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>) -> Self {
-        Self::convert_from(dataset)
     }
 }
 
@@ -378,10 +304,11 @@ mod tests {
         use crate::GrowableDataset;
         use crate::QueryEvaluator as _;
         use crate::VectorEncoder as _;
+        use crate::core::vector1d::SparseVector1DView;
         use crate::distances::Distance as _;
         use crate::{
             DotProduct, DotVByteFixedU8Quantizer, FixedU8Q, FromF32 as _, PlainSparseDataset,
-            PlainSparseDatasetGrowable, SparseVector1D,
+            PlainSparseDatasetGrowable,
         };
         use num_traits::ToPrimitive as _;
 
@@ -389,27 +316,25 @@ mod tests {
 
         let mut growable: PlainSparseDatasetGrowable<u16, f32, DotProduct> =
             PlainSparseDatasetGrowable::new(
-                <crate::PlainSparseQuantizer<u16, f32, DotProduct> as crate::VectorEncoder>::new(
-                    dim, dim,
-                ),
+                crate::PlainSparseQuantizer::<u16, f32, DotProduct>::new(dim, dim),
             );
 
         let v0_components = vec![1_u16, 10, 100];
         let v0_values = vec![1.5_f32, 2.0, 2.5];
 
-        growable.push(SparseVector1D::new(&v0_components, &v0_values));
+        growable.push(SparseVector1DView::new(&v0_components, &v0_values));
 
         let v1_components = vec![2_u16, 11];
         let v1_values = vec![0.5_f32, 1.0];
 
-        growable.push(SparseVector1D::new(&v1_components, &v1_values));
+        growable.push(SparseVector1DView::new(&v1_components, &v1_values));
 
         let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
 
         let dataset: PackedDataset<DotVByteFixedU8Quantizer> = frozen.into();
 
-        let query = SparseVector1D::new(&[1_u16, 10, 11][..], &[2.0_f32, 3.0, 4.0][..]);
-        let evaluator = dataset.encoder().query_evaluator(query);
+        let query = SparseVector1DView::new(&[1_u16, 10, 11][..], &[2.0_f32, 3.0, 4.0][..]);
+        let mut evaluator = dataset.encoder().query_evaluator(query);
 
         let d0 = evaluator.compute_distance(dataset.get(0)).distance();
         let d1 = evaluator.compute_distance(dataset.get(1)).distance();
@@ -424,21 +349,22 @@ mod tests {
 
     #[test]
     fn packed_growable_immutable_roundtrip() {
+        use crate::PackedDatasetGrowable;
+        use crate::core::vector1d::SparseVector1DView;
         use crate::{DotVByteFixedU8Quantizer, FixedU8Q, GrowableDataset, PackedDataset};
-        use crate::{PackedDatasetGrowable, SparseVector1D};
 
         let dim = 8;
-        let quantizer = <DotVByteFixedU8Quantizer as crate::VectorEncoder>::new(dim, dim);
+        let quantizer = DotVByteFixedU8Quantizer::new(dim, dim);
         let mut growable = PackedDatasetGrowable::new(quantizer);
 
-        growable.push(SparseVector1D::new(
+        growable.push(SparseVector1DView::new(
             &[1_u16, 4],
             &[
                 FixedU8Q::from_f32_saturating(1.0),
                 FixedU8Q::from_f32_saturating(2.0),
             ],
         ));
-        growable.push(SparseVector1D::new(
+        growable.push(SparseVector1DView::new(
             &[2_u16],
             &[FixedU8Q::from_f32_saturating(3.0)],
         ));
@@ -448,7 +374,7 @@ mod tests {
         assert_eq!(frozen.nnz(), 3);
 
         let mut growable_again: PackedDatasetGrowable<DotVByteFixedU8Quantizer> = frozen.into();
-        growable_again.push(SparseVector1D::new(
+        growable_again.push(SparseVector1DView::new(
             &[7_u16],
             &[FixedU8Q::from_f32_saturating(4.0)],
         ));

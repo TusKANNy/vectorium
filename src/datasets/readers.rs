@@ -176,8 +176,7 @@ where
     let input_dim = max_component.map_or(0, |m| m + 1);
 
     // Pass 2: construct dataset and re-read, now that the dimensionality is known.
-    let quantizer =
-        <PlainSparseQuantizer<C, V, D> as crate::VectorEncoder>::new(input_dim, input_dim);
+    let quantizer = PlainSparseQuantizer::<C, V, D>::new(input_dim, input_dim);
     let mut data = PlainSparseDatasetGrowable::<C, V, D>::new(quantizer);
 
     let mut br = BufReader::new(File::open(path)?);
@@ -190,7 +189,7 @@ where
         )));
     }
 
-    use crate::SparseVector1D;
+    use crate::core::vector1d::SparseVector1DView; // Import View
 
     for _ in 0..n_vecs {
         br.read_exact(&mut buffer_d)?;
@@ -224,7 +223,7 @@ where
             values.push(v);
         }
 
-        let sparse_vec = SparseVector1D::new(components.as_slice(), values.as_slice());
+        let sparse_vec = SparseVector1DView::new(components.as_slice(), values.as_slice());
         data.push(sparse_vec);
     }
 
