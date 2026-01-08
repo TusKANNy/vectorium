@@ -86,8 +86,8 @@ pub use datasets::readers;
 pub use datasets::readers::{read_npy_f32, read_seismic_format};
 
 /// Marker for types used as values in a dataset.
-pub trait ValueType: Copy + Send + Sync + 'static + ToPrimitive {}
-impl<T> ValueType for T where T: Copy + Send + Sync + 'static + ToPrimitive {}
+pub trait ValueType: Copy + Send + Sync + 'static + ToPrimitive + PartialOrd {}
+impl<T> ValueType for T where T: Copy + Send + Sync + 'static + ToPrimitive + PartialOrd {}
 
 /// Marker for types used as components in a dataset.
 pub trait ComponentType: AsPrimitive<usize> + Copy + Send + Sync + 'static + Ord {}
