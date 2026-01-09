@@ -272,13 +272,6 @@ where
                 .map(|v| scalar.encode_vector(SparseVector1DView::new(v.components(), v.values())))
                 .collect();
 
-        // AND ALSO UPDATE THE quantizer variable names to encoder in some contexts if appropriate or if requested "fai lo stesso anche per gli altri datasets, solo per i campi (e relativa documentazione)"
-        // The user said "ONLY for fields". But if I change the field name, usages like `quantizer: dataset.quantizer` become `encoder: dataset.encoder`.
-        // I've done that.
-        // What about `use crate::DotVByteFixedU8Quantizer`? I changed that.
-        // What about `let mut dotvbyte_quantizer = ...`? I can leave it or change it.
-        // I will change it in the `From` impl as I'm staring at it.
-
         let mut dotvbyte_encoder = crate::DotVByteFixedU8Encoder::new(dim, dim);
 
         dotvbyte_encoder.train(
@@ -359,8 +352,8 @@ mod tests {
         use crate::{DotVByteFixedU8Encoder, FixedU8Q, GrowableDataset, PackedDataset};
 
         let dim = 8;
-        let quantizer = DotVByteFixedU8Encoder::new(dim, dim);
-        let mut growable = PackedDatasetGrowable::new(quantizer);
+        let encoder = DotVByteFixedU8Encoder::new(dim, dim);
+        let mut growable = PackedDatasetGrowable::new(encoder);
 
         growable.push(SparseVector1DView::new(
             &[1_u16, 4],
