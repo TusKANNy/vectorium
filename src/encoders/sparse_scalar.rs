@@ -104,7 +104,6 @@ where
             OutValue::from_f32_saturating(f32_val)
         }));
     }
-
 }
 
 impl<C, InValue, OutValue, D> VectorEncoder for ScalarSparseQuantizer<C, InValue, OutValue, D>
