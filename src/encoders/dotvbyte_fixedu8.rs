@@ -5,7 +5,7 @@ mod swizzle;
 
 use crate::core::sealed;
 use crate::core::vector_encoder::{PackedSparseVectorEncoder, QueryEvaluator, VectorEncoder};
-use crate::core::vector1d::{PackedVectorView, SparseVector1DView};
+use crate::core::vector::{PackedVectorView, SparseVectorView};
 use crate::distances::DotProduct;
 use crate::{FixedU8Q, SpaceUsage, ValueType};
 use num_traits::{AsPrimitive, ToPrimitive};
@@ -63,7 +63,7 @@ impl PackedSparseVectorEncoder for DotVByteFixedU8Encoder {
 
     fn push_encoded<'a, OutputContainer>(
         &self,
-        input: SparseVector1DView<'a, Self::InputComponentType, Self::InputValueType>,
+        input: SparseVectorView<'a, Self::InputComponentType, Self::InputValueType>,
         output: &mut OutputContainer,
     ) where
         OutputContainer: Extend<Self::PackedValueType>,
@@ -120,7 +120,7 @@ impl DotVByteFixedU8Encoder {
 
     pub fn train<'a, V>(
         &mut self,
-        training_data: impl Iterator<Item = SparseVector1DView<'a, u16, V>>,
+        training_data: impl Iterator<Item = SparseVectorView<'a, u16, V>>,
     ) where
         V: ValueType,
     {
@@ -133,9 +133,9 @@ impl DotVByteFixedU8Encoder {
 
 impl VectorEncoder for DotVByteFixedU8Encoder {
     type Distance = DotProduct;
-    type InputVector<'a> = SparseVector1DView<'a, u16, FixedU8Q>;
+    type InputVector<'a> = SparseVectorView<'a, u16, FixedU8Q>;
     type QueryVector<'a, V>
-        = SparseVector1DView<'a, u16, V>
+        = SparseVectorView<'a, u16, V>
     where
         V: ValueType;
     type EncodedVector<'a> = PackedVectorView<'a, u64>;
@@ -172,7 +172,7 @@ pub struct DotVByteFixedU8QueryEvaluator<'a, V: ValueType> {
 
 impl<'a, V: ValueType> DotVByteFixedU8QueryEvaluator<'a, V> {
     #[inline]
-    pub fn new(query: SparseVector1DView<'a, u16, V>, quantizer: &DotVByteFixedU8Encoder) -> Self {
+    pub fn new(query: SparseVectorView<'a, u16, V>, quantizer: &DotVByteFixedU8Encoder) -> Self {
         let max_c = query
             .components()
             .iter()

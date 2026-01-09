@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
 use crate::core::vector_encoder::{
-    DenseVector1DOwned, QueryEvaluator, SparseVectorEncoder, VectorEncoder,
+    DenseVectorOwned, QueryEvaluator, SparseVectorEncoder, VectorEncoder,
 };
-use crate::core::vector1d::SparseVector1DView;
+use crate::core::vector::SparseVectorView;
 use crate::distances::{
     Distance, DotProduct, dot_product_dense_sparse_unchecked,
     dot_product_sparse_with_merge_unchecked,
@@ -17,9 +17,9 @@ use crate::{ComponentType, Float, FromF32, SpaceUsage, ValueType};
 pub trait ScalarSparseSupportedDistance: Distance {
     /// Compute distance between a dense query and a sparse encoded vector
     fn compute_sparse<C: ComponentType, Q: ValueType, V: ValueType + Float>(
-        dense_query: &Option<DenseVector1DOwned<Q>>,
-        query: SparseVector1DView<'_, C, Q>,
-        vector_sparse: SparseVector1DView<'_, C, V>,
+        dense_query: &Option<DenseVectorOwned<Q>>,
+        query: SparseVectorView<'_, C, Q>,
+        vector_sparse: SparseVectorView<'_, C, V>,
     ) -> Self;
 }
 
@@ -28,9 +28,9 @@ pub trait ScalarSparseSupportedDistance: Distance {
 impl ScalarSparseSupportedDistance for DotProduct {
     #[inline]
     fn compute_sparse<C: ComponentType, Q: ValueType, V: ValueType + Float>(
-        dense_query: &Option<DenseVector1DOwned<Q>>,
-        query: SparseVector1DView<'_, C, Q>,
-        vector_sparse: SparseVector1DView<'_, C, V>,
+        dense_query: &Option<DenseVectorOwned<Q>>,
+        query: SparseVectorView<'_, C, Q>,
+        vector_sparse: SparseVectorView<'_, C, V>,
     ) -> Self {
         // If query is dense (for small dimensions), use dense-sparse dot product
         if let Some(dense_q) = dense_query {
@@ -91,7 +91,7 @@ where
 
     fn push_encoded<'a, ComponentContainer, ValueContainer>(
         &self,
-        input: SparseVector1DView<'a, C, InValue>,
+        input: SparseVectorView<'a, C, InValue>,
         components: &mut ComponentContainer,
         values: &mut ValueContainer,
     ) where
@@ -114,12 +114,12 @@ where
     D: ScalarSparseSupportedDistance,
 {
     type Distance = D;
-    type InputVector<'a> = SparseVector1DView<'a, C, InValue>;
+    type InputVector<'a> = SparseVectorView<'a, C, InValue>;
     type QueryVector<'a, V>
-        = SparseVector1DView<'a, C, V>
+        = SparseVectorView<'a, C, V>
     where
         V: ValueType;
-    type EncodedVector<'a> = SparseVector1DView<'a, C, OutValue>;
+    type EncodedVector<'a> = SparseVectorView<'a, C, OutValue>;
 
     type Evaluator<'a, V>
         = ScalarSparseQueryEvaluator<'a, C, OutValue, D, V>
@@ -154,7 +154,7 @@ where
     D: ScalarSparseSupportedDistance,
     V: ValueType,
 {
-    dense_query: Option<DenseVector1DOwned<f32>>,
+    dense_query: Option<DenseVectorOwned<f32>>,
     query_values: Vec<f32>,
     query_components: &'a [C],
     _phantom: PhantomData<(OutValue, D, V)>,
@@ -168,7 +168,7 @@ where
     V: ValueType,
 {
     pub fn new<InValue>(
-        query: SparseVector1DView<'a, C, V>,
+        query: SparseVectorView<'a, C, V>,
         quantizer: &ScalarSparseQuantizer<C, InValue, OutValue, D>,
     ) -> Self
     where
@@ -198,7 +198,7 @@ where
             for (&i, &v) in query.components().iter().zip(query.values().iter()) {
                 dense_query_vec[i.as_()] = v.to_f32().expect("Failed to convert value to f32");
             }
-            Some(DenseVector1DOwned::new(dense_query_vec))
+            Some(DenseVectorOwned::new(dense_query_vec))
         } else {
             assert!(
                 is_strictly_sorted(query.components()),
@@ -222,7 +222,7 @@ where
     }
 }
 
-impl<'a, 'v, C, OutValue, D, V> QueryEvaluator<SparseVector1DView<'v, C, OutValue>>
+impl<'a, 'v, C, OutValue, D, V> QueryEvaluator<SparseVectorView<'v, C, OutValue>>
     for ScalarSparseQueryEvaluator<'a, C, OutValue, D, V>
 where
     C: ComponentType,
@@ -233,8 +233,8 @@ where
     type Distance = D;
 
     #[inline]
-    fn compute_distance(&mut self, vector: SparseVector1DView<'v, C, OutValue>) -> D {
-        let query_view = SparseVector1DView::new(self.query_components, &self.query_values);
+    fn compute_distance(&mut self, vector: SparseVectorView<'v, C, OutValue>) -> D {
+        let query_view = SparseVectorView::new(self.query_components, &self.query_values);
         D::compute_sparse(&self.dense_query, query_view, vector)
     }
 }

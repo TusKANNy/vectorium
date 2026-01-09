@@ -27,7 +27,7 @@ pub use core::dataset;
 pub use core::distances;
 pub use core::storage;
 pub use core::vector_encoder;
-pub use core::vector1d;
+pub use core::vector;
 pub use utils::numeric_markers;
 pub use utils::space_usage;
 
@@ -35,9 +35,9 @@ pub use utils::numeric_markers::{Float, FromF32};
 pub use utils::space_usage::SpaceUsage;
 
 #[allow(non_snake_case)]
-pub use core::vector1d::{
-    DenseVector1DOwned, DenseVector1DView, PackedVectorOwned, PackedVectorView,
-    SparseVector1DOwned, SparseVector1DView, Vector1DViewTrait,
+pub use core::vector::{
+    DenseVectorOwned, DenseVectorView, PackedVectorOwned, PackedVectorView,
+    SparseVectorOwned, SparseVectorView, VectorView,
 };
 
 pub use core::distances::{Distance, DotProduct, SquaredEuclideanDistance};
@@ -63,7 +63,7 @@ pub use core::storage::{
     GrowableSparseStorage, ImmutableSparseStorage, SparseStorage, SparseStorageMut,
 };
 pub use datasets::dense_dataset::{DenseDataset, DenseDatasetGeneric, DenseDatasetGrowable};
-pub use datasets::packed_dataset::{PackedDataset, PackedDatasetGeneric, PackedDatasetGrowable};
+pub use datasets::packed_dataset::{PackedSparseDataset, PackedSparseDatasetGeneric, PackedSparseDatasetGrowable};
 pub use datasets::sparse_dataset::{SparseDataset, SparseDatasetGrowable};
 
 // Useful type aliases for dense dataset types

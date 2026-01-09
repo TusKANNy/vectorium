@@ -4,7 +4,7 @@ use crate::SpaceUsage;
 use crate::core::sealed;
 use crate::core::vector_encoder::{DenseVectorEncoder, VectorEncoder};
 use crate::{Dataset, GrowableDataset};
-// use crate::{DenseVector1DView};
+// use crate::{DenseVectorView};
 
 use rayon::prelude::*;
 
@@ -87,7 +87,7 @@ where
         (0..n).into_par_iter().map(move |i| {
             let start = i * m;
             let end = start + m;
-            DenseVector1DView::new(&data[start..end])
+            DenseVectorView::new(&data[start..end])
         })
     }
 }
@@ -114,12 +114,12 @@ where
         let m = self.encoder.output_dim();
         let start = index * m;
         let end = start + m;
-        DenseVector1DView::new(&self.data.as_ref()[start..end])
+        DenseVectorView::new(&self.data.as_ref()[start..end])
     }
 
     #[inline]
     fn get_with_range(&self, range: std::ops::Range<usize>) -> E::EncodedVector<'_> {
-        DenseVector1DView::new(&self.data.as_ref()[range])
+        DenseVectorView::new(&self.data.as_ref()[range])
     }
 
     #[inline]
@@ -131,7 +131,7 @@ where
         (0..n).map(move |i| {
             let start = i * m;
             let end = start + m;
-            DenseVector1DView::new(&data[start..end])
+            DenseVectorView::new(&data[start..end])
         })
     }
 
@@ -145,11 +145,11 @@ where
 // We need to implement push which takes EncodedVector?
 // No, GrowableDataset takes InputVectorType to push.
 // But InputVectorType was removed from VectorEncoder trait.
-// It is now defined by `encode_vector` method signature which takes `DenseVector1DView`.
+// It is now defined by `encode_vector` method signature which takes `DenseVectorView`.
 // So we should adapt `GrowableDataset` trait or implementation.
 // `DenseDatasetGeneric` assumes inputs are compatible with `E`.
 
-use crate::core::vector1d::DenseVector1DView;
+use crate::core::vector::DenseVectorView;
 use crate::{Float, FromF32, ValueType};
 
 impl<E> GrowableDataset for DenseDatasetGeneric<E, Vec<E::OutputValueType>>
@@ -258,7 +258,7 @@ where
         let src_data = source.data.as_ref();
 
         for chunk in src_data.chunks_exact(m) {
-            let vec_view = DenseVector1DView::new(chunk);
+            let vec_view = DenseVectorView::new(chunk);
             let encoded = encoder.encode_vector(vec_view);
             new_data.extend_from_slice(encoded.values());
         }

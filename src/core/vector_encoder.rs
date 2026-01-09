@@ -1,11 +1,11 @@
-pub use crate::core::vector1d::{
-    DenseVector1DOwned, DenseVector1DView, PackedVectorOwned, PackedVectorView,
-    SparseVector1DOwned, SparseVector1DView, Vector1DViewTrait,
+pub use crate::core::vector::{
+    DenseVectorOwned, DenseVectorView, PackedVectorOwned, PackedVectorView,
+    SparseVectorOwned, SparseVectorView, VectorView,
 };
 use crate::{ComponentType, SpaceUsage, ValueType};
 
 /// A query evaluator computes distances between a query and encoded vectors.
-pub trait QueryEvaluator<V: Vector1DViewTrait> {
+pub trait QueryEvaluator<V: VectorView> {
     type Distance: Copy + Ord;
 
     fn compute_distance(&mut self, vector: V) -> Self::Distance;
@@ -15,14 +15,14 @@ pub trait QueryEvaluator<V: Vector1DViewTrait> {
 pub trait VectorEncoder: Send + Sync + SpaceUsage {
     type Distance: Copy + Ord;
 
-    type InputVector<'a>: Vector1DViewTrait;
+    type InputVector<'a>: VectorView;
 
-    type QueryVector<'a, V>: Vector1DViewTrait
+    type QueryVector<'a, V>: VectorView
     where
         V: ValueType,
         Self: 'a;
 
-    type EncodedVector<'a>: Vector1DViewTrait;
+    type EncodedVector<'a>: VectorView;
 
     type Evaluator<'a, V>: for<'b> QueryEvaluator<Self::EncodedVector<'b>, Distance = Self::Distance>
     where
@@ -39,8 +39,8 @@ pub trait VectorEncoder: Send + Sync + SpaceUsage {
 
 pub trait DenseVectorEncoder:
     for<'a> VectorEncoder<
-        InputVector<'a> = DenseVector1DView<'a, Self::InputValueType>,
-        EncodedVector<'a> = DenseVector1DView<'a, Self::OutputValueType>,
+        InputVector<'a> = DenseVectorView<'a, Self::InputValueType>,
+        EncodedVector<'a> = DenseVectorView<'a, Self::OutputValueType>,
     >
 {
     type InputValueType: ValueType;
@@ -56,17 +56,17 @@ pub trait DenseVectorEncoder:
     fn encode_vector<'a>(
         &self,
         input: Self::InputVector<'a>,
-    ) -> DenseVector1DOwned<Self::OutputValueType> {
+    ) -> DenseVectorOwned<Self::OutputValueType> {
         let mut values = Vec::new();
         self.push_encoded(input, &mut values);
-        DenseVector1DOwned::new(values)
+        DenseVectorOwned::new(values)
     }
 }
 
 pub trait SparseVectorEncoder:
     for<'a> VectorEncoder<
-        InputVector<'a> = SparseVector1DView<'a, Self::InputComponentType, Self::InputValueType>,
-        EncodedVector<'a> = SparseVector1DView<
+        InputVector<'a> = SparseVectorView<'a, Self::InputComponentType, Self::InputValueType>,
+        EncodedVector<'a> = SparseVectorView<
             'a,
             Self::OutputComponentType,
             Self::OutputValueType,
@@ -90,17 +90,17 @@ pub trait SparseVectorEncoder:
     fn encode_vector<'a>(
         &self,
         input: Self::InputVector<'a>,
-    ) -> SparseVector1DOwned<Self::OutputComponentType, Self::OutputValueType> {
+    ) -> SparseVectorOwned<Self::OutputComponentType, Self::OutputValueType> {
         let mut components = Vec::new();
         let mut values = Vec::new();
         self.push_encoded(input, &mut components, &mut values);
-        SparseVector1DOwned::new(components, values)
+        SparseVectorOwned::new(components, values)
     }
 }
 
 pub trait PackedSparseVectorEncoder:
     for<'a> VectorEncoder<
-        InputVector<'a> = SparseVector1DView<'a, Self::InputComponentType, Self::InputValueType>,
+        InputVector<'a> = SparseVectorView<'a, Self::InputComponentType, Self::InputValueType>,
         EncodedVector<'a> = PackedVectorView<'a, Self::PackedValueType>,
     >
 {

@@ -6,7 +6,7 @@ use crate::core::distances::{
     squared_euclidean_distance_dense_unchecked,
 };
 use crate::core::vector_encoder::{DenseVectorEncoder, QueryEvaluator, VectorEncoder};
-use crate::core::vector1d::DenseVector1DView;
+use crate::core::vector::DenseVectorView;
 use crate::{Float, FromF32, SpaceUsage, ValueType};
 
 /// Marker trait for distance types supported by scalar dense quantizers.
@@ -14,15 +14,15 @@ use crate::{Float, FromF32, SpaceUsage, ValueType};
 pub trait ScalarDenseSupportedDistance: Distance {
     /// Compute distance between two dense float vectors
     fn compute_dense<Q: ValueType + Float, V: ValueType + Float>(
-        query: DenseVector1DView<'_, Q>,
-        vector: DenseVector1DView<'_, V>,
+        query: DenseVectorView<'_, Q>,
+        vector: DenseVectorView<'_, V>,
     ) -> Self;
 }
 
 impl ScalarDenseSupportedDistance for SquaredEuclideanDistance {
     fn compute_dense<Q: ValueType + Float, V: ValueType + Float>(
-        query: DenseVector1DView<'_, Q>,
-        vector: DenseVector1DView<'_, V>,
+        query: DenseVectorView<'_, Q>,
+        vector: DenseVectorView<'_, V>,
     ) -> Self {
         assert_eq!(
             query.len(),
@@ -35,8 +35,8 @@ impl ScalarDenseSupportedDistance for SquaredEuclideanDistance {
 
 impl ScalarDenseSupportedDistance for DotProduct {
     fn compute_dense<Q: ValueType + Float, V: ValueType + Float>(
-        query: DenseVector1DView<'_, Q>,
-        vector: DenseVector1DView<'_, V>,
+        query: DenseVectorView<'_, Q>,
+        vector: DenseVectorView<'_, V>,
     ) -> Self {
         let q_len = query.len();
         let v_len = vector.len();
@@ -80,7 +80,7 @@ where
 
     fn push_encoded<'a, OutputContainer>(
         &self,
-        input: DenseVector1DView<'a, Self::InputValueType>,
+        input: DenseVectorView<'a, Self::InputValueType>,
         output: &mut OutputContainer,
     ) where
         OutputContainer: Extend<Self::OutputValueType>,
@@ -110,7 +110,7 @@ where
     D: ScalarDenseSupportedDistance,
     V: ValueType,
 {
-    pub fn new(query: DenseVector1DView<'a, V>) -> Self {
+    pub fn new(query: DenseVectorView<'a, V>) -> Self {
         let query_converted: Vec<Out> = query
             .values()
             .iter()
@@ -127,7 +127,7 @@ where
     }
 }
 
-impl<'a, 'v, Out, D, V> QueryEvaluator<DenseVector1DView<'v, Out>>
+impl<'a, 'v, Out, D, V> QueryEvaluator<DenseVectorView<'v, Out>>
     for ScalarDenseQueryEvaluator<'a, Out, D, V>
 where
     Out: ValueType + Float + FromF32,
@@ -137,8 +137,8 @@ where
     type Distance = D;
 
     #[inline]
-    fn compute_distance(&mut self, vector: DenseVector1DView<'v, Out>) -> D {
-        D::compute_dense(DenseVector1DView::new(&self.query), vector)
+    fn compute_distance(&mut self, vector: DenseVectorView<'v, Out>) -> D {
+        D::compute_dense(DenseVectorView::new(&self.query), vector)
     }
 }
 
@@ -149,12 +149,12 @@ where
     D: ScalarDenseSupportedDistance,
 {
     type Distance = D;
-    type InputVector<'a> = DenseVector1DView<'a, In>;
+    type InputVector<'a> = DenseVectorView<'a, In>;
     type QueryVector<'a, V>
-        = DenseVector1DView<'a, V>
+        = DenseVectorView<'a, V>
     where
         V: ValueType;
-    type EncodedVector<'a> = DenseVector1DView<'a, Out>;
+    type EncodedVector<'a> = DenseVectorView<'a, Out>;
 
     type Evaluator<'a, V>
         = ScalarDenseQueryEvaluator<'a, Out, D, V>

@@ -11,7 +11,7 @@
 //! `DotProduct` implements reversed ordering: larger values are considered
 //! better.
 
-use crate::core::vector1d::{DenseVector1DView, SparseVector1DView};
+use crate::core::vector::{DenseVectorView, SparseVectorView};
 use crate::utils::is_strictly_sorted;
 use crate::{ComponentType, ValueType};
 
@@ -112,8 +112,8 @@ impl Ord for DotProduct {
 #[inline]
 #[must_use]
 pub fn dot_product_dense_sparse<C, Q, V>(
-    query: DenseVector1DView<'_, Q>,
-    vector: SparseVector1DView<'_, C, V>,
+    query: DenseVectorView<'_, Q>,
+    vector: SparseVectorView<'_, C, V>,
 ) -> DotProduct
 where
     C: ComponentType,
@@ -140,8 +140,8 @@ where
 #[inline]
 #[must_use]
 pub unsafe fn dot_product_dense_sparse_unchecked<C, Q, V>(
-    query: DenseVector1DView<'_, Q>,
-    vector: SparseVector1DView<'_, C, V>,
+    query: DenseVectorView<'_, Q>,
+    vector: SparseVectorView<'_, C, V>,
 ) -> DotProduct
 where
     C: ComponentType,
@@ -165,8 +165,8 @@ where
 #[inline]
 #[must_use]
 pub fn dot_product_sparse_with_merge<C, Q, V>(
-    query: SparseVector1DView<'_, C, Q>,
-    vector: SparseVector1DView<'_, C, V>,
+    query: SparseVectorView<'_, C, Q>,
+    vector: SparseVectorView<'_, C, V>,
 ) -> DotProduct
 where
     C: ComponentType,
@@ -188,8 +188,8 @@ where
 #[inline]
 #[must_use]
 pub unsafe fn dot_product_sparse_with_merge_unchecked<C, Q, V>(
-    query: SparseVector1DView<'_, C, Q>,
-    vector: SparseVector1DView<'_, C, V>,
+    query: SparseVectorView<'_, C, Q>,
+    vector: SparseVectorView<'_, C, V>,
 ) -> DotProduct
 where
     C: ComponentType,
@@ -233,8 +233,8 @@ where
 #[inline]
 #[must_use]
 pub fn dot_product_dense<Q, V>(
-    query: DenseVector1DView<'_, Q>,
-    vector: DenseVector1DView<'_, V>,
+    query: DenseVectorView<'_, Q>,
+    vector: DenseVectorView<'_, V>,
 ) -> DotProduct
 where
     Q: ValueType,
@@ -252,8 +252,8 @@ where
 #[inline]
 #[must_use]
 pub unsafe fn dot_product_dense_unchecked<Q, V>(
-    query: DenseVector1DView<'_, Q>,
-    vector: DenseVector1DView<'_, V>,
+    query: DenseVectorView<'_, Q>,
+    vector: DenseVectorView<'_, V>,
 ) -> DotProduct
 where
     Q: ValueType,
@@ -272,8 +272,8 @@ where
 #[inline]
 #[must_use]
 pub fn squared_euclidean_distance_dense<Q, V>(
-    query: DenseVector1DView<'_, Q>,
-    vector: DenseVector1DView<'_, V>,
+    query: DenseVectorView<'_, Q>,
+    vector: DenseVectorView<'_, V>,
 ) -> SquaredEuclideanDistance
 where
     Q: ValueType,
@@ -291,8 +291,8 @@ where
 #[inline]
 #[must_use]
 pub unsafe fn squared_euclidean_distance_dense_unchecked<Q, V>(
-    query: DenseVector1DView<'_, Q>,
-    vector: DenseVector1DView<'_, V>,
+    query: DenseVectorView<'_, Q>,
+    vector: DenseVectorView<'_, V>,
 ) -> SquaredEuclideanDistance
 where
     Q: ValueType,
@@ -317,15 +317,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::vector1d::{DenseVector1DView, SparseVector1DView};
+    use crate::core::vector::{DenseVectorView, SparseVectorView};
 
     #[test]
     fn dot_product_dense_sparse_basic() {
         let query_data = &[1.0f32, 2.0, 3.0];
-        let query = DenseVector1DView::new(query_data);
+        let query = DenseVectorView::new(query_data);
         let comps: &[usize] = &[0usize, 2usize];
         let vals: &[f32] = &[1.0f32, 1.0f32];
-        let v = SparseVector1DView::new(comps, vals);
+        let v = SparseVectorView::new(comps, vals);
 
         let result = dot_product_dense_sparse(query, v);
         assert_eq!(result, DotProduct::from(4.0f32));

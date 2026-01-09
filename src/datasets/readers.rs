@@ -189,7 +189,7 @@ where
         )));
     }
 
-    use crate::core::vector1d::SparseVector1DView; // Import View
+    use crate::core::vector::SparseVectorView; // Import View
 
     for _ in 0..n_vecs {
         br.read_exact(&mut buffer_d)?;
@@ -223,7 +223,7 @@ where
             values.push(v);
         }
 
-        let sparse_vec = SparseVector1DView::new(components.as_slice(), values.as_slice());
+        let sparse_vec = SparseVectorView::new(components.as_slice(), values.as_slice());
         data.push(sparse_vec);
     }
 

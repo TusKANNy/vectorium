@@ -170,7 +170,7 @@ pub trait DenseData: Dataset {}
 /// This covers both "plain" sparse datasets (using `SparseVectorEncoder`) and
 /// "packed" sparse datasets (using `PackedSparseVectorEncoder`).
 ///
-/// While `SparseDataset` and `PackedDataset` are distinct types with distinct memory layouts
+/// While `SparseDataset` and `PackedSparseDataset` are distinct types with distinct memory layouts
 /// enforced by their specific encoders, they both logically represent sparse data.
 /// This trait allows downstream code to treat them uniformly when the exact storage details
 /// (e.g., whether it's component-value pairs or bit-packed blocks) are abstracted away.

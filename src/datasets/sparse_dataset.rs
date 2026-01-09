@@ -5,7 +5,7 @@ use crate::SpaceUsage;
 use crate::core::sealed;
 use crate::core::storage::{GrowableSparseStorage, ImmutableSparseStorage, SparseStorage};
 use crate::core::vector_encoder::{SparseVectorEncoder, VectorEncoder};
-use crate::core::vector1d::{SparseVector1DView, Vector1DViewTrait};
+use crate::core::vector::{SparseVectorView, VectorView};
 use crate::utils::is_strictly_sorted;
 use crate::{ComponentType, Float, FromF32, ValueType, VectorId};
 use crate::{Dataset, GrowableDataset, SparseData};
@@ -46,12 +46,12 @@ pub type SparseDataset<E> = SparseDatasetGeneric<E, ImmutableSparseStorage<E>>;
 /// ```
 /// use vectorium::{
 ///     Dataset, DotProduct, GrowableDataset, PlainSparseDataset, PlainSparseQuantizer,
-///     SparseDatasetGrowable, SparseVector1DView, Vector1DViewTrait, VectorEncoder,
+///     SparseDatasetGrowable, SparseVectorView, VectorView, VectorEncoder,
 /// };
 ///
 /// let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);
 /// let mut dataset = SparseDatasetGrowable::new(quantizer);
-/// dataset.push(SparseVector1DView::new(&[1_u16, 3], &[1.0, 2.0]));
+/// dataset.push(SparseVectorView::new(&[1_u16, 3], &[1.0, 2.0]));
 ///
 /// let frozen: PlainSparseDataset<u16, f32, DotProduct> = dataset.into();
 /// let v = frozen.get(0);
@@ -110,7 +110,7 @@ where
         idx as VectorId
     }
 
-    /// Parallel iterator over all vectors as slice-backed `SparseVector1DView`.
+    /// Parallel iterator over all vectors as slice-backed `SparseVectorView`.
     #[inline]
     pub fn par_iter(&self) -> impl IndexedParallelIterator<Item = E::EncodedVector<'_>> + '_
     where
@@ -126,7 +126,7 @@ where
             let &[start, end] = window else {
                 unsafe { std::hint::unreachable_unchecked() }
             };
-            SparseVector1DView::new(&components[start..end], &values[start..end])
+            SparseVectorView::new(&components[start..end], &values[start..end])
         })
     }
 }
@@ -135,7 +135,7 @@ impl<E, S> Dataset for SparseDatasetGeneric<E, S>
 where
     E: SparseVectorEncoder,
     S: SparseStorage<E>,
-    for<'a> E::EncodedVector<'a>: Vector1DViewTrait,
+    for<'a> E::EncodedVector<'a>: VectorView,
 {
     type Encoder = E;
 
@@ -152,14 +152,14 @@ where
     ///
     /// ```rust
     /// use vectorium::{Dataset, GrowableDataset};
-    /// use vectorium::Vector1DViewTrait;
-    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1DView};
+    /// use vectorium::VectorView;
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
     ///
     /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
     /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     ///
-    /// dataset.push(SparseVector1DView::new(&[0, 2, 4], &[1.0, 2.0, 3.0]));
-    /// dataset.push(SparseVector1DView::new(&[1, 3], &[4.0, 5.0]));
+    /// dataset.push(SparseVectorView::new(&[0, 2, 4], &[1.0, 2.0, 3.0]));
+    /// dataset.push(SparseVectorView::new(&[1, 3], &[4.0, 5.0]));
     ///
     /// let v = dataset.get(1);
     /// assert_eq!(v.components(), &[1, 3]);
@@ -180,7 +180,7 @@ where
         let v_components = &components[range.clone()];
         let v_values = &values[range];
 
-        SparseVector1DView::new(v_components, v_values)
+        SparseVectorView::new(v_components, v_values)
     }
 
     #[inline]
@@ -198,8 +198,8 @@ where
     ///
     /// ```rust
     /// use vectorium::{Dataset, GrowableDataset};
-    /// use vectorium::Vector1DViewTrait;
-    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1DView};
+    /// use vectorium::VectorView;
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
     ///
     /// let data = vec![
     ///     (vec![0_u32, 2, 4], vec![1.0_f32, 2.0, 3.0]),
@@ -210,7 +210,7 @@ where
     /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
     /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     /// for (c, v) in data.iter() {
-    ///     dataset.push(SparseVector1DView::new(c.as_slice(), v.as_slice()));
+    ///     dataset.push(SparseVectorView::new(c.as_slice(), v.as_slice()));
     /// }
     ///
     /// for (vec, (c, v)) in dataset.iter().zip(data.iter()) {
@@ -225,7 +225,7 @@ where
         offsets.windows(2).map(move |window| {
             let start = window[0];
             let end = window[1];
-            SparseVector1DView::new(&components[start..end], &values[start..end])
+            SparseVectorView::new(&components[start..end], &values[start..end])
         })
     }
 
@@ -248,14 +248,14 @@ where
     ///
     /// ```rust
     /// use vectorium::{Dataset, GrowableDataset};
-    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1DView};
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
     ///
     /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
     /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     ///
-    /// dataset.push(SparseVector1DView::new(&[0, 2, 4], &[1.0, 2.0, 3.0]));
-    /// dataset.push(SparseVector1DView::new(&[1, 3], &[4.0, 5.0]));
-    /// dataset.push(SparseVector1DView::new(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]));
+    /// dataset.push(SparseVectorView::new(&[0, 2, 4], &[1.0, 2.0, 3.0]));
+    /// dataset.push(SparseVectorView::new(&[1, 3], &[4.0, 5.0]));
+    /// dataset.push(SparseVectorView::new(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]));
     ///
     /// assert_eq!(dataset.len(), 3);
     /// ```
@@ -343,7 +343,7 @@ where
 impl<E> From<SparseDatasetGrowable<E>> for SparseDataset<E>
 where
     E: SparseVectorEncoder,
-    for<'a> E::EncodedVector<'a>: Vector1DViewTrait,
+    for<'a> E::EncodedVector<'a>: VectorView,
 {
     /// Converts a mutable sparse dataset into an immutable one.
     ///
@@ -356,14 +356,14 @@ where
     ///
     /// ```rust
     /// use vectorium::{Dataset, GrowableDataset};
-    /// use vectorium::{DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1DView};
+    /// use vectorium::{DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
     ///
     /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
     /// let mut growable_dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     ///
-    /// growable_dataset.push(SparseVector1DView::new(&[0, 2, 4], &[1.0, 2.0, 3.0]));
-    /// growable_dataset.push(SparseVector1DView::new(&[1, 3], &[4.0, 5.0]));
-    /// growable_dataset.push(SparseVector1DView::new(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]));
+    /// growable_dataset.push(SparseVectorView::new(&[0, 2, 4], &[1.0, 2.0, 3.0]));
+    /// growable_dataset.push(SparseVectorView::new(&[1, 3], &[4.0, 5.0]));
+    /// growable_dataset.push(SparseVectorView::new(&[0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0]));
     ///
     /// let immutable_dataset: PlainSparseDataset<u32, f32, DotProduct> = growable_dataset.into();
     /// assert_eq!(immutable_dataset.nnz(), 9);
@@ -379,7 +379,7 @@ where
 impl<E> From<SparseDataset<E>> for SparseDatasetGrowable<E>
 where
     E: SparseVectorEncoder,
-    for<'a> E::EncodedVector<'a>: Vector1DViewTrait,
+    for<'a> E::EncodedVector<'a>: VectorView,
 {
     /// Converts an immutable sparse dataset into a mutable one.
     ///
@@ -392,19 +392,19 @@ where
     ///
     /// ```rust
     /// use vectorium::{Dataset, GrowableDataset};
-    /// use vectorium::{DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1DView};
+    /// use vectorium::{DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
     ///
     /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
     /// let mut growable_dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     ///
-    /// growable_dataset.push(SparseVector1DView::new(&[0, 2, 4], &[1.0, 2.0, 3.0]));
-    /// growable_dataset.push(SparseVector1DView::new(&[1, 3], &[4.0, 5.0]));
+    /// growable_dataset.push(SparseVectorView::new(&[0, 2, 4], &[1.0, 2.0, 3.0]));
+    /// growable_dataset.push(SparseVectorView::new(&[1, 3], &[4.0, 5.0]));
     ///
     /// let immutable_dataset: PlainSparseDataset<u32, f32, DotProduct> = growable_dataset.into();
     ///
     /// // Convert immutable dataset back to mutable
     /// let mut growable_dataset_again: PlainSparseDatasetGrowable<u32, f32, DotProduct> = immutable_dataset.into();
-    /// growable_dataset_again.push(SparseVector1DView::new(&[1, 4], &[1.0, 3.0]));
+    /// growable_dataset_again.push(SparseVectorView::new(&[1, 4], &[1.0, 3.0]));
     ///
     /// assert_eq!(growable_dataset_again.nnz(), 7);
     /// ```
@@ -579,7 +579,7 @@ where
             );
 
         for src_vec in crate::datasets::sparse_dataset::SparseDatasetIter::new(source) {
-            let encoded = encoder.encode_vector(SparseVector1DView::<C, Mid>::new(
+            let encoded = encoder.encode_vector(SparseVectorView::<C, Mid>::new(
                 src_vec.components(),
                 src_vec.values(),
             ));
@@ -651,7 +651,7 @@ where
     }
 }
 
-/// A struct to iterate over the *raw* sparse dataset storage as slice-backed `SparseVector1DView`.
+/// A struct to iterate over the *raw* sparse dataset storage as slice-backed `SparseVectorView`.
 ///
 /// This iterator is independent from the encoder’s `EncodedVector` choice and is
 /// used by internal utilities (including the parallel iterator plumbing).
@@ -731,11 +731,11 @@ where
     ///
     /// ```rust
     /// use vectorium::{Dataset, GrowableDataset};
-    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1DView};
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
     ///
     /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
     /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
-    /// dataset.push(SparseVector1DView::new(&[0, 2, 4], &[1.0, 2.0, 3.0]));
+    /// dataset.push(SparseVectorView::new(&[0, 2, 4], &[1.0, 2.0, 3.0]));
     ///
     /// assert_eq!(dataset.len(), 1);
     /// assert_eq!(dataset.input_dim(), 5);
@@ -778,7 +778,7 @@ where
     C: ComponentType,
     V: ValueType,
 {
-    type Item = SparseVector1DView<'a, C, V>;
+    type Item = SparseVectorView<'a, C, V>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -795,7 +795,7 @@ where
 
         self.front_base_offset = next_offset;
 
-        Some(SparseVector1DView::new(cur_components, cur_values))
+        Some(SparseVectorView::new(cur_components, cur_values))
     }
 }
 
@@ -826,7 +826,7 @@ where
     /// ```rust
     /// use vectorium::{Dataset, GrowableDataset};
     /// use vectorium::datasets::sparse_dataset::SparseDatasetIter;
-    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVector1DView, Vector1DViewTrait};
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView, VectorView};
     ///
     /// let data = vec![
     ///     (vec![0_u32, 2, 4], vec![1.0_f32, 2.0, 3.0]),
@@ -837,7 +837,7 @@ where
     /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
     /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
     /// for (c, v) in data.iter() {
-    ///     dataset.push(SparseVector1DView::new(c.as_slice(), v.as_slice()));
+    ///     dataset.push(SparseVectorView::new(c.as_slice(), v.as_slice()));
     /// }
     ///
     /// // Use the concrete iterator type so `next_back()` is available.
@@ -865,7 +865,7 @@ where
         let (rest, cur_values) = self.values.split_at(tail_offset - len);
         self.values = rest;
 
-        Some(SparseVector1DView::new(cur_components, cur_values))
+        Some(SparseVectorView::new(cur_components, cur_values))
     }
 }
 
@@ -914,7 +914,7 @@ mod tests {
     use super::SparseDatasetIter;
     use crate::core::dataset::ConvertInto;
     use crate::core::dataset::GrowableDataset;
-    use crate::core::vector1d::SparseVector1DView;
+    use crate::core::vector::SparseVectorView;
     use crate::{
         Dataset, DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer,
         SparseDataset, SparseDatasetGrowable,
@@ -926,9 +926,9 @@ mod tests {
         let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(6, 6);
         let mut dataset = PlainSparseDatasetGrowable::new(quantizer);
 
-        dataset.push(SparseVector1DView::new(&[0_u16, 1], &[1.0_f32, 1.0]));
-        dataset.push(SparseVector1DView::new(&[2_u16, 3], &[2.0_f32, 2.0]));
-        dataset.push(SparseVector1DView::new(&[4_u16, 5], &[3.0_f32, 3.0]));
+        dataset.push(SparseVectorView::new(&[0_u16, 1], &[1.0_f32, 1.0]));
+        dataset.push(SparseVectorView::new(&[2_u16, 3], &[2.0_f32, 2.0]));
+        dataset.push(SparseVectorView::new(&[4_u16, 5], &[3.0_f32, 3.0]));
 
         let mut iter = SparseDatasetIter::new(&dataset);
         let _ = iter.next().unwrap();
@@ -948,8 +948,8 @@ mod tests {
         let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(6, 6);
         let mut growable = PlainSparseDatasetGrowable::new(quantizer);
 
-        growable.push(SparseVector1DView::new(&[0_u16, 2], &[1.0_f32, 2.0]));
-        growable.push(SparseVector1DView::new(&[1_u16, 3], &[3.0_f32, 4.0]));
+        growable.push(SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 2.0]));
+        growable.push(SparseVectorView::new(&[1_u16, 3], &[3.0_f32, 4.0]));
 
         let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
         assert_eq!(frozen.len(), 2);
@@ -960,7 +960,7 @@ mod tests {
         assert_eq!(first.values(), &[1.0_f32, 2.0]);
 
         let mut growable_again: PlainSparseDatasetGrowable<u16, f32, DotProduct> = frozen.into();
-        growable_again.push(SparseVector1DView::new(&[4_u16], &[5.0_f32]));
+        growable_again.push(SparseVectorView::new(&[4_u16], &[5.0_f32]));
 
         assert_eq!(growable_again.len(), 3);
         assert_eq!(growable_again.nnz(), 5);
@@ -971,8 +971,8 @@ mod tests {
         let quantizer = crate::ScalarSparseQuantizer::<u16, f32, f16, DotProduct>::new(6, 6);
         let mut growable = SparseDatasetGrowable::new(quantizer);
 
-        growable.push(SparseVector1DView::new(&[0_u16, 2], &[1.0_f32, 2.0]));
-        growable.push(SparseVector1DView::new(&[1_u16, 3], &[3.0_f32, 4.0]));
+        growable.push(SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 2.0]));
+        growable.push(SparseVectorView::new(&[1_u16, 3], &[3.0_f32, 4.0]));
 
         let growable_plain: SparseDatasetGrowable<PlainSparseQuantizer<u16, f16, DotProduct>> =
             growable.relabel_as_plain();
@@ -994,8 +994,8 @@ mod tests {
         let quantizer = SrcQuant::new(6, 6);
         let mut growable = SparseDatasetGrowable::new(quantizer);
 
-        growable.push(SparseVector1DView::new(&[0_u16, 2], &[1.25_f32, 2.5]));
-        growable.push(SparseVector1DView::new(&[1_u16, 3], &[3.5_f32, 4.25]));
+        growable.push(SparseVectorView::new(&[0_u16, 2], &[1.25_f32, 2.5]));
+        growable.push(SparseVectorView::new(&[1_u16, 3], &[3.5_f32, 4.25]));
 
         let frozen: SparseDataset<SrcQuant> = growable.into();
 
