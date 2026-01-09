@@ -105,13 +105,6 @@ where
         }));
     }
 
-    fn create_view<'a>(
-        &self,
-        components: &'a [C],
-        values: &'a [OutValue],
-    ) -> Self::EncodedVector<'a> {
-        SparseVector1DView::new(components, values)
-    }
 }
 
 impl<C, InValue, OutValue, D> VectorEncoder for ScalarSparseQuantizer<C, InValue, OutValue, D>

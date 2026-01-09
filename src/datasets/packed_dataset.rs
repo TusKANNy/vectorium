@@ -3,9 +3,8 @@ use serde::{Deserialize, Serialize};
 use crate::PackedVectorEncoder;
 use crate::SpaceUsage;
 use crate::core::sealed;
-use crate::core::vector1d::SparseVector1DView;
 use crate::utils::prefetch_read_slice;
-use crate::{Dataset, GrowableDataset, VectorId};
+use crate::{Dataset, GrowableDataset, PackedVectorView, VectorId};
 
 use rayon::prelude::*;
 
@@ -122,7 +121,7 @@ where
         offsets.par_windows(2).map(move |window| {
             let start = window[0];
             let end = window[1];
-            self.encoder.create_view(&data[start..end])
+            PackedVectorView::new(&data[start..end])
         })
     }
 }
@@ -193,7 +192,7 @@ where
     #[inline]
     fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> E::EncodedVector<'a> {
         let slice = &self.data.as_ref()[range];
-        self.encoder.create_view(slice)
+        PackedVectorView::new(slice)
     }
 
     #[inline]
@@ -206,7 +205,7 @@ where
         let data = self.data.as_ref();
         offsets
             .windows(2)
-            .map(move |w| self.encoder.create_view(&data[w[0]..w[1]]))
+            .map(move |w| PackedVectorView::new(&data[w[0]..w[1]]))
     }
 }
 
@@ -275,14 +274,11 @@ where
         offsets.push(0);
         let mut data = Vec::new();
 
-        for v in crate::datasets::sparse_dataset::SparseDatasetIter::new(&dataset) {
+        for v in dataset.iter() {
             // Quantize on the fly
-            let q_vec = scalar.encode_vector(SparseVector1DView::new(v.components(), v.values()));
+            let q_vec = scalar.encode_vector(v);
             // Encode (pack)
-            dotvbyte_encoder.push_encoded(
-                SparseVector1DView::new(q_vec.components(), q_vec.values()),
-                &mut data,
-            );
+            dotvbyte_encoder.push_encoded(q_vec.as_view(), &mut data);
             offsets.push(data.len());
         }
 

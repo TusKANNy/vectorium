@@ -57,9 +57,6 @@ pub trait DenseVectorEncoder:
         self.push_encoded(input, &mut values);
         DenseVector1DOwned::new(values)
     }
-
-    /// Create a view from raw slice data.
-    fn create_view<'a>(&self, data: &'a [Self::OutputValueType]) -> Self::EncodedVector<'a>;
 }
 
 pub trait SparseVectorEncoder:
@@ -95,13 +92,6 @@ pub trait SparseVectorEncoder:
         self.push_encoded(input, &mut components, &mut values);
         SparseVector1DOwned::new(components, values)
     }
-
-    /// Create a view from raw component and value slices.
-    fn create_view<'a>(
-        &self,
-        components: &'a [Self::OutputComponentType],
-        values: &'a [Self::OutputValueType],
-    ) -> Self::EncodedVector<'a>;
 }
 
 pub trait PackedVectorEncoder:
@@ -129,9 +119,6 @@ pub trait PackedVectorEncoder:
         self.push_encoded(input, &mut data);
         PackedVectorOwned::new(data)
     }
-
-    /// Create a view from raw packed data.
-    fn create_view<'a>(&self, data: &'a [Self::PackedValueType]) -> Self::EncodedVector<'a>;
 }
 
 /// Helper trait to query directly from encoded reference if supported?

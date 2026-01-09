@@ -103,10 +103,6 @@ impl PackedVectorEncoder for DotVByteFixedU8Encoder {
         });
         output.extend(data);
     }
-
-    fn create_view<'a>(&self, data: &'a [Self::PackedValueType]) -> Self::EncodedVector<'a> {
-        PackedVectorView::new(data)
-    }
 }
 
 impl DotVByteFixedU8Encoder {

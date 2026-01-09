@@ -24,9 +24,11 @@ impl ScalarDenseSupportedDistance for SquaredEuclideanDistance {
         query: DenseVector1DView<'_, Q>,
         vector: DenseVector1DView<'_, V>,
     ) -> Self {
-        let q_len = query.len();
-        let v_len = vector.len();
-        assert_eq!(q_len, v_len, "Dense vectors must have the same length");
+        assert_eq!(
+            query.len(),
+            vector.len(),
+            "Dense vectors must have the same length"
+        );
         unsafe { squared_euclidean_distance_dense_unchecked(query, vector) }
     }
 }
@@ -87,10 +89,6 @@ where
             let f32_val = in_val.to_f32().unwrap();
             Out::from_f32_saturating(f32_val)
         }));
-    }
-
-    fn create_view<'a>(&self, data: &'a [Self::OutputValueType]) -> Self::EncodedVector<'a> {
-        DenseVector1DView::new(data)
     }
 }
 

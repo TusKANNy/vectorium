@@ -87,7 +87,7 @@ where
         (0..n).into_par_iter().map(move |i| {
             let start = i * m;
             let end = start + m;
-            self.encoder.create_view(&data[start..end])
+            DenseVector1DView::new(&data[start..end])
         })
     }
 }
@@ -114,12 +114,12 @@ where
         let m = self.encoder.output_dim();
         let start = index * m;
         let end = start + m;
-        self.encoder.create_view(&self.data.as_ref()[start..end])
+        DenseVector1DView::new(&self.data.as_ref()[start..end])
     }
 
     #[inline]
     fn get_by_range(&self, range: std::ops::Range<usize>) -> E::EncodedVector<'_> {
-        self.encoder.create_view(&self.data.as_ref()[range])
+        DenseVector1DView::new(&self.data.as_ref()[range])
     }
 
     #[inline]
@@ -131,7 +131,7 @@ where
         (0..n).map(move |i| {
             let start = i * m;
             let end = start + m;
-            self.encoder.create_view(&data[start..end])
+            DenseVector1DView::new(&data[start..end])
         })
     }
 

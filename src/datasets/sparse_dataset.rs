@@ -126,8 +126,7 @@ where
             let &[start, end] = window else {
                 unsafe { std::hint::unreachable_unchecked() }
             };
-            self.encoder
-                .create_view(&components[start..end], &values[start..end])
+            SparseVector1DView::new(&components[start..end], &values[start..end])
         })
     }
 }
@@ -181,7 +180,7 @@ where
         let v_components = &components[range.clone()];
         let v_values = &values[range];
 
-        self.encoder.create_view(v_components, v_values)
+        SparseVector1DView::new(v_components, v_values)
     }
 
     #[inline]
@@ -226,8 +225,7 @@ where
         offsets.windows(2).map(move |window| {
             let start = window[0];
             let end = window[1];
-            self.encoder
-                .create_view(&components[start..end], &values[start..end])
+            SparseVector1DView::new(&components[start..end], &values[start..end])
         })
     }
 
