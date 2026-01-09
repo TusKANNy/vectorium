@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
 use crate::core::vector_encoder::{
-    DenseVector1DOwned, QueryEvaluator, SparseVector1DOwned, SparseVectorEncoder, VectorEncoder,
+    DenseVector1DOwned, QueryEvaluator, SparseVectorEncoder, VectorEncoder,
 };
 use crate::core::vector1d::SparseVector1DView;
 use crate::distances::{
@@ -89,20 +89,20 @@ where
     type OutputComponentType = C;
     type OutputValueType = OutValue;
 
-    fn encode_vector<'a>(
+    fn push_encoded<'a, ComponentContainer, ValueContainer>(
         &self,
         input: SparseVector1DView<'a, C, InValue>,
-    ) -> SparseVector1DOwned<C, OutValue> {
-        let components_vec: Vec<C> = input.components().to_vec();
-        let values_vec: Vec<OutValue> = input
-            .values()
-            .iter()
-            .map(|&in_val| {
-                let f32_val = in_val.to_f32().unwrap();
-                OutValue::from_f32_saturating(f32_val)
-            })
-            .collect();
-        SparseVector1DOwned::new(components_vec, values_vec)
+        components: &mut ComponentContainer,
+        values: &mut ValueContainer,
+    ) where
+        ComponentContainer: Extend<Self::OutputComponentType>,
+        ValueContainer: Extend<Self::OutputValueType>,
+    {
+        components.extend(input.components().iter().cloned());
+        values.extend(input.values().iter().map(|&in_val| {
+            let f32_val = in_val.to_f32().unwrap();
+            OutValue::from_f32_saturating(f32_val)
+        }));
     }
 
     fn create_view<'a>(
@@ -213,17 +213,17 @@ where
     }
 }
 
-impl<'a, C, OutValue, D> QueryEvaluator for ScalarSparseQueryEvaluator<'a, C, OutValue, D>
+impl<'a, 'v, C, OutValue, D> QueryEvaluator<SparseVector1DView<'v, C, OutValue>>
+    for ScalarSparseQueryEvaluator<'a, C, OutValue, D>
 where
     C: ComponentType,
     OutValue: ValueType + Float + FromF32,
     D: ScalarSparseSupportedDistance,
 {
     type Distance = D;
-    type EncodedVector<'v> = SparseVector1DView<'v, C, OutValue>;
 
     #[inline]
-    fn compute_distance(&mut self, vector: Self::EncodedVector<'_>) -> D {
+    fn compute_distance(&mut self, vector: SparseVector1DView<'v, C, OutValue>) -> D {
         D::compute_sparse(&self.dense_query, self.query, vector)
     }
 }

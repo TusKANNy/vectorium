@@ -4,12 +4,10 @@ use std::marker::PhantomData;
 mod swizzle;
 
 use crate::core::sealed;
-use crate::core::vector_encoder::{
-    PackedVectorEncoder, PackedVectorOwned, QueryEvaluator, VectorEncoder,
-};
+use crate::core::vector_encoder::{PackedVectorEncoder, QueryEvaluator, VectorEncoder};
 use crate::core::vector1d::{PackedVectorView, SparseVector1DView};
 use crate::distances::DotProduct;
-use crate::{FixedU8Q, SpaceUsage};
+use crate::{FixedU8Q, SpaceUsage, ValueType};
 use num_traits::{AsPrimitive, ToPrimitive};
 
 use rusty_perm::PermApply as _;
@@ -63,10 +61,13 @@ impl PackedVectorEncoder for DotVByteFixedU8Encoder {
     type InputValueType = FixedU8Q;
     type PackedValueType = u64;
 
-    fn encode_vector<'a>(
+    fn push_encoded<'a, OutputContainer>(
         &self,
         input: SparseVector1DView<'a, Self::InputComponentType, Self::InputValueType>,
-    ) -> PackedVectorOwned<Self::PackedValueType> {
+        output: &mut OutputContainer,
+    ) where
+        OutputContainer: Extend<Self::PackedValueType>,
+    {
         let mut encoded_u8 = Vec::new();
 
         let mut q_values: Vec<_> = input.values().iter().map(|v| v.to_bits()).collect();
@@ -97,13 +98,10 @@ impl PackedVectorEncoder for DotVByteFixedU8Encoder {
             encoded_u8.len()
         );
 
-        let mut data = Vec::with_capacity(encoded_u8.len() / 8);
-        for chunk in encoded_u8.chunks_exact(8) {
-            let word = u64::from_le_bytes(chunk.try_into().unwrap()); // choose LE/BE/NE
-            data.push(word);
-        }
-
-        PackedVectorOwned::new(data)
+        let data = encoded_u8.chunks_exact(8).map(|chunk| {
+            u64::from_le_bytes(chunk.try_into().unwrap()) // choose LE/BE/NE
+        });
+        output.extend(data);
     }
 
     fn create_view<'a>(&self, data: &'a [Self::PackedValueType]) -> Self::EncodedVector<'a> {
@@ -124,10 +122,12 @@ impl DotVByteFixedU8Encoder {
         }
     }
 
-    pub fn train<'a>(
+    pub fn train<'a, V>(
         &mut self,
-        training_data: impl Iterator<Item = SparseVector1DView<'a, u16, FixedU8Q>>,
-    ) {
+        training_data: impl Iterator<Item = SparseVector1DView<'a, u16, V>>,
+    ) where
+        V: ValueType,
+    {
         let components_iter = training_data.map(|v| v.components());
         let permutation = permute_components_with_bisection(self.input_dim(), components_iter);
         let component_mapping: Vec<u16> = permutation.iter().map(|i| *i as u16).collect();
@@ -212,12 +212,11 @@ impl<'a> DotVByteFixedU8QueryEvaluator<'a> {
     }
 }
 
-impl<'a> QueryEvaluator for DotVByteFixedU8QueryEvaluator<'a> {
+impl<'a, 'v> QueryEvaluator<PackedVectorView<'v, u64>> for DotVByteFixedU8QueryEvaluator<'a> {
     type Distance = DotProduct;
-    type EncodedVector<'v> = PackedVectorView<'v, u64>;
 
     #[inline]
-    fn compute_distance(&mut self, vector: Self::EncodedVector<'_>) -> DotProduct {
+    fn compute_distance(&mut self, vector: PackedVectorView<'v, u64>) -> DotProduct {
         let dotvbyte_view = unsafe { DotVbyteFixedu8::from_unchecked_slice(vector.data()) };
         DotProduct::from(dotvbyte_view.dot_product(&self.dense_query))
     }

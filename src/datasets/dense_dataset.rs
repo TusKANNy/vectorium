@@ -165,8 +165,7 @@ where
     }
 
     fn push<'a>(&mut self, vec: E::InputVector<'a>) {
-        let encoded = self.encoder.encode_vector(vec);
-        self.data.extend_from_slice(encoded.values());
+        self.encoder.push_encoded(vec, &mut self.data);
         self.n_vecs += 1;
     }
 }

@@ -701,7 +701,6 @@ where
 impl<E> GrowableDataset for SparseDatasetGrowable<E>
 where
     E: SparseVectorEncoder,
-    for<'a> E::EncodedVector<'a>: Vector1DViewTrait,
 {
     /// For SparseDataset, the dimensionality `d` may be 0 if unknown when creating a new dataset.
     fn new(encoder: E) -> Self {
@@ -770,11 +769,8 @@ where
             );
         }
 
-        let encoded = self.encoder.encode_vector(vec);
-        self.storage
-            .components
-            .extend_from_slice(encoded.components());
-        self.storage.values.extend_from_slice(encoded.values());
+        self.encoder
+            .push_encoded(vec, &mut self.storage.components, &mut self.storage.values);
 
         self.storage.offsets.push(self.storage.components.len());
     }

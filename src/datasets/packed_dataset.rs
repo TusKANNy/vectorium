@@ -146,8 +146,7 @@ where
     fn push<'a>(&mut self, vec: E::InputVector<'a>) {
         self.nnz += vec.components().len(); // Capture length before move if needed? Copy view is cheap.
 
-        let encoded = self.encoder.encode_vector(vec);
-        self.data.extend_from_slice(encoded.data());
+        self.encoder.push_encoded(vec, &mut self.data);
         self.offsets.push(self.data.len());
     }
 }
@@ -266,29 +265,33 @@ where
         let scalar =
             ScalarSparseQuantizer::<u16, EIn::OutputValueType, FixedU8Q, DotProduct>::new(dim, dim);
 
-        // Pre-quantize to FixedU8Q to satisfy DotVByte training requirements and reuse for insertion
-        let quantized_data: Vec<_> =
-            crate::datasets::sparse_dataset::SparseDatasetIter::new(&dataset)
-                .map(|v| scalar.encode_vector(SparseVector1DView::new(v.components(), v.values())))
-                .collect();
-
         let mut dotvbyte_encoder = crate::DotVByteFixedU8Encoder::new(dim, dim);
 
-        dotvbyte_encoder.train(
-            quantized_data
-                .iter()
-                .map(|v| SparseVector1DView::new(v.components(), v.values())),
-        );
+        // Train using the original dataset components.
+        // DotVByte reorders components, so it only needs to see the component distribution.
+        dotvbyte_encoder.train(dataset.iter());
 
-        let mut growable = PackedDatasetGrowable::new(dotvbyte_encoder);
+        let mut offsets = Vec::with_capacity(dataset.len() + 1);
+        offsets.push(0);
+        let mut data = Vec::new();
 
-        for v in quantized_data {
-            growable.push(SparseVector1DView::new(v.components(), v.values()));
+        for v in crate::datasets::sparse_dataset::SparseDatasetIter::new(&dataset) {
+            // Quantize on the fly
+            let q_vec = scalar.encode_vector(SparseVector1DView::new(v.components(), v.values()));
+            // Encode (pack)
+            dotvbyte_encoder.push_encoded(
+                SparseVector1DView::new(q_vec.components(), q_vec.values()),
+                &mut data,
+            );
+            offsets.push(data.len());
         }
 
-        let mut packed: PackedDataset<crate::DotVByteFixedU8Encoder> = growable.into();
-        packed.nnz = dataset.nnz();
-        packed
+        PackedDatasetGeneric {
+            offsets: offsets.into_boxed_slice(),
+            data: data.into_boxed_slice(),
+            encoder: dotvbyte_encoder,
+            nnz: dataset.nnz(),
+        }
     }
 }
 
