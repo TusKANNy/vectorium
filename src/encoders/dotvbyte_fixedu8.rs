@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 mod swizzle;
 
 use crate::core::sealed;
-use crate::core::vector_encoder::{PackedVectorEncoder, QueryEvaluator, VectorEncoder};
+use crate::core::vector_encoder::{PackedSparseVectorEncoder, QueryEvaluator, VectorEncoder};
 use crate::core::vector1d::{PackedVectorView, SparseVector1DView};
 use crate::distances::DotProduct;
 use crate::{FixedU8Q, SpaceUsage, ValueType};
@@ -56,7 +56,7 @@ impl DotVByteFixedU8Encoder {
     }
 }
 
-impl PackedVectorEncoder for DotVByteFixedU8Encoder {
+impl PackedSparseVectorEncoder for DotVByteFixedU8Encoder {
     type InputComponentType = u16;
     type InputValueType = FixedU8Q;
     type PackedValueType = u64;
@@ -134,15 +134,22 @@ impl DotVByteFixedU8Encoder {
 impl VectorEncoder for DotVByteFixedU8Encoder {
     type Distance = DotProduct;
     type InputVector<'a> = SparseVector1DView<'a, u16, FixedU8Q>;
-    type QueryVector<'a> = SparseVector1DView<'a, u16, f32>;
+    type QueryVector<'a, V>
+        = SparseVector1DView<'a, u16, V>
+    where
+        V: ValueType;
     type EncodedVector<'a> = PackedVectorView<'a, u64>;
 
-    type Evaluator<'a>
-        = DotVByteFixedU8QueryEvaluator<'a>
+    type Evaluator<'a, V>
+        = DotVByteFixedU8QueryEvaluator<'a, V>
     where
+        V: ValueType,
         Self: 'a;
 
-    fn query_evaluator<'a>(&'a self, query: Self::QueryVector<'a>) -> Self::Evaluator<'a> {
+    fn query_evaluator<'a, V>(&'a self, query: Self::QueryVector<'a, V>) -> Self::Evaluator<'a, V>
+    where
+        V: ValueType,
+    {
         DotVByteFixedU8QueryEvaluator::new(query, self)
     }
 
@@ -158,17 +165,14 @@ impl VectorEncoder for DotVByteFixedU8Encoder {
 }
 
 #[derive(Debug, Clone)]
-pub struct DotVByteFixedU8QueryEvaluator<'a> {
+pub struct DotVByteFixedU8QueryEvaluator<'a, V: ValueType> {
     dense_query: Vec<f32>,
-    _phantom: PhantomData<&'a ()>,
+    _phantom: PhantomData<&'a V>,
 }
 
-impl<'a> DotVByteFixedU8QueryEvaluator<'a> {
+impl<'a, V: ValueType> DotVByteFixedU8QueryEvaluator<'a, V> {
     #[inline]
-    pub fn new(
-        query: SparseVector1DView<'a, u16, f32>,
-        quantizer: &DotVByteFixedU8Encoder,
-    ) -> Self {
+    pub fn new(query: SparseVector1DView<'a, u16, V>, quantizer: &DotVByteFixedU8Encoder) -> Self {
         let max_c = query
             .components()
             .iter()
@@ -198,7 +202,7 @@ impl<'a> DotVByteFixedU8QueryEvaluator<'a> {
             } else {
                 c
             };
-            vec[mapped_component as usize] = v;
+            vec[mapped_component as usize] = v.to_f32().unwrap();
         }
 
         Self {
@@ -208,7 +212,9 @@ impl<'a> DotVByteFixedU8QueryEvaluator<'a> {
     }
 }
 
-impl<'a, 'v> QueryEvaluator<PackedVectorView<'v, u64>> for DotVByteFixedU8QueryEvaluator<'a> {
+impl<'a, 'v, V: ValueType> QueryEvaluator<PackedVectorView<'v, u64>>
+    for DotVByteFixedU8QueryEvaluator<'a, V>
+{
     type Distance = DotProduct;
 
     #[inline]

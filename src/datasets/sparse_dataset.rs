@@ -8,7 +8,7 @@ use crate::core::vector_encoder::{SparseVectorEncoder, VectorEncoder};
 use crate::core::vector1d::{SparseVector1DView, Vector1DViewTrait};
 use crate::utils::is_strictly_sorted;
 use crate::{ComponentType, Float, FromF32, ValueType, VectorId};
-use crate::{Dataset, GrowableDataset};
+use crate::{Dataset, GrowableDataset, SparseData};
 use num_traits::AsPrimitive;
 
 use crate::dataset::ConvertFrom;
@@ -880,6 +880,13 @@ where
     fn space_usage_bytes(&self) -> usize {
         self.storage.space_usage_bytes() + self.encoder.space_usage_bytes()
     }
+}
+
+impl<E, S> SparseData for SparseDatasetGeneric<E, S>
+where
+    E: SparseVectorEncoder,
+    S: SparseStorage<E>,
+{
 }
 
 #[cfg(test)]

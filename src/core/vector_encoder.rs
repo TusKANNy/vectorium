@@ -17,17 +17,21 @@ pub trait VectorEncoder: Send + Sync + SpaceUsage {
 
     type InputVector<'a>: Vector1DViewTrait;
 
-    type QueryVector<'a>: Vector1DViewTrait
+    type QueryVector<'a, V>: Vector1DViewTrait
     where
+        V: ValueType,
         Self: 'a;
 
     type EncodedVector<'a>: Vector1DViewTrait;
 
-    type Evaluator<'a>: for<'b> QueryEvaluator<Self::EncodedVector<'b>, Distance = Self::Distance>
+    type Evaluator<'a, V>: for<'b> QueryEvaluator<Self::EncodedVector<'b>, Distance = Self::Distance>
     where
+        V: ValueType,
         Self: 'a;
 
-    fn query_evaluator<'a>(&'a self, query: Self::QueryVector<'a>) -> Self::Evaluator<'a>;
+    fn query_evaluator<'a, V>(&'a self, query: Self::QueryVector<'a, V>) -> Self::Evaluator<'a, V>
+    where
+        V: ValueType;
 
     fn input_dim(&self) -> usize;
     fn output_dim(&self) -> usize;
@@ -94,7 +98,7 @@ pub trait SparseVectorEncoder:
     }
 }
 
-pub trait PackedVectorEncoder:
+pub trait PackedSparseVectorEncoder:
     for<'a> VectorEncoder<
         InputVector<'a> = SparseVector1DView<'a, Self::InputComponentType, Self::InputValueType>,
         EncodedVector<'a> = PackedVectorView<'a, Self::PackedValueType>,
@@ -127,7 +131,4 @@ pub trait QueryFromEncoded: VectorEncoder {
     // This seems problematic with GATs and View markers.
     // Leaving it empty or just removing it if not used.
     // It was used in SparseScalar impl but implementation was questionable.
-    fn query_from_encoded<'a, V>(&self, encoded: &'a V) -> Self::QueryVector<'a>
-    where
-        V: ?Sized; // Simplified or removed.
 }

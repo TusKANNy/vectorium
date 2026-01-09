@@ -1,6 +1,8 @@
+use crate::ValueType;
 use crate::core::sealed;
 use crate::core::vector_encoder::{
-    DenseVectorEncoder, PackedVectorEncoder, QueryEvaluator, SparseVectorEncoder, VectorEncoder,
+    DenseVectorEncoder, PackedSparseVectorEncoder, QueryEvaluator, SparseVectorEncoder,
+    VectorEncoder,
 };
 use itertools::Itertools;
 
@@ -90,9 +92,9 @@ pub trait Dataset: sealed::Sealed {
 
     fn prefetch_with_range(&self, range: std::ops::Range<usize>);
 
-    fn search<'a>(
+    fn search<'a, V: ValueType>(
         &'a self,
-        query: <Self::Encoder as VectorEncoder>::QueryVector<'a>,
+        query: <Self::Encoder as VectorEncoder>::QueryVector<'a, V>,
         k: usize,
     ) -> Vec<ScoredVector<<Self::Encoder as VectorEncoder>::Distance>> {
         if k == 0 {
@@ -168,9 +170,32 @@ where
 
 pub trait PackedDatasetTrait: Dataset
 where
-    Self::Encoder: PackedVectorEncoder,
+    Self::Encoder: PackedSparseVectorEncoder,
 {
 }
+
+/// Marker trait representing any dataset that stores dense vectors.
+///
+/// In the current design, the memory layout and structural constraints of a dataset are
+/// rigidly determined by its associated `VectorEncoder` (e.g., `DenseVectorEncoder`).
+/// It is impossible to have a "Dense Dataset" with a "Sparse Encoder" due to type system constraints.
+///
+/// However, external libraries or generic functions often need to express bounds like
+/// "this function accepts any dense dataset" without listing every specific encoder trait or implementation.
+///
+/// This marker trait serves as a semantic category generic over the implementation details.
+pub trait DenseData: Dataset {}
+
+/// Marker trait representing any dataset that stores sparse vectors.
+///
+/// This covers both "plain" sparse datasets (using `SparseVectorEncoder`) and
+/// "packed" sparse datasets (using `PackedSparseVectorEncoder`).
+///
+/// While `SparseDataset` and `PackedDataset` are distinct types with distinct memory layouts
+/// enforced by their specific encoders, they both logically represent sparse data.
+/// This trait allows downstream code to treat them uniformly when the exact storage details
+/// (e.g., whether it's component-value pairs or bit-packed blocks) are abstracted away.
+pub trait SparseData: Dataset {}
 
 pub trait GrowableDataset: Dataset {
     /// Create a new growable dataset with the given encoder.

@@ -7,7 +7,7 @@
 #![feature(associated_type_defaults)]
 #![doc = include_str!("../README.md")]
 
-use num_traits::{AsPrimitive, ToPrimitive};
+use num_traits::{AsPrimitive, ToPrimitive, Zero};
 
 /// Type aliases for quantized fixed-point types. You can change FRAC in the `fixed` crate to adjust the precision.
 /// The `FixedU8Q` type uses 6 fractional bits, while `FixedU16Q` uses 13 fractional bits.
@@ -43,8 +43,8 @@ pub use core::vector1d::{
 pub use core::distances::{Distance, DotProduct, SquaredEuclideanDistance};
 
 pub use core::vector_encoder::{
-    DenseVectorEncoder, PackedVectorEncoder, QueryEvaluator, QueryFromEncoded, SparseVectorEncoder,
-    VectorEncoder,
+    DenseVectorEncoder, PackedSparseVectorEncoder, QueryEvaluator, QueryFromEncoded,
+    SparseVectorEncoder, VectorEncoder,
 };
 
 pub use encoders::dense_scalar::{
@@ -58,7 +58,7 @@ pub use encoders::sparse_scalar::{
     ScalarSparseQuantizerDotProduct, ScalarSparseQueryEvaluator, ScalarSparseSupportedDistance,
 };
 
-pub use core::dataset::{Dataset, GrowableDataset, VectorId};
+pub use core::dataset::{Dataset, DenseData, GrowableDataset, SparseData, VectorId};
 pub use core::storage::{
     GrowableSparseStorage, ImmutableSparseStorage, SparseStorage, SparseStorageMut,
 };
@@ -86,8 +86,8 @@ pub use datasets::readers;
 pub use datasets::readers::{read_npy_f32, read_seismic_format};
 
 /// Marker for types used as values in a dataset.
-pub trait ValueType: Copy + Send + Sync + 'static + ToPrimitive + PartialOrd {}
-impl<T> ValueType for T where T: Copy + Send + Sync + 'static + ToPrimitive + PartialOrd {}
+pub trait ValueType: Copy + Send + Sync + 'static + ToPrimitive + PartialOrd + Zero {}
+impl<T> ValueType for T where T: Copy + Send + Sync + 'static + ToPrimitive + PartialOrd + Zero {}
 
 /// Marker for types used as components in a dataset.
 pub trait ComponentType: AsPrimitive<usize> + Copy + Send + Sync + 'static + Ord {}

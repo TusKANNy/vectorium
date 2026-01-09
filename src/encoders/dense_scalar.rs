@@ -94,39 +94,51 @@ where
 
 /// Query evaluator for ScalarDenseQuantizer.
 #[derive(Debug, Clone)]
-pub struct ScalarDenseQueryEvaluator<'a, Out, D>
+pub struct ScalarDenseQueryEvaluator<'a, Out, D, V>
 where
     Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
+    V: ValueType,
 {
-    query: DenseVector1DView<'a, f32>,
-    _phantom: PhantomData<(Out, D)>,
+    query: Vec<Out>,
+    _phantom: PhantomData<&'a (D, V)>,
 }
 
-impl<'a, Out, D> ScalarDenseQueryEvaluator<'a, Out, D>
+impl<'a, Out, D, V> ScalarDenseQueryEvaluator<'a, Out, D, V>
 where
     Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
+    V: ValueType,
 {
-    pub fn new(query: DenseVector1DView<'a, f32>) -> Self {
+    pub fn new(query: DenseVector1DView<'a, V>) -> Self {
+        let query_converted: Vec<Out> = query
+            .values()
+            .iter()
+            .map(|&v| {
+                let f = v.to_f32().expect("Failed to convert value to f32");
+                Out::from_f32_saturating(f)
+            })
+            .collect();
+
         Self {
-            query,
+            query: query_converted,
             _phantom: PhantomData,
         }
     }
 }
 
-impl<'a, 'v, Out, D> QueryEvaluator<DenseVector1DView<'v, Out>>
-    for ScalarDenseQueryEvaluator<'a, Out, D>
+impl<'a, 'v, Out, D, V> QueryEvaluator<DenseVector1DView<'v, Out>>
+    for ScalarDenseQueryEvaluator<'a, Out, D, V>
 where
     Out: ValueType + Float + FromF32,
     D: ScalarDenseSupportedDistance,
+    V: ValueType,
 {
     type Distance = D;
 
     #[inline]
     fn compute_distance(&mut self, vector: DenseVector1DView<'v, Out>) -> D {
-        D::compute_dense(self.query, vector)
+        D::compute_dense(DenseVector1DView::new(&self.query), vector)
     }
 }
 
@@ -138,16 +150,23 @@ where
 {
     type Distance = D;
     type InputVector<'a> = DenseVector1DView<'a, In>;
-    type QueryVector<'a> = DenseVector1DView<'a, f32>;
+    type QueryVector<'a, V>
+        = DenseVector1DView<'a, V>
+    where
+        V: ValueType;
     type EncodedVector<'a> = DenseVector1DView<'a, Out>;
 
-    type Evaluator<'a>
-        = ScalarDenseQueryEvaluator<'a, Out, D>
+    type Evaluator<'a, V>
+        = ScalarDenseQueryEvaluator<'a, Out, D, V>
     where
+        V: ValueType,
         Self: 'a;
 
     #[inline]
-    fn query_evaluator<'a>(&'a self, query: Self::QueryVector<'a>) -> Self::Evaluator<'a> {
+    fn query_evaluator<'a, V>(&'a self, query: Self::QueryVector<'a, V>) -> Self::Evaluator<'a, V>
+    where
+        V: ValueType,
+    {
         assert_eq!(
             query.len(),
             self.input_dim(),

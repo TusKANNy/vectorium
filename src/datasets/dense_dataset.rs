@@ -242,3 +242,17 @@ where
         }
     }
 }
+
+impl<E, Data> crate::core::dataset::DenseDatasetTrait for DenseDatasetGeneric<E, Data>
+where
+    E: DenseVectorEncoder,
+    Data: AsRef<[E::OutputValueType]>,
+{
+}
+
+impl<E, Data> crate::core::dataset::DenseData for DenseDatasetGeneric<E, Data>
+where
+    E: DenseVectorEncoder,
+    Data: AsRef<[E::OutputValueType]>,
+{
+}

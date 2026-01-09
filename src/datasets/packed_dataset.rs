@@ -1,20 +1,20 @@
 use serde::{Deserialize, Serialize};
 
-use crate::PackedVectorEncoder;
+use crate::PackedSparseVectorEncoder;
 use crate::SpaceUsage;
 use crate::core::sealed;
 use crate::utils::prefetch_read_slice;
-use crate::{Dataset, GrowableDataset, PackedVectorView, VectorId};
+use crate::{Dataset, GrowableDataset, PackedVectorView, SparseData, VectorId};
 
 use rayon::prelude::*;
 
 /// A growable packed dataset.
 pub type PackedDatasetGrowable<E> =
-    PackedDatasetGeneric<E, Vec<usize>, Vec<<E as PackedVectorEncoder>::PackedValueType>>;
+    PackedDatasetGeneric<E, Vec<usize>, Vec<<E as PackedSparseVectorEncoder>::PackedValueType>>;
 
 /// An immutable packed dataset.
 pub type PackedDataset<E> =
-    PackedDatasetGeneric<E, Box<[usize]>, Box<[<E as PackedVectorEncoder>::PackedValueType]>>;
+    PackedDatasetGeneric<E, Box<[usize]>, Box<[<E as PackedSparseVectorEncoder>::PackedValueType]>>;
 
 /// Dataset storing variable-length packed encodings in a single concatenated `data` array.
 ///
@@ -45,7 +45,7 @@ pub type PackedDataset<E> =
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct PackedDatasetGeneric<E, Offsets, Data>
 where
-    E: PackedVectorEncoder,
+    E: PackedSparseVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::PackedValueType]>,
 {
@@ -57,7 +57,7 @@ where
 
 impl<E, Offsets, Data> sealed::Sealed for PackedDatasetGeneric<E, Offsets, Data>
 where
-    E: PackedVectorEncoder,
+    E: PackedSparseVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::PackedValueType]>,
 {
@@ -65,7 +65,7 @@ where
 
 impl<E, Offsets, Data> PackedDatasetGeneric<E, Offsets, Data>
 where
-    E: PackedVectorEncoder,
+    E: PackedSparseVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::PackedValueType]>,
 {
@@ -127,9 +127,9 @@ where
 }
 
 impl<E> GrowableDataset
-    for PackedDatasetGeneric<E, Vec<usize>, Vec<<E as PackedVectorEncoder>::PackedValueType>>
+    for PackedDatasetGeneric<E, Vec<usize>, Vec<<E as PackedSparseVectorEncoder>::PackedValueType>>
 where
-    E: PackedVectorEncoder,
+    E: PackedSparseVectorEncoder,
 {
     #[inline]
     fn new(encoder: E) -> Self {
@@ -152,7 +152,7 @@ where
 
 impl<E, Offsets, Data> SpaceUsage for PackedDatasetGeneric<E, Offsets, Data>
 where
-    E: PackedVectorEncoder,
+    E: PackedSparseVectorEncoder,
     E: SpaceUsage,
     Offsets: AsRef<[usize]> + SpaceUsage,
     Data: AsRef<[E::PackedValueType]> + SpaceUsage,
@@ -167,7 +167,7 @@ where
 
 impl<E, Offsets, Data> Dataset for PackedDatasetGeneric<E, Offsets, Data>
 where
-    E: PackedVectorEncoder,
+    E: PackedSparseVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::PackedValueType]>,
 {
@@ -212,7 +212,15 @@ where
 impl<E, Offsets, Data> crate::core::dataset::PackedDatasetTrait
     for PackedDatasetGeneric<E, Offsets, Data>
 where
-    E: PackedVectorEncoder,
+    E: PackedSparseVectorEncoder,
+    Offsets: AsRef<[usize]>,
+    Data: AsRef<[E::PackedValueType]>,
+{
+}
+
+impl<E, Offsets, Data> SparseData for PackedDatasetGeneric<E, Offsets, Data>
+where
+    E: PackedSparseVectorEncoder,
     Offsets: AsRef<[usize]>,
     Data: AsRef<[E::PackedValueType]>,
 {
@@ -220,7 +228,7 @@ where
 
 impl<E> From<PackedDatasetGrowable<E>> for PackedDataset<E>
 where
-    E: PackedVectorEncoder,
+    E: PackedSparseVectorEncoder,
 {
     fn from(dataset: PackedDatasetGrowable<E>) -> Self {
         PackedDatasetGeneric {
@@ -234,7 +242,7 @@ where
 
 impl<E> From<PackedDataset<E>> for PackedDatasetGrowable<E>
 where
-    E: PackedVectorEncoder,
+    E: PackedSparseVectorEncoder,
 {
     fn from(dataset: PackedDataset<E>) -> Self {
         PackedDatasetGeneric {
@@ -380,3 +388,5 @@ mod tests {
         assert_eq!(growable_again.nnz(), 4);
     }
 }
+
+
