@@ -52,7 +52,7 @@ pub use encoders::dense_scalar::{
     ScalarDenseQuantizer, ScalarDenseQuantizerDotProduct, ScalarDenseQuantizerSame,
     ScalarDenseQuantizerSquaredEuclidean, ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
 };
-pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Quantizer, DotVByteFixedU8QueryEvaluator};
+pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Encoder, DotVByteFixedU8QueryEvaluator};
 pub use encoders::sparse_scalar::{
     PlainSparseQuantizer, PlainSparseQuantizerDotProduct, ScalarSparseQuantizer,
     ScalarSparseQuantizerDotProduct, ScalarSparseQueryEvaluator, ScalarSparseSupportedDistance,

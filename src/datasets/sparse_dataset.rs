@@ -70,7 +70,7 @@ where
     S: SparseStorage<E>,
 {
     storage: S,
-    quantizer: E,
+    encoder: E,
 }
 
 impl<E, S> sealed::Sealed for SparseDatasetGeneric<E, S>
@@ -126,7 +126,7 @@ where
             let &[start, end] = window else {
                 unsafe { std::hint::unreachable_unchecked() }
             };
-            self.quantizer
+            self.encoder
                 .create_view(&components[start..end], &values[start..end])
         })
     }
@@ -181,14 +181,14 @@ where
         let v_components = &components[range.clone()];
         let v_values = &values[range];
 
-        self.quantizer.create_view(v_components, v_values)
+        self.encoder.create_view(v_components, v_values)
     }
 
     #[inline]
     fn prefetch_with_range(&self, _range: std::ops::Range<usize>) {}
 
     fn encoder(&self) -> &E {
-        &self.quantizer
+        &self.encoder
     }
 
     /// Returns an iterator over the vectors of the dataset.
@@ -226,7 +226,7 @@ where
         offsets.windows(2).map(move |window| {
             let start = window[0];
             let end = window[1];
-            self.quantizer
+            self.encoder
                 .create_view(&components[start..end], &values[start..end])
         })
     }
@@ -381,7 +381,7 @@ where
     fn from(dataset: SparseDatasetGrowable<E>) -> Self {
         Self {
             storage: dataset.storage.into(),
-            quantizer: dataset.quantizer,
+            encoder: dataset.encoder,
         }
     }
 }
@@ -421,7 +421,7 @@ where
     fn from(dataset: SparseDataset<E>) -> Self {
         Self {
             storage: dataset.storage.into(),
-            quantizer: dataset.quantizer,
+            encoder: dataset.encoder,
         }
     }
 }
@@ -444,14 +444,14 @@ where
         crate::PlainSparseQuantizer<C, OutValue, D>,
         GrowableSparseStorage<crate::PlainSparseQuantizer<C, OutValue, D>>,
     > {
-        let dim = self.quantizer.output_dim();
+        let dim = self.encoder.output_dim();
         let storage = self
             .storage
             .relabel::<crate::PlainSparseQuantizer<C, OutValue, D>>();
 
         SparseDatasetGeneric {
             storage,
-            quantizer: crate::PlainSparseQuantizer::<C, OutValue, D>::new(dim, dim),
+            encoder: crate::PlainSparseQuantizer::<C, OutValue, D>::new(dim, dim),
         }
     }
 }
@@ -476,14 +476,14 @@ where
     where
         InValue: ValueType + Float,
     {
-        let dim = self.quantizer.output_dim();
+        let dim = self.encoder.output_dim();
         let storage = self
             .storage
             .relabel::<crate::ScalarSparseQuantizer<C, InValue, OutValue, D>>();
 
         SparseDatasetGeneric {
             storage,
-            quantizer: crate::ScalarSparseQuantizer::<C, InValue, OutValue, D>::new(dim, dim),
+            encoder: crate::ScalarSparseQuantizer::<C, InValue, OutValue, D>::new(dim, dim),
         }
     }
 }
@@ -506,14 +506,14 @@ where
         crate::PlainSparseQuantizer<C, OutValue, D>,
         ImmutableSparseStorage<crate::PlainSparseQuantizer<C, OutValue, D>>,
     > {
-        let dim = self.quantizer.output_dim();
+        let dim = self.encoder.output_dim();
         let storage = self
             .storage
             .relabel::<crate::PlainSparseQuantizer<C, OutValue, D>>();
 
         SparseDatasetGeneric {
             storage,
-            quantizer: crate::PlainSparseQuantizer::<C, OutValue, D>::new(dim, dim),
+            encoder: crate::PlainSparseQuantizer::<C, OutValue, D>::new(dim, dim),
         }
     }
 }
@@ -538,14 +538,14 @@ where
     where
         InValue: ValueType + Float,
     {
-        let dim = self.quantizer.output_dim();
+        let dim = self.encoder.output_dim();
         let storage = self
             .storage
             .relabel::<crate::ScalarSparseQuantizer<C, InValue, OutValue, D>>();
 
         SparseDatasetGeneric {
             storage,
-            quantizer: crate::ScalarSparseQuantizer::<C, InValue, OutValue, D>::new(dim, dim),
+            encoder: crate::ScalarSparseQuantizer::<C, InValue, OutValue, D>::new(dim, dim),
         }
     }
 }
@@ -580,8 +580,8 @@ where
     ) -> Self {
         let n_vecs = source.len();
         let nnz = source.nnz();
-        let dim = source.quantizer.output_dim();
-        let quantizer = crate::ScalarSparseQuantizer::<C, Mid, DstOut, D>::new(dim, dim);
+        let dim = source.encoder.output_dim();
+        let encoder = crate::ScalarSparseQuantizer::<C, Mid, DstOut, D>::new(dim, dim);
 
         let mut storage =
             GrowableSparseStorage::<crate::ScalarSparseQuantizer<C, Mid, DstOut, D>>::with_capacity(
@@ -589,7 +589,7 @@ where
             );
 
         for src_vec in crate::datasets::sparse_dataset::SparseDatasetIter::new(source) {
-            let encoded = quantizer.encode_vector(SparseVector1DView::<C, Mid>::new(
+            let encoded = encoder.encode_vector(SparseVector1DView::<C, Mid>::new(
                 src_vec.components(),
                 src_vec.values(),
             ));
@@ -600,7 +600,7 @@ where
 
         SparseDatasetGeneric {
             storage: storage.into(),
-            quantizer,
+            encoder,
         }
     }
 }
@@ -704,10 +704,10 @@ where
     for<'a> E::EncodedVector<'a>: Vector1DViewTrait,
 {
     /// For SparseDataset, the dimensionality `d` may be 0 if unknown when creating a new dataset.
-    fn new(quantizer: E) -> Self {
+    fn new(encoder: E) -> Self {
         Self {
             storage: GrowableSparseStorage::new(),
-            quantizer,
+            encoder,
         }
     }
 
@@ -760,7 +760,7 @@ where
             "Components must be given in strictly ascending order"
         );
 
-        let cur_dim = self.quantizer.input_dim();
+        let cur_dim = self.encoder.input_dim();
         if let Some(last_component) = components.last().map(|l| l.as_()) {
             assert!(
                 last_component < cur_dim,
@@ -770,7 +770,7 @@ where
             );
         }
 
-        let encoded = self.quantizer.encode_vector(vec);
+        let encoded = self.encoder.encode_vector(vec);
         self.storage
             .components
             .extend_from_slice(encoded.components());
@@ -884,7 +884,7 @@ where
 {
     /// Returns the size of the dataset in bytes.
     fn space_usage_bytes(&self) -> usize {
-        self.storage.space_usage_bytes() + self.quantizer.space_usage_bytes()
+        self.storage.space_usage_bytes() + self.encoder.space_usage_bytes()
     }
 }
 

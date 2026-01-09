@@ -453,7 +453,7 @@ fn compute_sparse_groundtruth_dotvbyte<V>(
 ) where
     V: vectorium::ValueType + Float + vectorium::FromF32 + vectorium::SpaceUsage,
 {
-    use vectorium::DotVByteFixedU8Quantizer;
+    use vectorium::DotVByteFixedU8Encoder;
     use vectorium::PackedDataset;
 
     let dataset_plain: PlainSparseDataset<u16, V, distances::DotProduct> =
@@ -461,7 +461,7 @@ fn compute_sparse_groundtruth_dotvbyte<V>(
     let queries: PlainSparseDataset<u16, f32, distances::DotProduct> =
         readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
 
-    let dataset: PackedDataset<DotVByteFixedU8Quantizer> = dataset_plain.into();
+    let dataset: PackedDataset<DotVByteFixedU8Encoder> = dataset_plain.into();
 
     let dataset_gib = dataset.space_usage_GiB();
 

@@ -34,14 +34,14 @@ use rusty_perm::*;
 /// - `output_dim()` is the logical post-quantization dimensionality (typically equal to `input_dim()`),
 ///   NOT the packed blob length in `u64` words.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DotVByteFixedU8Quantizer {
+pub struct DotVByteFixedU8Encoder {
     dim: usize,
     component_mapping: Option<Box<[u16]>>, // Optional component remapping that improves compression. mapping[i] = new_index_of_component_i
 }
 
-impl sealed::Sealed for DotVByteFixedU8Quantizer {}
+impl sealed::Sealed for DotVByteFixedU8Encoder {}
 
-impl DotVByteFixedU8Quantizer {
+impl DotVByteFixedU8Encoder {
     #[inline]
     pub fn component_mapping(&self) -> Option<&[u16]> {
         let mapping = self.component_mapping.as_deref();
@@ -58,7 +58,7 @@ impl DotVByteFixedU8Quantizer {
     }
 }
 
-impl PackedVectorEncoder for DotVByteFixedU8Quantizer {
+impl PackedVectorEncoder for DotVByteFixedU8Encoder {
     type InputComponentType = u16;
     type InputValueType = FixedU8Q;
     type PackedValueType = u64;
@@ -111,12 +111,12 @@ impl PackedVectorEncoder for DotVByteFixedU8Quantizer {
     }
 }
 
-impl DotVByteFixedU8Quantizer {
+impl DotVByteFixedU8Encoder {
     #[inline]
     pub fn new(input_dim: usize, output_dim: usize) -> Self {
         assert_eq!(
             input_dim, output_dim,
-            "DotVByteFixedU8Quantizer requires input_dim == output_dim"
+            "DotVByteFixedU8Encoder requires input_dim == output_dim"
         );
         Self {
             dim: input_dim,
@@ -135,7 +135,7 @@ impl DotVByteFixedU8Quantizer {
     }
 }
 
-impl VectorEncoder for DotVByteFixedU8Quantizer {
+impl VectorEncoder for DotVByteFixedU8Encoder {
     type Distance = DotProduct;
     type InputVector<'a> = SparseVector1DView<'a, u16, FixedU8Q>;
     type QueryVector<'a> = SparseVector1DView<'a, u16, f32>;
@@ -171,7 +171,7 @@ impl<'a> DotVByteFixedU8QueryEvaluator<'a> {
     #[inline]
     pub fn new(
         query: SparseVector1DView<'a, u16, f32>,
-        quantizer: &DotVByteFixedU8Quantizer,
+        quantizer: &DotVByteFixedU8Encoder,
     ) -> Self {
         let max_c = query
             .components()
@@ -296,7 +296,7 @@ impl<'a> DotVbyteFixedu8<'a> {
     pub fn push_vector(vec: &mut Vec<u8>, converted_components: &mut [u16], values: &mut [u8]) {
         assert!(
             converted_components.len() < u16::MAX as usize,
-            "DotVByteFixedU8Quantizer only supports vectors shorter than 65535."
+            "DotVByteFixedU8Encoder only supports vectors shorter than 65535."
         ); // this is because the encoding of a vector store its original length in u16 as the first packed field
         assert_eq!(converted_components.len(), values.len());
 
@@ -520,7 +520,7 @@ where
     converted_f32 * mult
 }
 
-impl SpaceUsage for DotVByteFixedU8Quantizer {
+impl SpaceUsage for DotVByteFixedU8Encoder {
     #[inline]
     fn space_usage_bytes(&self) -> usize {
         let size_of_mapping = match &self.component_mapping {

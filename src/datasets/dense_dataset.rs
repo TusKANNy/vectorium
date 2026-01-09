@@ -24,7 +24,7 @@ where
 {
     n_vecs: usize,
     data: Data,
-    quantizer: E,
+    encoder: E,
 }
 
 impl<E, Data> sealed::Sealed for DenseDatasetGeneric<E, Data>
@@ -41,7 +41,7 @@ where
 {
     fn space_usage_bytes(&self) -> usize {
         self.n_vecs.space_usage_bytes()
-            + self.quantizer.space_usage_bytes()
+            + self.encoder.space_usage_bytes()
             + self.data.space_usage_bytes()
     }
 }
@@ -54,16 +54,16 @@ where
     for<'a> E::EncodedVector<'a>: Send,
 {
     #[inline]
-    pub fn from_raw(data: Data, n_vecs: usize, quantizer: E) -> Self {
+    pub fn from_raw(data: Data, n_vecs: usize, encoder: E) -> Self {
         assert_eq!(
             data.as_ref().len(),
-            n_vecs * quantizer.output_dim(),
+            n_vecs * encoder.output_dim(),
             "Data length must equal n_vecs * encoder.output_dim()"
         );
         Self {
             n_vecs,
             data,
-            quantizer,
+            encoder,
         }
     }
 
@@ -80,14 +80,14 @@ where
     // Note: par_iter returns EncodedVector (view)
     #[inline]
     pub fn par_iter(&self) -> impl ParallelIterator<Item = E::EncodedVector<'_>> {
-        let m = self.quantizer.output_dim();
+        let m = self.encoder.output_dim();
         let data = self.data.as_ref();
         let n = self.n_vecs;
 
         (0..n).into_par_iter().map(move |i| {
             let start = i * m;
             let end = start + m;
-            self.quantizer.create_view(&data[start..end])
+            self.encoder.create_view(&data[start..end])
         })
     }
 }
@@ -101,7 +101,7 @@ where
 
     #[inline]
     fn encoder(&self) -> &E {
-        &self.quantizer
+        &self.encoder
     }
 
     #[inline]
@@ -111,27 +111,27 @@ where
 
     #[inline]
     fn get(&self, index: usize) -> E::EncodedVector<'_> {
-        let m = self.quantizer.output_dim();
+        let m = self.encoder.output_dim();
         let start = index * m;
         let end = start + m;
-        self.quantizer.create_view(&self.data.as_ref()[start..end])
+        self.encoder.create_view(&self.data.as_ref()[start..end])
     }
 
     #[inline]
     fn get_by_range(&self, range: std::ops::Range<usize>) -> E::EncodedVector<'_> {
-        self.quantizer.create_view(&self.data.as_ref()[range])
+        self.encoder.create_view(&self.data.as_ref()[range])
     }
 
     #[inline]
     fn iter(&self) -> impl Iterator<Item = E::EncodedVector<'_>> {
-        let m = self.quantizer.output_dim();
+        let m = self.encoder.output_dim();
         let data = self.data.as_ref();
         let n = self.n_vecs;
 
         (0..n).map(move |i| {
             let start = i * m;
             let end = start + m;
-            self.quantizer.create_view(&data[start..end])
+            self.encoder.create_view(&data[start..end])
         })
     }
 
@@ -156,16 +156,16 @@ impl<E> GrowableDataset for DenseDatasetGeneric<E, Vec<E::OutputValueType>>
 where
     E: DenseVectorEncoder,
 {
-    fn new(quantizer: E) -> Self {
+    fn new(encoder: E) -> Self {
         Self {
             n_vecs: 0,
             data: Vec::new(),
-            quantizer,
+            encoder,
         }
     }
 
     fn push<'a>(&mut self, vec: E::InputVector<'a>) {
-        let encoded = self.quantizer.encode_vector(vec);
+        let encoded = self.encoder.encode_vector(vec);
         self.data.extend_from_slice(encoded.values());
         self.n_vecs += 1;
     }
@@ -176,15 +176,15 @@ where
     E: DenseVectorEncoder,
 {
     pub fn capacity(&self) -> usize {
-        if self.quantizer.output_dim() == 0 {
+        if self.encoder.output_dim() == 0 {
             0
         } else {
-            self.data.capacity() / self.quantizer.output_dim()
+            self.data.capacity() / self.encoder.output_dim()
         }
     }
 
     pub fn reserve(&mut self, additional: usize) {
-        self.data.reserve(additional * self.quantizer.output_dim());
+        self.data.reserve(additional * self.encoder.output_dim());
     }
 }
 
@@ -196,7 +196,7 @@ where
         Self {
             n_vecs: dataset.n_vecs,
             data: dataset.data.into_boxed_slice(),
-            quantizer: dataset.quantizer,
+            encoder: dataset.encoder,
         }
     }
 }
@@ -223,8 +223,8 @@ where
     fn convert_from(
         source: &DenseDatasetGeneric<ScalarDenseQuantizer<SrcIn, Mid, D>, SrcStorage>,
     ) -> Self {
-        let m = source.quantizer.output_dim();
-        let quantizer = ScalarDenseQuantizer::<Mid, DstOut, D>::new(m);
+        let m = source.encoder.output_dim();
+        let encoder = ScalarDenseQuantizer::<Mid, DstOut, D>::new(m);
 
         // Treat source data as a contiguous array of dense vectors of type Mid.
         let mut new_data = Vec::with_capacity(source.data.as_ref().len());
@@ -232,14 +232,14 @@ where
 
         for chunk in src_data.chunks_exact(m) {
             let vec_view = DenseVector1DView::new(chunk);
-            let encoded = quantizer.encode_vector(vec_view);
+            let encoded = encoder.encode_vector(vec_view);
             new_data.extend_from_slice(encoded.values());
         }
 
         Self {
             n_vecs: source.n_vecs,
             data: new_data.into_boxed_slice().into(),
-            quantizer,
+            encoder,
         }
     }
 }
