@@ -118,7 +118,7 @@ where
     }
 
     #[inline]
-    fn get_by_range(&self, range: std::ops::Range<usize>) -> E::EncodedVector<'_> {
+    fn get_with_range(&self, range: std::ops::Range<usize>) -> E::EncodedVector<'_> {
         DenseVector1DView::new(&self.data.as_ref()[range])
     }
 
@@ -164,6 +164,14 @@ where
         }
     }
 
+    fn with_capacity(encoder: E, capacity: usize) -> Self {
+        Self {
+            n_vecs: 0,
+            data: Vec::with_capacity(capacity * encoder.output_dim()),
+            encoder,
+        }
+    }
+
     fn push<'a>(&mut self, vec: E::InputVector<'a>) {
         self.encoder.push_encoded(vec, &mut self.data);
         self.n_vecs += 1;
@@ -184,6 +192,26 @@ where
 
     pub fn reserve(&mut self, additional: usize) {
         self.data.reserve(additional * self.encoder.output_dim());
+    }
+}
+
+impl<V, D> DenseDatasetGrowable<crate::encoders::dense_scalar::ScalarDenseQuantizer<V, V, D>>
+where
+    V: ValueType + crate::Float + crate::FromF32,
+    D: crate::distances::Distance + crate::encoders::dense_scalar::ScalarDenseSupportedDistance,
+{
+    pub fn new(dim: usize) -> Self {
+        let encoder = crate::encoders::dense_scalar::ScalarDenseQuantizer::new(dim);
+        crate::GrowableDataset::new(encoder)
+    }
+
+    pub fn with_capacity(dim: usize, capacity: usize) -> Self {
+        let encoder = crate::encoders::dense_scalar::ScalarDenseQuantizer::new(dim);
+        Self {
+            n_vecs: 0,
+            data: Vec::with_capacity(capacity * dim),
+            encoder,
+        }
     }
 }
 
@@ -241,13 +269,6 @@ where
             encoder,
         }
     }
-}
-
-impl<E, Data> crate::core::dataset::DenseDatasetTrait for DenseDatasetGeneric<E, Data>
-where
-    E: DenseVectorEncoder,
-    Data: AsRef<[E::OutputValueType]>,
-{
 }
 
 impl<E, Data> crate::core::dataset::DenseData for DenseDatasetGeneric<E, Data>

@@ -39,7 +39,7 @@ pub type PackedDataset<E> =
 /// let frozen: vectorium::PlainSparseDataset<u16, f32, DotProduct> = sparse.into();
 /// let packed: PackedDataset<DotVByteFixedU8Encoder> = frozen.into();
 /// let range = packed.range_from_id(0);
-/// let v = packed.get_by_range(range);
+/// let v = packed.get_with_range(range);
 /// assert!(!v.data().is_empty());
 /// ```
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +141,17 @@ where
         }
     }
 
+    fn with_capacity(encoder: E, capacity: usize) -> Self {
+        let mut offsets = Vec::with_capacity(capacity + 1);
+        offsets.push(0);
+        Self {
+            offsets,
+            data: Vec::with_capacity(capacity),
+            encoder,
+            nnz: 0,
+        }
+    }
+
     #[inline]
     fn push<'a>(&mut self, vec: E::InputVector<'a>) {
         self.nnz += vec.components().len(); // Capture length before move if needed? Copy view is cheap.
@@ -186,11 +197,11 @@ where
     #[inline]
     fn get(&self, index: usize) -> E::EncodedVector<'_> {
         let range = self.range_from_id(index as VectorId);
-        self.get_by_range(range)
+        self.get_with_range(range)
     }
 
     #[inline]
-    fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> E::EncodedVector<'a> {
+    fn get_with_range<'a>(&'a self, range: std::ops::Range<usize>) -> E::EncodedVector<'a> {
         let slice = &self.data.as_ref()[range];
         PackedVectorView::new(slice)
     }
@@ -209,14 +220,7 @@ where
     }
 }
 
-impl<E, Offsets, Data> crate::core::dataset::PackedDatasetTrait
-    for PackedDatasetGeneric<E, Offsets, Data>
-where
-    E: PackedSparseVectorEncoder,
-    Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::PackedValueType]>,
-{
-}
+
 
 impl<E, Offsets, Data> SparseData for PackedDatasetGeneric<E, Offsets, Data>
 where
@@ -388,5 +392,3 @@ mod tests {
         assert_eq!(growable_again.nnz(), 4);
     }
 }
-
-

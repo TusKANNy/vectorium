@@ -1,9 +1,6 @@
 use crate::ValueType;
 use crate::core::sealed;
-use crate::core::vector_encoder::{
-    DenseVectorEncoder, PackedSparseVectorEncoder, QueryEvaluator, SparseVectorEncoder,
-    VectorEncoder,
-};
+use crate::core::vector_encoder::{QueryEvaluator, VectorEncoder};
 use itertools::Itertools;
 
 pub type VectorId = u64;
@@ -83,7 +80,7 @@ pub trait Dataset: sealed::Sealed {
     fn get(&self, index: usize) -> <Self::Encoder as VectorEncoder>::EncodedVector<'_>;
 
     /// Get a vector directy specifying the range in the underlying storage.
-    fn get_by_range(
+    fn get_with_range(
         &self,
         range: std::ops::Range<usize>,
     ) -> <Self::Encoder as VectorEncoder>::EncodedVector<'_>;
@@ -138,11 +135,11 @@ where
     }
 
     #[inline]
-    fn get_by_range(
+    fn get_with_range(
         &self,
         range: std::ops::Range<usize>,
     ) -> <Self::Encoder as VectorEncoder>::EncodedVector<'_> {
-        (*self).get_by_range(range)
+        (*self).get_with_range(range)
     }
 
     #[inline]
@@ -154,24 +151,6 @@ where
     fn iter(&self) -> impl Iterator<Item = <Self::Encoder as VectorEncoder>::EncodedVector<'_>> {
         (*self).iter()
     }
-}
-
-pub trait DenseDatasetTrait: Dataset
-where
-    Self::Encoder: DenseVectorEncoder,
-{
-}
-
-pub trait SparseDatasetTrait: Dataset
-where
-    Self::Encoder: SparseVectorEncoder,
-{
-}
-
-pub trait PackedDatasetTrait: Dataset
-where
-    Self::Encoder: PackedSparseVectorEncoder,
-{
 }
 
 /// Marker trait representing any dataset that stores dense vectors.
@@ -200,6 +179,9 @@ pub trait SparseData: Dataset {}
 pub trait GrowableDataset: Dataset {
     /// Create a new growable dataset with the given encoder.
     fn new(encoder: Self::Encoder) -> Self;
+
+    /// Create a new growable dataset with the given encoder and capacity.
+    fn with_capacity(encoder: Self::Encoder, capacity: usize) -> Self;
 
     /// Push a new vector into the dataset.
     fn push<'a>(&mut self, vec: <Self::Encoder as VectorEncoder>::InputVector<'a>);

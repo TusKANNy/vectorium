@@ -59,7 +59,7 @@ pub type SparseDataset<E> = SparseDatasetGeneric<E, ImmutableSparseStorage<E>>;
 /// assert_eq!(v.values(), &[1.0, 2.0]);
 ///
 /// let range = frozen.range_from_id(0);
-/// let v = frozen.get_by_range(range);
+/// let v = frozen.get_with_range(range);
 /// assert_eq!(v.components(), &[1_u16, 3]);
 /// assert_eq!(v.values(), &[1.0, 2.0]);
 /// ```
@@ -168,11 +168,11 @@ where
     #[inline]
     fn get(&self, index: usize) -> E::EncodedVector<'_> {
         let range = self.range_from_id(index as VectorId);
-        self.get_by_range(range)
+        self.get_with_range(range)
     }
 
     #[inline]
-    fn get_by_range<'a>(&'a self, range: std::ops::Range<usize>) -> E::EncodedVector<'a> {
+    fn get_with_range<'a>(&'a self, range: std::ops::Range<usize>) -> E::EncodedVector<'a> {
         let components = self.storage.components().as_ref();
         let values = self.storage.values().as_ref();
         unsafe { assert_unchecked(components.len() == values.len()) };
@@ -287,14 +287,6 @@ where
     //         _phantom: PhantomData,
     //     }
     // }
-}
-
-impl<E, S> crate::core::dataset::SparseDatasetTrait for SparseDatasetGeneric<E, S>
-where
-    E: SparseVectorEncoder,
-    S: SparseStorage<E>,
-    for<'a> E::EncodedVector<'a>: Vector1DViewTrait,
-{
 }
 
 // impl<E, AC, AV> FromIterator<(AC, AV)> for SparseDatasetGrowable<E>
@@ -708,6 +700,13 @@ where
         }
     }
 
+    fn with_capacity(encoder: E, capacity: usize) -> Self {
+        Self {
+            storage: GrowableSparseStorage::with_capacity(capacity, 0),
+            encoder,
+        }
+    }
+
     /// Adds a new sparse vector to the dataset.
     ///
     /// The `components` parameter is assumed to be a strictly increasing sequence
@@ -879,6 +878,27 @@ where
     /// Returns the size of the dataset in bytes.
     fn space_usage_bytes(&self) -> usize {
         self.storage.space_usage_bytes() + self.encoder.space_usage_bytes()
+    }
+}
+
+impl<C, V, D>
+    SparseDatasetGrowable<crate::encoders::sparse_scalar::ScalarSparseQuantizer<C, V, V, D>>
+where
+    C: ComponentType,
+    V: ValueType + Float + FromF32,
+    D: crate::encoders::sparse_scalar::ScalarSparseSupportedDistance,
+{
+    pub fn new(dim: usize) -> Self {
+        let encoder = crate::encoders::sparse_scalar::ScalarSparseQuantizer::new(dim, dim);
+        crate::GrowableDataset::new(encoder)
+    }
+
+    pub fn with_capacity(dim: usize, capacity: usize) -> Self {
+        let encoder = crate::encoders::sparse_scalar::ScalarSparseQuantizer::new(dim, dim);
+        Self {
+            storage: GrowableSparseStorage::with_capacity(capacity, 0),
+            encoder,
+        }
     }
 }
 
