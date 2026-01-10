@@ -8,7 +8,7 @@ use crate::{ComponentType, SpaceUsage, ValueType};
 pub trait QueryEvaluator<V: VectorView> {
     type Distance: Copy + Ord;
 
-    fn compute_distance(&mut self, vector: V) -> Self::Distance;
+    fn compute_distance(&self, vector: V) -> Self::Distance;
 }
 
 /// Core encoder trait.
@@ -23,13 +23,15 @@ pub trait VectorEncoder: Send + Sync + SpaceUsage {
 
     type EncodedVector<'a>: VectorView;
 
-    type Evaluator<'e, 'q, V>: for<'b>
-        QueryEvaluator<Self::EncodedVector<'b>, Distance = Self::Distance>
+    type Evaluator<'e, 'q, V>: for<'b> QueryEvaluator<Self::EncodedVector<'b>, Distance = Self::Distance>
     where
         V: ValueType,
         Self: 'e;
 
-    fn query_evaluator<'e, 'q, V>(&'e self, query: Self::QueryVector<'q, V>) -> Self::Evaluator<'e, 'q, V>
+    fn query_evaluator<'e, 'q, V>(
+        &'e self,
+        query: Self::QueryVector<'q, V>,
+    ) -> Self::Evaluator<'e, 'q, V>
     where
         V: ValueType;
 

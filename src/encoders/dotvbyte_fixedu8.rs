@@ -221,7 +221,7 @@ impl<'e, 'q, 'v, V: ValueType> QueryEvaluator<PackedVectorView<'v, u64>>
     type Distance = DotProduct;
 
     #[inline]
-    fn compute_distance(&mut self, vector: PackedVectorView<'v, u64>) -> DotProduct {
+    fn compute_distance(&self, vector: PackedVectorView<'v, u64>) -> DotProduct {
         let dotvbyte_view = unsafe { DotVbyteFixedu8::from_unchecked_slice(vector.data()) };
         DotProduct::from(dotvbyte_view.dot_product(&self.dense_query))
     }

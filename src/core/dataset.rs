@@ -104,7 +104,7 @@ pub trait Dataset: sealed::Sealed {
             return Vec::new();
         }
 
-        let mut evaluator = self.encoder().query_evaluator(query);
+        let evaluator = self.encoder().query_evaluator(query);
 
         self.iter()
             .enumerate()

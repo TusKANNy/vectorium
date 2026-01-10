@@ -236,7 +236,7 @@ where
     type Distance = D;
 
     #[inline]
-    fn compute_distance(&mut self, vector: SparseVectorView<'v, C, OutValue>) -> D {
+    fn compute_distance(&self, vector: SparseVectorView<'v, C, OutValue>) -> D {
         let query_view = SparseVectorView::new(self.query_components, &self.query_values);
         D::compute_sparse(&self.dense_query, query_view, vector)
     }

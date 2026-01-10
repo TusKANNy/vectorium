@@ -124,7 +124,7 @@ where
     type Distance = D;
 
     #[inline]
-    fn compute_distance(&mut self, vector: DenseVectorView<'v, Out>) -> D {
+    fn compute_distance(&self, vector: DenseVectorView<'v, Out>) -> D {
         let _ = self.encoder;
         D::compute_dense(self.query, vector)
     }
