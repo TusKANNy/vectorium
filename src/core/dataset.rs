@@ -72,6 +72,12 @@ pub trait Dataset: sealed::Sealed {
 
     fn len(&self) -> usize;
 
+    fn nnz(&self) -> usize;
+
+    fn range_from_id(&self, id: VectorId) -> std::ops::Range<usize>;
+
+    fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId;
+
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -127,6 +133,21 @@ where
     #[inline]
     fn len(&self) -> usize {
         (*self).len()
+    }
+
+    #[inline]
+    fn nnz(&self) -> usize {
+        (*self).nnz()
+    }
+
+    #[inline]
+    fn range_from_id(&self, id: VectorId) -> std::ops::Range<usize> {
+        (*self).range_from_id(id)
+    }
+
+    #[inline]
+    fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId {
+        (*self).id_from_range(range)
     }
 
     #[inline]

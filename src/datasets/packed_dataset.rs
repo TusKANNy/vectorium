@@ -9,12 +9,18 @@ use crate::{Dataset, GrowableDataset, PackedVectorView, SparseData, VectorId};
 use rayon::prelude::*;
 
 /// A growable packed dataset.
-pub type PackedSparseDatasetGrowable<E> =
-    PackedSparseDatasetGeneric<E, Vec<usize>, Vec<<E as PackedSparseVectorEncoder>::PackedValueType>>;
+pub type PackedSparseDatasetGrowable<E> = PackedSparseDatasetGeneric<
+    E,
+    Vec<usize>,
+    Vec<<E as PackedSparseVectorEncoder>::PackedValueType>,
+>;
 
 /// An immutable packed dataset.
-pub type PackedSparseDataset<E> =
-    PackedSparseDatasetGeneric<E, Box<[usize]>, Box<[<E as PackedSparseVectorEncoder>::PackedValueType]>>;
+pub type PackedSparseDataset<E> = PackedSparseDatasetGeneric<
+    E,
+    Box<[usize]>,
+    Box<[<E as PackedSparseVectorEncoder>::PackedValueType]>,
+>;
 
 /// Dataset storing variable-length packed encodings in a single concatenated `data` array.
 ///
@@ -127,7 +133,11 @@ where
 }
 
 impl<E> GrowableDataset
-    for PackedSparseDatasetGeneric<E, Vec<usize>, Vec<<E as PackedSparseVectorEncoder>::PackedValueType>>
+    for PackedSparseDatasetGeneric<
+        E,
+        Vec<usize>,
+        Vec<<E as PackedSparseVectorEncoder>::PackedValueType>,
+    >
 where
     E: PackedSparseVectorEncoder,
 {
@@ -185,6 +195,31 @@ where
     type Encoder = E;
 
     #[inline]
+    fn nnz(&self) -> usize {
+        self.nnz
+    }
+
+    #[inline]
+    fn range_from_id(&self, id: VectorId) -> std::ops::Range<usize> {
+        let index = id as usize;
+        let offsets = self.offsets.as_ref();
+        assert!(index + 1 < offsets.len(), "Index out of bounds.");
+        offsets[index]..offsets[index + 1]
+    }
+
+    #[inline]
+    fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId {
+        let offsets = self.offsets.as_ref();
+        let idx = offsets.binary_search(&range.start).unwrap();
+        assert_eq!(
+            offsets[idx + 1],
+            range.end,
+            "Range does not match vector boundaries."
+        );
+        idx as VectorId
+    }
+
+    #[inline]
     fn encoder(&self) -> &E {
         &self.encoder
     }
@@ -219,8 +254,6 @@ where
             .map(move |w| PackedVectorView::new(&data[w[0]..w[1]]))
     }
 }
-
-
 
 impl<E, Offsets, Data> SparseData for PackedSparseDatasetGeneric<E, Offsets, Data>
 where

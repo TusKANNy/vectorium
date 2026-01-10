@@ -4,8 +4,8 @@ use std::hint::assert_unchecked;
 use crate::SpaceUsage;
 use crate::core::sealed;
 use crate::core::storage::{GrowableSparseStorage, ImmutableSparseStorage, SparseStorage};
-use crate::core::vector_encoder::{SparseVectorEncoder, VectorEncoder};
 use crate::core::vector::{SparseVectorView, VectorView};
+use crate::core::vector_encoder::{SparseVectorEncoder, VectorEncoder};
 use crate::utils::is_strictly_sorted;
 use crate::{ComponentType, Float, FromF32, ValueType, VectorId};
 use crate::{Dataset, GrowableDataset, SparseData};
@@ -138,6 +138,31 @@ where
     for<'a> E::EncodedVector<'a>: VectorView,
 {
     type Encoder = E;
+
+    #[inline]
+    fn nnz(&self) -> usize {
+        self.storage.components().as_ref().len()
+    }
+
+    #[inline]
+    fn range_from_id(&self, id: VectorId) -> std::ops::Range<usize> {
+        let offsets = self.storage.offsets().as_ref();
+        let index = id as usize;
+        assert!(index + 1 < offsets.len(), "Index out of bounds.");
+        offsets[index]..offsets[index + 1]
+    }
+
+    #[inline]
+    fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId {
+        let offsets = self.storage.offsets().as_ref();
+        let idx = offsets.binary_search(&range.start).unwrap();
+        assert_eq!(
+            offsets[idx + 1],
+            range.end,
+            "Range does not match vector boundaries."
+        );
+        idx as VectorId
+    }
 
     /// Retrieves the components and values of the sparse vector at the specified index.
     ///

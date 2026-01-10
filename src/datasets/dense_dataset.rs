@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::SpaceUsage;
 use crate::core::sealed;
 use crate::core::vector_encoder::{DenseVectorEncoder, VectorEncoder};
-use crate::{Dataset, GrowableDataset};
+use crate::{Dataset, GrowableDataset, VectorId};
 // use crate::{DenseVectorView};
 
 use rayon::prelude::*;
@@ -107,6 +107,46 @@ where
     #[inline]
     fn len(&self) -> usize {
         self.n_vecs
+    }
+
+    #[inline]
+    fn nnz(&self) -> usize {
+        self.data.as_ref().len()
+    }
+
+    #[inline]
+    fn range_from_id(&self, id: VectorId) -> std::ops::Range<usize> {
+        let m = self.encoder.output_dim();
+        let index = id as usize;
+        assert!(index < self.n_vecs, "Index out of bounds.");
+        let start = index * m;
+        start..start + m
+    }
+
+    #[inline]
+    fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId {
+        let m = self.encoder.output_dim();
+
+        if m == 0 {
+            assert_eq!(
+                range.start, range.end,
+                "Range does not match vector boundaries."
+            );
+            return 0;
+        }
+
+        assert!(
+            range.start % m == 0,
+            "Range does not match vector boundaries."
+        );
+        assert_eq!(
+            range.end,
+            range.start + m,
+            "Range does not match vector boundaries."
+        );
+        let idx = range.start / m;
+        assert!(idx < self.n_vecs, "Index out of bounds.");
+        idx as VectorId
     }
 
     #[inline]
