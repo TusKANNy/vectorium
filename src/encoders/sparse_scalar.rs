@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
+use crate::core::vector::SparseVectorView;
 use crate::core::vector_encoder::{
     DenseVectorOwned, QueryEvaluator, SparseVectorEncoder, VectorEncoder,
 };
-use crate::core::vector::SparseVectorView;
 use crate::distances::{
     Distance, DotProduct, dot_product_dense_sparse_unchecked,
     dot_product_sparse_with_merge_unchecked,
@@ -115,23 +115,26 @@ where
 {
     type Distance = D;
     type InputVector<'a> = SparseVectorView<'a, C, InValue>;
-    type QueryVector<'a, V>
-        = SparseVectorView<'a, C, V>
+    type QueryVector<'q, V>
+        = SparseVectorView<'q, C, V>
     where
         V: ValueType;
     type EncodedVector<'a> = SparseVectorView<'a, C, OutValue>;
 
-    type Evaluator<'a, V>
-        = ScalarSparseQueryEvaluator<'a, C, OutValue, D, V>
+    type Evaluator<'e, 'q, V>
+        = ScalarSparseQueryEvaluator<'e, 'q, C, OutValue, D, V>
     where
         V: ValueType,
-        Self: 'a;
+        Self: 'e;
 
-    fn query_evaluator<'a, V>(&'a self, query: Self::QueryVector<'a, V>) -> Self::Evaluator<'a, V>
+    fn query_evaluator<'e, 'q, V>(
+        &'e self,
+        query: Self::QueryVector<'q, V>,
+    ) -> Self::Evaluator<'e, 'q, V>
     where
         V: ValueType,
     {
-        ScalarSparseQueryEvaluator::new(query, self)
+        ScalarSparseQueryEvaluator::new::<InValue>(query, self)
     }
 
     #[inline]
@@ -147,7 +150,7 @@ where
 
 /// Query evaluator for ScalarSparseQuantizer.
 #[derive(Debug, Clone)]
-pub struct ScalarSparseQueryEvaluator<'a, C, OutValue, D, V>
+pub struct ScalarSparseQueryEvaluator<'e, 'q, C, OutValue, D, V>
 where
     C: ComponentType,
     OutValue: ValueType + Float + FromF32,
@@ -156,11 +159,11 @@ where
 {
     dense_query: Option<DenseVectorOwned<f32>>,
     query_values: Vec<f32>,
-    query_components: &'a [C],
-    _phantom: PhantomData<(OutValue, D, V)>,
+    query_components: &'q [C],
+    _phantom: PhantomData<(&'e (), OutValue, D, V)>,
 }
 
-impl<'a, C, OutValue, D, V> ScalarSparseQueryEvaluator<'a, C, OutValue, D, V>
+impl<'e, 'q, C, OutValue, D, V> ScalarSparseQueryEvaluator<'e, 'q, C, OutValue, D, V>
 where
     C: ComponentType,
     OutValue: ValueType + Float + FromF32,
@@ -168,8 +171,8 @@ where
     V: ValueType,
 {
     pub fn new<InValue>(
-        query: SparseVectorView<'a, C, V>,
-        quantizer: &ScalarSparseQuantizer<C, InValue, OutValue, D>,
+        query: SparseVectorView<'q, C, V>,
+        quantizer: &'e ScalarSparseQuantizer<C, InValue, OutValue, D>,
     ) -> Self
     where
         InValue: ValueType + Float,
@@ -222,8 +225,8 @@ where
     }
 }
 
-impl<'a, 'v, C, OutValue, D, V> QueryEvaluator<SparseVectorView<'v, C, OutValue>>
-    for ScalarSparseQueryEvaluator<'a, C, OutValue, D, V>
+impl<'e, 'q, 'v, C, OutValue, D, V> QueryEvaluator<SparseVectorView<'v, C, OutValue>>
+    for ScalarSparseQueryEvaluator<'e, 'q, C, OutValue, D, V>
 where
     C: ComponentType,
     OutValue: ValueType + Float + FromF32,

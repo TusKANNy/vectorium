@@ -1,5 +1,5 @@
 pub use crate::core::vector::{
-    DenseVectorOwned, DenseVectorView, PackedVectorOwned, PackedVectorView,
+    DenseVectorOwned, DenseVectorView, PackedVectorOwned, PackedVectorView, PlainVectorView,
     SparseVectorOwned, SparseVectorView, VectorView,
 };
 use crate::{ComponentType, SpaceUsage, ValueType};
@@ -17,19 +17,19 @@ pub trait VectorEncoder: Send + Sync + SpaceUsage {
 
     type InputVector<'a>: VectorView;
 
-    type QueryVector<'a, V>: VectorView
+    type QueryVector<'q, V>: PlainVectorView<V>
     where
-        V: ValueType,
-        Self: 'a;
+        V: ValueType;
 
     type EncodedVector<'a>: VectorView;
 
-    type Evaluator<'a, V>: for<'b> QueryEvaluator<Self::EncodedVector<'b>, Distance = Self::Distance>
+    type Evaluator<'e, 'q, V>: for<'b>
+        QueryEvaluator<Self::EncodedVector<'b>, Distance = Self::Distance>
     where
         V: ValueType,
-        Self: 'a;
+        Self: 'e;
 
-    fn query_evaluator<'a, V>(&'a self, query: Self::QueryVector<'a, V>) -> Self::Evaluator<'a, V>
+    fn query_evaluator<'e, 'q, V>(&'e self, query: Self::QueryVector<'q, V>) -> Self::Evaluator<'e, 'q, V>
     where
         V: ValueType;
 
@@ -66,11 +66,7 @@ pub trait DenseVectorEncoder:
 pub trait SparseVectorEncoder:
     for<'a> VectorEncoder<
         InputVector<'a> = SparseVectorView<'a, Self::InputComponentType, Self::InputValueType>,
-        EncodedVector<'a> = SparseVectorView<
-            'a,
-            Self::OutputComponentType,
-            Self::OutputValueType,
-        >,
+        EncodedVector<'a> = SparseVectorView<'a, Self::OutputComponentType, Self::OutputValueType>,
     >
 {
     type InputComponentType: ComponentType;

@@ -7,6 +7,26 @@ pub trait VectorView {}
 impl<T: VectorView> VectorView for &T {}
 impl<T: VectorView> VectorView for &mut T {}
 
+/// Marker trait for *plain* (not encoded) vector views.
+///
+/// Intended for values supplied by the user (e.g. query vectors), as opposed to vectors
+/// already in an encoder's output representation.
+pub trait PlainVectorView<V: ValueType>: VectorView {}
+
+impl<V, T> PlainVectorView<V> for &T
+where
+    V: ValueType,
+    T: PlainVectorView<V>,
+{
+}
+
+impl<V, T> PlainVectorView<V> for &mut T
+where
+    V: ValueType,
+    T: PlainVectorView<V>,
+{
+}
+
 /// A view over a dense vector (slice of values).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DenseVectorView<'a, V: ValueType> {
@@ -41,6 +61,8 @@ impl<'a, V: ValueType> DenseVectorView<'a, V> {
 }
 
 impl<'a, V: ValueType> VectorView for DenseVectorView<'a, V> {}
+
+impl<'a, V: ValueType> PlainVectorView<V> for DenseVectorView<'a, V> {}
 
 /// A view over a sparse vector (slices of components and values).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -85,6 +107,8 @@ impl<'a, C: ComponentType, V: ValueType> SparseVectorView<'a, C, V> {
 }
 
 impl<'a, C: ComponentType, V: ValueType> VectorView for SparseVectorView<'a, C, V> {}
+
+impl<'a, C: ComponentType, V: ValueType> PlainVectorView<V> for SparseVectorView<'a, C, V> {}
 
 /// A view over a packed vector.
 #[derive(Debug, Clone, Copy, PartialEq)]

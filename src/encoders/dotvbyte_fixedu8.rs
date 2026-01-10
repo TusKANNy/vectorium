@@ -4,8 +4,8 @@ use std::marker::PhantomData;
 mod swizzle;
 
 use crate::core::sealed;
-use crate::core::vector_encoder::{PackedSparseVectorEncoder, QueryEvaluator, VectorEncoder};
 use crate::core::vector::{PackedVectorView, SparseVectorView};
+use crate::core::vector_encoder::{PackedSparseVectorEncoder, QueryEvaluator, VectorEncoder};
 use crate::distances::DotProduct;
 use crate::{FixedU8Q, SpaceUsage, ValueType};
 use num_traits::{AsPrimitive, ToPrimitive};
@@ -134,19 +134,22 @@ impl DotVByteFixedU8Encoder {
 impl VectorEncoder for DotVByteFixedU8Encoder {
     type Distance = DotProduct;
     type InputVector<'a> = SparseVectorView<'a, u16, FixedU8Q>;
-    type QueryVector<'a, V>
-        = SparseVectorView<'a, u16, V>
+    type QueryVector<'q, V>
+        = SparseVectorView<'q, u16, V>
     where
         V: ValueType;
     type EncodedVector<'a> = PackedVectorView<'a, u64>;
 
-    type Evaluator<'a, V>
-        = DotVByteFixedU8QueryEvaluator<'a, V>
+    type Evaluator<'e, 'q, V>
+        = DotVByteFixedU8QueryEvaluator<'e, 'q, V>
     where
         V: ValueType,
-        Self: 'a;
+        Self: 'e;
 
-    fn query_evaluator<'a, V>(&'a self, query: Self::QueryVector<'a, V>) -> Self::Evaluator<'a, V>
+    fn query_evaluator<'e, 'q, V>(
+        &'e self,
+        query: Self::QueryVector<'q, V>,
+    ) -> Self::Evaluator<'e, 'q, V>
     where
         V: ValueType,
     {
@@ -165,14 +168,14 @@ impl VectorEncoder for DotVByteFixedU8Encoder {
 }
 
 #[derive(Debug, Clone)]
-pub struct DotVByteFixedU8QueryEvaluator<'a, V: ValueType> {
+pub struct DotVByteFixedU8QueryEvaluator<'e, 'q, V: ValueType> {
     dense_query: Vec<f32>,
-    _phantom: PhantomData<&'a V>,
+    _phantom: PhantomData<(&'e (), &'q V)>,
 }
 
-impl<'a, V: ValueType> DotVByteFixedU8QueryEvaluator<'a, V> {
+impl<'e, 'q, V: ValueType> DotVByteFixedU8QueryEvaluator<'e, 'q, V> {
     #[inline]
-    pub fn new(query: SparseVectorView<'a, u16, V>, quantizer: &DotVByteFixedU8Encoder) -> Self {
+    pub fn new(query: SparseVectorView<'q, u16, V>, quantizer: &'e DotVByteFixedU8Encoder) -> Self {
         let max_c = query
             .components()
             .iter()
@@ -212,8 +215,8 @@ impl<'a, V: ValueType> DotVByteFixedU8QueryEvaluator<'a, V> {
     }
 }
 
-impl<'a, 'v, V: ValueType> QueryEvaluator<PackedVectorView<'v, u64>>
-    for DotVByteFixedU8QueryEvaluator<'a, V>
+impl<'e, 'q, 'v, V: ValueType> QueryEvaluator<PackedVectorView<'v, u64>>
+    for DotVByteFixedU8QueryEvaluator<'e, 'q, V>
 {
     type Distance = DotProduct;
 

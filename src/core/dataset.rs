@@ -3,7 +3,7 @@ use crate::core::sealed;
 use crate::core::vector_encoder::{QueryEvaluator, VectorEncoder};
 use itertools::Itertools;
 
-pub type VectorId = usize;
+pub type VectorId = u64;
 
 #[derive(Debug, PartialOrd, Eq, Ord, PartialEq, Copy, Clone)]
 pub struct ScoredItemGeneric<D, T> {
@@ -95,9 +95,9 @@ pub trait Dataset: sealed::Sealed {
 
     fn prefetch_with_range(&self, range: std::ops::Range<usize>);
 
-    fn search<'a, V: ValueType>(
-        &'a self,
-        query: <Self::Encoder as VectorEncoder>::QueryVector<'a, V>,
+    fn search<'d, 'q, V: ValueType>(
+        &'d self,
+        query: <Self::Encoder as VectorEncoder>::QueryVector<'q, V>,
         k: usize,
     ) -> Vec<ScoredVector<<Self::Encoder as VectorEncoder>::Distance>> {
         if k == 0 {
@@ -110,7 +110,7 @@ pub trait Dataset: sealed::Sealed {
             .enumerate()
             .map(|(i, vector)| ScoredVector {
                 distance: evaluator.compute_distance(vector),
-                vector: i as u64,
+                vector: i as VectorId,
             })
             .k_smallest(k)
             .collect()
