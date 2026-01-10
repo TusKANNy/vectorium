@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::any::TypeId;
 use std::marker::PhantomData;
 
 use crate::core::vector::SparseVectorView;
@@ -158,9 +159,25 @@ where
     V: ValueType,
 {
     dense_query: Option<DenseVectorOwned<f32>>,
-    query_values: Vec<f32>,
+    query_values: QueryValues<'q>,
     query_components: &'q [C],
     _phantom: PhantomData<(&'e (), OutValue, D, V)>,
+}
+
+#[derive(Debug, Clone)]
+enum QueryValues<'q> {
+    Borrowed(&'q [f32]),
+    Owned(Vec<f32>),
+}
+
+impl<'q> QueryValues<'q> {
+    #[inline]
+    fn as_slice(&self) -> &[f32] {
+        match self {
+            Self::Borrowed(slice) => slice,
+            Self::Owned(values) => values,
+        }
+    }
 }
 
 impl<'e, 'q, C, OutValue, D, V> ScalarSparseQueryEvaluator<'e, 'q, C, OutValue, D, V>
@@ -170,6 +187,16 @@ where
     D: ScalarSparseSupportedDistance,
     V: ValueType,
 {
+    #[inline]
+    fn values_as_f32_slice(values: &'q [V]) -> Option<&'q [f32]> {
+        if TypeId::of::<V>() != TypeId::of::<f32>() {
+            return None;
+        }
+
+        // SAFETY: TypeId check ensures `V == f32`, so the slice layout matches.
+        Some(unsafe { &*(values as *const [V] as *const [f32]) })
+    }
+
     pub fn new<InValue>(
         query: SparseVectorView<'q, C, V>,
         quantizer: &'e ScalarSparseQuantizer<C, InValue, OutValue, D>,
@@ -195,11 +222,25 @@ where
             "Query vector components and values length mismatch."
         );
 
+        let query_values = if let Some(values) = Self::values_as_f32_slice(query.values()) {
+            QueryValues::Borrowed(values)
+        } else {
+            QueryValues::Owned(
+                query
+                    .values()
+                    .iter()
+                    .map(|v| v.to_f32().expect("Failed to convert value to f32"))
+                    .collect(),
+            )
+        };
+
+        let query_values_slice = query_values.as_slice();
+
         let dense_query = if quantizer.input_dim() < 2_usize.pow(20) {
             // For small dimensions, create a dense representation
             let mut dense_query_vec = vec![0.0f32; quantizer.input_dim()];
-            for (&i, &v) in query.components().iter().zip(query.values().iter()) {
-                dense_query_vec[i.as_()] = v.to_f32().expect("Failed to convert value to f32");
+            for (&i, &v) in query.components().iter().zip(query_values_slice.iter()) {
+                dense_query_vec[i.as_()] = v;
             }
             Some(DenseVectorOwned::new(dense_query_vec))
         } else {
@@ -209,12 +250,6 @@ where
             );
             None
         };
-
-        let query_values: Vec<f32> = query
-            .values()
-            .iter()
-            .map(|v| v.to_f32().expect("Failed to convert value to f32"))
-            .collect();
 
         Self {
             dense_query,
@@ -237,7 +272,7 @@ where
 
     #[inline]
     fn compute_distance(&self, vector: SparseVectorView<'v, C, OutValue>) -> D {
-        let query_view = SparseVectorView::new(self.query_components, &self.query_values);
+        let query_view = SparseVectorView::new(self.query_components, self.query_values.as_slice());
         D::compute_sparse(&self.dense_query, query_view, vector)
     }
 }
