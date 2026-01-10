@@ -6,7 +6,7 @@ use crate::core::sealed;
 use crate::core::storage::{GrowableSparseStorage, ImmutableSparseStorage, SparseStorage};
 use crate::core::vector::{SparseVectorView, VectorView};
 use crate::core::vector_encoder::{SparseVectorEncoder, VectorEncoder};
-use crate::utils::is_strictly_sorted;
+use crate::utils::{is_strictly_sorted, prefetch_read_slice};
 use crate::{ComponentType, Float, FromF32, ValueType, VectorId};
 use crate::{Dataset, GrowableDataset, SparseData};
 use num_traits::AsPrimitive;
@@ -209,7 +209,14 @@ where
     }
 
     #[inline]
-    fn prefetch_with_range(&self, _range: std::ops::Range<usize>) {}
+    fn prefetch_with_range(&self, range: std::ops::Range<usize>) {
+        let components = self.storage.components().as_ref();
+        let values = self.storage.values().as_ref();
+        unsafe { assert_unchecked(components.len() == values.len()) };
+
+        prefetch_read_slice(&components[range.clone()]);
+        prefetch_read_slice(&values[range]);
+    }
 
     fn encoder(&self) -> &E {
         &self.encoder
