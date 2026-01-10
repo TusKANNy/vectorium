@@ -3,7 +3,7 @@ use crate::core::sealed;
 use crate::core::vector_encoder::{QueryEvaluator, VectorEncoder};
 use itertools::Itertools;
 
-pub type VectorId = u64;
+pub type VectorId = usize;
 
 #[derive(Debug, PartialOrd, Eq, Ord, PartialEq, Copy, Clone)]
 pub struct ScoredItemGeneric<D, T> {
