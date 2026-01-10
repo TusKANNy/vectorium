@@ -230,8 +230,8 @@ where
     }
 
     #[inline]
-    fn get(&self, index: usize) -> E::EncodedVector<'_> {
-        let range = self.range_from_id(index as VectorId);
+    fn get(&self, index: VectorId) -> E::EncodedVector<'_> {
+        let range = self.range_from_id(index);
         self.get_with_range(range)
     }
 

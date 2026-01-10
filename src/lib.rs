@@ -26,8 +26,8 @@ pub mod utils;
 pub use core::dataset;
 pub use core::distances;
 pub use core::storage;
-pub use core::vector_encoder;
 pub use core::vector;
+pub use core::vector_encoder;
 pub use utils::numeric_markers;
 pub use utils::space_usage;
 
@@ -36,8 +36,8 @@ pub use utils::space_usage::SpaceUsage;
 
 #[allow(non_snake_case)]
 pub use core::vector::{
-    DenseVectorOwned, DenseVectorView, PackedVectorOwned, PackedVectorView,
-    SparseVectorOwned, SparseVectorView, VectorView,
+    DenseVectorOwned, DenseVectorView, PackedVectorOwned, PackedVectorView, SparseVectorOwned,
+    SparseVectorView, VectorView,
 };
 
 pub use core::distances::{Distance, DotProduct, SquaredEuclideanDistance};
@@ -63,7 +63,9 @@ pub use core::storage::{
     GrowableSparseStorage, ImmutableSparseStorage, SparseStorage, SparseStorageMut,
 };
 pub use datasets::dense_dataset::{DenseDataset, DenseDatasetGeneric, DenseDatasetGrowable};
-pub use datasets::packed_dataset::{PackedSparseDataset, PackedSparseDatasetGeneric, PackedSparseDatasetGrowable};
+pub use datasets::packed_dataset::{
+    PackedSparseDataset, PackedSparseDatasetGeneric, PackedSparseDatasetGrowable,
+};
 pub use datasets::sparse_dataset::{SparseDataset, SparseDatasetGrowable};
 
 // Useful type aliases for dense dataset types
@@ -81,6 +83,13 @@ pub type ScalarSparseDatasetGrowable<C, W, V, D> =
 
 pub type PlainSparseDataset<C, V, D> = SparseDataset<PlainSparseQuantizer<C, V, D>>;
 pub type PlainSparseDatasetGrowable<C, V, D> = SparseDatasetGrowable<PlainSparseQuantizer<C, V, D>>;
+
+pub use core::dataset::{ScoredRange, ScoredVector};
+
+pub type ScoredVectorDotProduct = ScoredVector<DotProduct>;
+pub type ScoredRangeDotProduct = ScoredRange<DotProduct>;
+pub type ScoredVectorEuclidean = ScoredVector<SquaredEuclideanDistance>;
+pub type ScoredRangeEuclidean = ScoredRange<SquaredEuclideanDistance>;
 
 pub use datasets::readers;
 pub use datasets::readers::{read_npy_f32, read_seismic_format};

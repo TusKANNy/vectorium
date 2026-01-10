@@ -83,7 +83,7 @@ pub trait Dataset: sealed::Sealed {
     }
 
     /// Get the representation of the vector with the given id.
-    fn get(&self, index: usize) -> <Self::Encoder as VectorEncoder>::EncodedVector<'_>;
+    fn get(&self, index: VectorId) -> <Self::Encoder as VectorEncoder>::EncodedVector<'_>;
 
     /// Get a vector directy specifying the range in the underlying storage.
     fn get_with_range(
@@ -151,7 +151,7 @@ where
     }
 
     #[inline]
-    fn get(&self, index: usize) -> <Self::Encoder as VectorEncoder>::EncodedVector<'_> {
+    fn get(&self, index: VectorId) -> <Self::Encoder as VectorEncoder>::EncodedVector<'_> {
         (*self).get(index)
     }
 

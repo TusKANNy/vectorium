@@ -150,9 +150,10 @@ where
     }
 
     #[inline]
-    fn get(&self, index: usize) -> E::EncodedVector<'_> {
+    fn get(&self, index: VectorId) -> E::EncodedVector<'_> {
+        assert!(index < self.n_vecs as VectorId, "Index out of bounds.");
         let m = self.encoder.output_dim();
-        let start = index * m;
+        let start = index as usize * m;
         let end = start + m;
         DenseVectorView::new(&self.data.as_ref()[start..end])
     }
