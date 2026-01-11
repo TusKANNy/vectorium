@@ -159,8 +159,8 @@ where
     V: ValueType,
 {
     dense_query: Option<DenseVectorOwned<f32>>,
-    query_values: QueryValues<'q>,
-    query_components: &'q [C],
+    query_values: Option<QueryValues<'q>>,
+    query_components: Option<&'q [C]>,
     _phantom: PhantomData<(&'e (), OutValue, D, V)>,
 }
 
@@ -222,39 +222,54 @@ where
             "Query vector components and values length mismatch."
         );
 
-        let query_values = if let Some(values) = Self::values_as_f32_slice(query.values()) {
-            QueryValues::Borrowed(values)
-        } else {
-            QueryValues::Owned(
-                query
-                    .values()
-                    .iter()
-                    .map(|v| v.to_f32().expect("Failed to convert value to f32"))
-                    .collect(),
-            )
-        };
+        let small_dim = quantizer.input_dim() < 2_usize.pow(20);
 
-        let query_values_slice = query_values.as_slice();
+        // Build a dense query only for small dimensionalities.
+        // For large dimensionalities we keep a sparse representation and use merge-based computation.
+        let (dense_query, query_values, query_components) = if small_dim {
+            let values_f32: QueryValues<'q> = if let Some(values) = Self::values_as_f32_slice(query.values()) {
+                QueryValues::Borrowed(values)
+            } else {
+                QueryValues::Owned(
+                    query
+                        .values()
+                        .iter()
+                        .map(|v| v.to_f32().expect("Failed to convert value to f32"))
+                        .collect(),
+                )
+            };
 
-        let dense_query = if quantizer.input_dim() < 2_usize.pow(20) {
-            // For small dimensions, create a dense representation
             let mut dense_query_vec = vec![0.0f32; quantizer.input_dim()];
-            for (&i, &v) in query.components().iter().zip(query_values_slice.iter()) {
+            for (&i, &v) in query.components().iter().zip(values_f32.as_slice().iter()) {
                 dense_query_vec[i.as_()] = v;
             }
-            Some(DenseVectorOwned::new(dense_query_vec))
+
+            (Some(DenseVectorOwned::new(dense_query_vec)), None, None)
         } else {
             assert!(
                 is_strictly_sorted(query.components()),
                 "Query components must be sorted in strictly ascending order."
             );
-            None
+
+            let query_values = if let Some(values) = Self::values_as_f32_slice(query.values()) {
+                QueryValues::Borrowed(values)
+            } else {
+                QueryValues::Owned(
+                    query
+                        .values()
+                        .iter()
+                        .map(|v| v.to_f32().expect("Failed to convert value to f32"))
+                        .collect(),
+                )
+            };
+
+            (None, Some(query_values), Some(query.components()))
         };
 
         Self {
             dense_query,
             query_values,
-            query_components: query.components(),
+            query_components,
             _phantom: PhantomData,
         }
     }
@@ -272,7 +287,17 @@ where
 
     #[inline]
     fn compute_distance(&self, vector: SparseVectorView<'v, C, OutValue>) -> D {
-        let query_view = SparseVectorView::new(self.query_components, self.query_values.as_slice());
+        debug_assert!(self.dense_query.is_some() || self.query_values.is_some());
+
+        // If we have a dense query, the distance implementation should prefer it.
+        // Still, we must pass a well-formed sparse view for the API.
+        let (query_components, query_values): (&[C], &[f32]) =
+            match (&self.query_components, &self.query_values) {
+                (Some(components), Some(values)) => (*components, values.as_slice()),
+                _ => (&[] as &[C], &[] as &[f32]),
+            };
+
+        let query_view = SparseVectorView::new(query_components, query_values);
         D::compute_sparse(&self.dense_query, query_view, vector)
     }
 }
