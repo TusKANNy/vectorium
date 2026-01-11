@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::any::TypeId;
 use std::marker::PhantomData;
 
 use crate::core::vector::SparseVectorView;
@@ -116,26 +115,16 @@ where
 {
     type Distance = D;
     type InputVector<'a> = SparseVectorView<'a, C, InValue>;
-    type QueryVector<'q, V>
-        = SparseVectorView<'q, C, V>
-    where
-        V: ValueType;
+    type QueryVector<'q> = SparseVectorView<'q, C, f32>;
     type EncodedVector<'a> = SparseVectorView<'a, C, OutValue>;
 
-    type Evaluator<'e, 'q, V>
-        = ScalarSparseQueryEvaluator<'e, 'q, C, OutValue, D, V>
+    type Evaluator<'e, 'q>
+        = ScalarSparseQueryEvaluator<'e, 'q, C, OutValue, D>
     where
-        V: ValueType,
         Self: 'e;
 
-    fn query_evaluator<'e, 'q, V>(
-        &'e self,
-        query: Self::QueryVector<'q, V>,
-    ) -> Self::Evaluator<'e, 'q, V>
-    where
-        V: ValueType,
-    {
-        ScalarSparseQueryEvaluator::new::<InValue>(query, self)
+    fn query_evaluator<'e, 'q>(&'e self, query: Self::QueryVector<'q>) -> Self::Evaluator<'e, 'q> {
+        ScalarSparseQueryEvaluator::new(query, self)
     }
 
     #[inline]
@@ -151,54 +140,26 @@ where
 
 /// Query evaluator for ScalarSparseQuantizer.
 #[derive(Debug, Clone)]
-pub struct ScalarSparseQueryEvaluator<'e, 'q, C, OutValue, D, V>
+pub struct ScalarSparseQueryEvaluator<'e, 'q, C, OutValue, D>
 where
     C: ComponentType,
     OutValue: ValueType + Float + FromF32,
     D: ScalarSparseSupportedDistance,
-    V: ValueType,
 {
     dense_query: Option<DenseVectorOwned<f32>>,
-    query_values: Option<QueryValues<'q>>,
+    query_values: Option<&'q [f32]>,
     query_components: Option<&'q [C]>,
-    _phantom: PhantomData<(&'e (), OutValue, D, V)>,
+    _phantom: PhantomData<(&'e (), OutValue, D)>,
 }
 
-#[derive(Debug, Clone)]
-enum QueryValues<'q> {
-    Borrowed(&'q [f32]),
-    Owned(Vec<f32>),
-}
-
-impl<'q> QueryValues<'q> {
-    #[inline]
-    fn as_slice(&self) -> &[f32] {
-        match self {
-            Self::Borrowed(slice) => slice,
-            Self::Owned(values) => values,
-        }
-    }
-}
-
-impl<'e, 'q, C, OutValue, D, V> ScalarSparseQueryEvaluator<'e, 'q, C, OutValue, D, V>
+impl<'e, 'q, C, OutValue, D> ScalarSparseQueryEvaluator<'e, 'q, C, OutValue, D>
 where
     C: ComponentType,
     OutValue: ValueType + Float + FromF32,
     D: ScalarSparseSupportedDistance,
-    V: ValueType,
 {
-    #[inline]
-    fn values_as_f32_slice(values: &'q [V]) -> Option<&'q [f32]> {
-        if TypeId::of::<V>() != TypeId::of::<f32>() {
-            return None;
-        }
-
-        // SAFETY: TypeId check ensures `V == f32`, so the slice layout matches.
-        Some(unsafe { &*(values as *const [V] as *const [f32]) })
-    }
-
     pub fn new<InValue>(
-        query: SparseVectorView<'q, C, V>,
+        query: SparseVectorView<'q, C, f32>,
         quantizer: &'e ScalarSparseQuantizer<C, InValue, OutValue, D>,
     ) -> Self
     where
@@ -227,20 +188,10 @@ where
         // Build a dense query only for small dimensionalities.
         // For large dimensionalities we keep a sparse representation and use merge-based computation.
         let (dense_query, query_values, query_components) = if small_dim {
-            let values_f32: QueryValues<'q> = if let Some(values) = Self::values_as_f32_slice(query.values()) {
-                QueryValues::Borrowed(values)
-            } else {
-                QueryValues::Owned(
-                    query
-                        .values()
-                        .iter()
-                        .map(|v| v.to_f32().expect("Failed to convert value to f32"))
-                        .collect(),
-                )
-            };
+            let values_f32 = query.values();
 
             let mut dense_query_vec = vec![0.0f32; quantizer.input_dim()];
-            for (&i, &v) in query.components().iter().zip(values_f32.as_slice().iter()) {
+            for (&i, &v) in query.components().iter().zip(values_f32.iter()) {
                 dense_query_vec[i.as_()] = v;
             }
 
@@ -251,19 +202,7 @@ where
                 "Query components must be sorted in strictly ascending order."
             );
 
-            let query_values = if let Some(values) = Self::values_as_f32_slice(query.values()) {
-                QueryValues::Borrowed(values)
-            } else {
-                QueryValues::Owned(
-                    query
-                        .values()
-                        .iter()
-                        .map(|v| v.to_f32().expect("Failed to convert value to f32"))
-                        .collect(),
-                )
-            };
-
-            (None, Some(query_values), Some(query.components()))
+            (None, Some(query.values()), Some(query.components()))
         };
 
         Self {
@@ -275,13 +214,12 @@ where
     }
 }
 
-impl<'e, 'q, 'v, C, OutValue, D, V> QueryEvaluator<SparseVectorView<'v, C, OutValue>>
-    for ScalarSparseQueryEvaluator<'e, 'q, C, OutValue, D, V>
+impl<'e, 'q, 'v, C, OutValue, D> QueryEvaluator<SparseVectorView<'v, C, OutValue>>
+    for ScalarSparseQueryEvaluator<'e, 'q, C, OutValue, D>
 where
     C: ComponentType,
     OutValue: ValueType + Float + FromF32,
     D: ScalarSparseSupportedDistance,
-    V: ValueType,
 {
     type Distance = D;
 
@@ -293,7 +231,7 @@ where
         // Still, we must pass a well-formed sparse view for the API.
         let (query_components, query_values): (&[C], &[f32]) =
             match (&self.query_components, &self.query_values) {
-                (Some(components), Some(values)) => (*components, values.as_slice()),
+                (Some(components), Some(values)) => (*components, *values),
                 _ => (&[] as &[C], &[] as &[f32]),
             };
 

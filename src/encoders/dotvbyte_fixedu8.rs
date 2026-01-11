@@ -134,25 +134,15 @@ impl DotVByteFixedU8Encoder {
 impl VectorEncoder for DotVByteFixedU8Encoder {
     type Distance = DotProduct;
     type InputVector<'a> = SparseVectorView<'a, u16, FixedU8Q>;
-    type QueryVector<'q, V>
-        = SparseVectorView<'q, u16, V>
-    where
-        V: ValueType;
+    type QueryVector<'q> = SparseVectorView<'q, u16, f32>;
     type EncodedVector<'a> = PackedVectorView<'a, u64>;
 
-    type Evaluator<'e, 'q, V>
-        = DotVByteFixedU8QueryEvaluator<'e, 'q, V>
+    type Evaluator<'e, 'q>
+        = DotVByteFixedU8QueryEvaluator<'e, 'q>
     where
-        V: ValueType,
         Self: 'e;
 
-    fn query_evaluator<'e, 'q, V>(
-        &'e self,
-        query: Self::QueryVector<'q, V>,
-    ) -> Self::Evaluator<'e, 'q, V>
-    where
-        V: ValueType,
-    {
+    fn query_evaluator<'e, 'q>(&'e self, query: Self::QueryVector<'q>) -> Self::Evaluator<'e, 'q> {
         DotVByteFixedU8QueryEvaluator::new(query, self)
     }
 
@@ -168,14 +158,17 @@ impl VectorEncoder for DotVByteFixedU8Encoder {
 }
 
 #[derive(Debug, Clone)]
-pub struct DotVByteFixedU8QueryEvaluator<'e, 'q, V: ValueType> {
+pub struct DotVByteFixedU8QueryEvaluator<'e, 'q> {
     dense_query: Vec<f32>,
-    _phantom: PhantomData<(&'e (), &'q V)>,
+    _phantom: PhantomData<(&'e (), &'q ())>,
 }
 
-impl<'e, 'q, V: ValueType> DotVByteFixedU8QueryEvaluator<'e, 'q, V> {
+impl<'e, 'q> DotVByteFixedU8QueryEvaluator<'e, 'q> {
     #[inline]
-    pub fn new(query: SparseVectorView<'q, u16, V>, quantizer: &'e DotVByteFixedU8Encoder) -> Self {
+    pub fn new(
+        query: SparseVectorView<'q, u16, f32>,
+        quantizer: &'e DotVByteFixedU8Encoder,
+    ) -> Self {
         let max_c = query
             .components()
             .iter()
@@ -205,7 +198,7 @@ impl<'e, 'q, V: ValueType> DotVByteFixedU8QueryEvaluator<'e, 'q, V> {
             } else {
                 c
             };
-            vec[mapped_component as usize] = v.to_f32().unwrap();
+            vec[mapped_component as usize] = v;
         }
 
         Self {
@@ -215,8 +208,8 @@ impl<'e, 'q, V: ValueType> DotVByteFixedU8QueryEvaluator<'e, 'q, V> {
     }
 }
 
-impl<'e, 'q, 'v, V: ValueType> QueryEvaluator<PackedVectorView<'v, u64>>
-    for DotVByteFixedU8QueryEvaluator<'e, 'q, V>
+impl<'e, 'q, 'v> QueryEvaluator<PackedVectorView<'v, u64>>
+    for DotVByteFixedU8QueryEvaluator<'e, 'q>
 {
     type Distance = DotProduct;
 

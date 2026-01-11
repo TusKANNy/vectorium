@@ -84,42 +84,39 @@ where
     }
 }
 
-/// Query evaluator for ScalarDenseQuantizer.
+/// Query evaluator for ScalarDenseQuantizer (fixed `f32` query vectors).
 #[derive(Debug, Clone, Copy)]
-pub struct ScalarDenseQueryEvaluator<'e, 'q, In, Out, D, V>
+pub struct ScalarDenseQueryEvaluator<'e, 'q, In, Out, D>
 where
     In: ValueType,
     Out: ValueType + FromF32,
     D: ScalarDenseSupportedDistance,
-    V: ValueType,
 {
     encoder: &'e ScalarDenseQuantizer<In, Out, D>,
-    query: DenseVectorView<'q, V>,
+    query: DenseVectorView<'q, f32>,
 }
 
-impl<'e, 'q, In, Out, D, V> ScalarDenseQueryEvaluator<'e, 'q, In, Out, D, V>
+impl<'e, 'q, In, Out, D> ScalarDenseQueryEvaluator<'e, 'q, In, Out, D>
 where
     In: ValueType,
     Out: ValueType + FromF32,
     D: ScalarDenseSupportedDistance,
-    V: ValueType,
 {
     #[inline]
     pub fn new(
         encoder: &'e ScalarDenseQuantizer<In, Out, D>,
-        query: DenseVectorView<'q, V>,
+        query: DenseVectorView<'q, f32>,
     ) -> Self {
         Self { encoder, query }
     }
 }
 
-impl<'e, 'q, 'v, In, Out, D, V> QueryEvaluator<DenseVectorView<'v, Out>>
-    for ScalarDenseQueryEvaluator<'e, 'q, In, Out, D, V>
+impl<'e, 'q, 'v, In, Out, D> QueryEvaluator<DenseVectorView<'v, Out>>
+    for ScalarDenseQueryEvaluator<'e, 'q, In, Out, D>
 where
     In: ValueType,
     Out: ValueType + FromF32,
     D: ScalarDenseSupportedDistance,
-    V: ValueType,
 {
     type Distance = D;
 
@@ -138,26 +135,16 @@ where
 {
     type Distance = D;
     type InputVector<'a> = DenseVectorView<'a, In>;
-    type QueryVector<'q, V>
-        = DenseVectorView<'q, V>
-    where
-        V: ValueType;
+    type QueryVector<'q> = DenseVectorView<'q, f32>;
     type EncodedVector<'a> = DenseVectorView<'a, Out>;
 
-    type Evaluator<'e, 'q, V>
-        = ScalarDenseQueryEvaluator<'e, 'q, In, Out, D, V>
+    type Evaluator<'e, 'q>
+        = ScalarDenseQueryEvaluator<'e, 'q, In, Out, D>
     where
-        V: ValueType,
         Self: 'e;
 
     #[inline]
-    fn query_evaluator<'e, 'q, V>(
-        &'e self,
-        query: Self::QueryVector<'q, V>,
-    ) -> Self::Evaluator<'e, 'q, V>
-    where
-        V: ValueType,
-    {
+    fn query_evaluator<'e, 'q>(&'e self, query: Self::QueryVector<'q>) -> Self::Evaluator<'e, 'q> {
         assert_eq!(
             query.len(),
             self.input_dim(),

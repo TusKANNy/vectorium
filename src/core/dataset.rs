@@ -1,4 +1,3 @@
-use crate::ValueType;
 use crate::core::sealed;
 use crate::core::vector_encoder::{QueryEvaluator, VectorEncoder};
 use itertools::Itertools;
@@ -95,9 +94,9 @@ pub trait Dataset: sealed::Sealed {
 
     fn prefetch_with_range(&self, range: std::ops::Range<usize>);
 
-    fn search<'d, 'q, V: ValueType>(
+    fn search<'d, 'q>(
         &'d self,
-        query: <Self::Encoder as VectorEncoder>::QueryVector<'q, V>,
+        query: <Self::Encoder as VectorEncoder>::QueryVector<'q>,
         k: usize,
     ) -> Vec<ScoredVector<<Self::Encoder as VectorEncoder>::Distance>> {
         if k == 0 {

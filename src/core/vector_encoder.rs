@@ -17,23 +17,15 @@ pub trait VectorEncoder: Send + Sync + SpaceUsage {
 
     type InputVector<'a>: VectorView;
 
-    type QueryVector<'q, V>: PlainVectorView<V>
-    where
-        V: ValueType;
+    type QueryVector<'q>: PlainVectorView<f32>;
 
     type EncodedVector<'a>: VectorView;
 
-    type Evaluator<'e, 'q, V>: for<'b> QueryEvaluator<Self::EncodedVector<'b>, Distance = Self::Distance>
+    type Evaluator<'e, 'q>: for<'b> QueryEvaluator<Self::EncodedVector<'b>, Distance = Self::Distance>
     where
-        V: ValueType,
         Self: 'e;
 
-    fn query_evaluator<'e, 'q, V>(
-        &'e self,
-        query: Self::QueryVector<'q, V>,
-    ) -> Self::Evaluator<'e, 'q, V>
-    where
-        V: ValueType;
+    fn query_evaluator<'e, 'q>(&'e self, query: Self::QueryVector<'q>) -> Self::Evaluator<'e, 'q>;
 
     fn input_dim(&self) -> usize;
     fn output_dim(&self) -> usize;
@@ -42,6 +34,7 @@ pub trait VectorEncoder: Send + Sync + SpaceUsage {
 pub trait DenseVectorEncoder:
     for<'a> VectorEncoder<
         InputVector<'a> = DenseVectorView<'a, Self::InputValueType>,
+        QueryVector<'a> = DenseVectorView<'a, f32>,
         EncodedVector<'a> = DenseVectorView<'a, Self::OutputValueType>,
     >
 {
@@ -68,6 +61,7 @@ pub trait DenseVectorEncoder:
 pub trait SparseVectorEncoder:
     for<'a> VectorEncoder<
         InputVector<'a> = SparseVectorView<'a, Self::InputComponentType, Self::InputValueType>,
+        QueryVector<'a> = SparseVectorView<'a, Self::InputComponentType, f32>,
         EncodedVector<'a> = SparseVectorView<'a, Self::OutputComponentType, Self::OutputValueType>,
     >
 {
@@ -99,6 +93,7 @@ pub trait SparseVectorEncoder:
 pub trait PackedSparseVectorEncoder:
     for<'a> VectorEncoder<
         InputVector<'a> = SparseVectorView<'a, Self::InputComponentType, Self::InputValueType>,
+        QueryVector<'a> = SparseVectorView<'a, Self::InputComponentType, f32>,
         EncodedVector<'a> = PackedVectorView<'a, Self::PackedValueType>,
     >
 {
