@@ -21,11 +21,30 @@ pub trait VectorEncoder: Send + Sync + SpaceUsage {
 
     type EncodedVector<'a>: VectorView;
 
-    type Evaluator<'e, 'q>: for<'b> QueryEvaluator<Self::EncodedVector<'b>, Distance = Self::Distance>
+    /// Evaluator created from a query.
+    ///
+    /// This evaluator is intended to be created once and then used to compute many distances.
+    /// Implementations are allowed to do expensive preprocessing here (e.g., densification,
+    /// lookup tables) as long as the resulting evaluator is cheap to use.
+    ///
+    /// IMPORTANT: the evaluator must not borrow from the query vector.
+    type Evaluator<'e>: for<'b> QueryEvaluator<Self::EncodedVector<'b>, Distance = Self::Distance>
     where
         Self: 'e;
 
-    fn query_evaluator<'e, 'q>(&'e self, query: Self::QueryVector<'q>) -> Self::Evaluator<'e, 'q>;
+    /// Create an evaluator from a *plain* query vector.
+    ///
+    /// This is designed for search-time queries provided by the user.
+    fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e>;
+
+    /// Create an evaluator from a dataset-internal vector.
+    ///
+    /// This is designed for index-build-time scenarios where we need to compute distances
+    /// between vectors stored in the dataset. Implementations typically:
+    ///
+    /// 1) materialize/decompress the encoded vector into a plain `...Owned<..., f32>`;
+    /// 2) build and return an evaluator from that plain representation.
+    fn vector_evaluator<'e, 'v>(&'e self, vector: Self::EncodedVector<'v>) -> Self::Evaluator<'e>;
 
     fn input_dim(&self) -> usize;
     fn output_dim(&self) -> usize;
@@ -40,6 +59,11 @@ pub trait DenseVectorEncoder:
 {
     type InputValueType: ValueType;
     type OutputValueType: ValueType;
+
+    /// Decode an encoded vector to a plain dense `f32` vector.
+    ///
+    /// Intended for index build and other internal workflows.
+    fn decode_vector<'a>(&self, encoded: Self::EncodedVector<'a>) -> DenseVectorOwned<f32>;
 
     fn push_encoded<'a, OutputContainer>(
         &self,
@@ -69,6 +93,14 @@ pub trait SparseVectorEncoder:
     type InputValueType: ValueType;
     type OutputComponentType: ComponentType;
     type OutputValueType: ValueType;
+
+    /// Decode an encoded vector to a plain sparse `f32` vector in the *input component* space.
+    ///
+    /// Intended for index build and other internal workflows.
+    fn decode_vector<'a>(
+        &self,
+        encoded: Self::EncodedVector<'a>,
+    ) -> SparseVectorOwned<Self::InputComponentType, f32>;
 
     fn push_encoded<'a, ComponentContainer, ValueContainer>(
         &self,
@@ -100,6 +132,14 @@ pub trait PackedSparseVectorEncoder:
     type InputComponentType: ComponentType;
     type InputValueType: ValueType;
     type PackedValueType: ValueType + SpaceUsage;
+
+    /// Decode an encoded vector to a plain sparse `f32` vector in the *input component* space.
+    ///
+    /// Intended for index build and other internal workflows.
+    fn decode_vector<'a>(
+        &self,
+        encoded: Self::EncodedVector<'a>,
+    ) -> SparseVectorOwned<Self::InputComponentType, f32>;
 
     fn push_encoded<'a, OutputContainer>(
         &self,

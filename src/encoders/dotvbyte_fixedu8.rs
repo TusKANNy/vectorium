@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::marker::PhantomData;
 
 mod swizzle;
 
 use crate::core::sealed;
 use crate::core::vector::{PackedVectorView, SparseVectorView};
-use crate::core::vector_encoder::{PackedSparseVectorEncoder, QueryEvaluator, VectorEncoder};
+use crate::core::vector_encoder::{
+    PackedSparseVectorEncoder, QueryEvaluator, SparseVectorOwned, VectorEncoder,
+};
 use crate::distances::DotProduct;
 use crate::{FixedU8Q, SpaceUsage, ValueType};
 use num_traits::{AsPrimitive, ToPrimitive};
@@ -35,6 +38,8 @@ use rusty_perm::*;
 pub struct DotVByteFixedU8Encoder {
     dim: usize,
     component_mapping: Option<Box<[u16]>>, // Optional component remapping that improves compression. mapping[i] = new_index_of_component_i
+    #[serde(default)]
+    inverse_component_mapping: Option<Box<[u16]>>, // inverse_mapping[new] = old
 }
 
 impl sealed::Sealed for DotVByteFixedU8Encoder {}
@@ -54,12 +59,86 @@ impl DotVByteFixedU8Encoder {
         }
         mapping
     }
+
+    #[inline]
+    pub fn inverse_component_mapping(&self) -> Option<&[u16]> {
+        let inverse = self.inverse_component_mapping.as_deref();
+        if let Some(inverse) = inverse {
+            assert_eq!(
+                inverse.len(),
+                self.dim,
+                "inverse component mapping length {} does not match input dimension {}",
+                inverse.len(),
+                self.dim
+            );
+        }
+        inverse
+    }
+
+    fn compute_inverse_mapping(component_mapping: &[u16]) -> Vec<u16> {
+        let dim = component_mapping.len();
+        let mut inverse = vec![0u16; dim];
+        let mut seen = vec![false; dim];
+
+        for (old, &new) in component_mapping.iter().enumerate() {
+            let new = new as usize;
+            assert!(
+                new < dim,
+                "component_mapping maps component {} to out-of-bounds index {} (dim={})",
+                old,
+                new,
+                dim
+            );
+            assert!(
+                !seen[new],
+                "component_mapping is not a permutation: duplicate mapped index {}",
+                new
+            );
+            seen[new] = true;
+            inverse[new] = old as u16;
+        }
+
+        inverse
+    }
 }
 
 impl PackedSparseVectorEncoder for DotVByteFixedU8Encoder {
     type InputComponentType = u16;
     type InputValueType = FixedU8Q;
     type PackedValueType = u64;
+
+    fn decode_vector<'a>(
+        &self,
+        encoded: PackedVectorView<'a, Self::PackedValueType>,
+    ) -> SparseVectorOwned<Self::InputComponentType, f32> {
+        let dotvbyte_view = unsafe { DotVbyteFixedu8::from_unchecked_slice(encoded.data()) };
+
+        let mut components: Vec<u16> = Vec::new();
+        let mut values: Vec<f32> = Vec::new();
+        for (component, value) in dotvbyte_view.iter() {
+            components.push(component);
+            values.push(value.to_f32().expect("Failed to convert value to f32"));
+        }
+
+        // Components are stored in mapped space if a mapping is present.
+        if let Some(component_mapping) = self.component_mapping() {
+            let inverse: Cow<'_, [u16]> = match self.inverse_component_mapping() {
+                Some(inverse) => Cow::Borrowed(inverse),
+                None => Cow::Owned(Self::compute_inverse_mapping(component_mapping)),
+            };
+
+            for c in components.iter_mut() {
+                *c = inverse[*c as usize];
+            }
+
+            // After inverse mapping the order is no longer guaranteed.
+            let permutation = rusty_perm::PermD::from_sort(components.as_slice());
+            permutation.apply(values.as_mut_slice()).unwrap();
+            permutation.apply(components.as_mut_slice()).unwrap();
+        }
+
+        SparseVectorOwned::new(components, values)
+    }
 
     fn push_encoded<'a, OutputContainer>(
         &self,
@@ -115,6 +194,7 @@ impl DotVByteFixedU8Encoder {
         Self {
             dim: input_dim,
             component_mapping: None,
+            inverse_component_mapping: None,
         }
     }
 
@@ -127,7 +207,9 @@ impl DotVByteFixedU8Encoder {
         let components_iter = training_data.map(|v| v.components());
         let permutation = permute_components_with_bisection(self.input_dim(), components_iter);
         let component_mapping: Vec<u16> = permutation.iter().map(|i| *i as u16).collect();
+        let inverse = Self::compute_inverse_mapping(&component_mapping);
         self.component_mapping = Some(component_mapping.into_boxed_slice());
+        self.inverse_component_mapping = Some(inverse.into_boxed_slice());
     }
 }
 
@@ -137,13 +219,18 @@ impl VectorEncoder for DotVByteFixedU8Encoder {
     type QueryVector<'q> = SparseVectorView<'q, u16, f32>;
     type EncodedVector<'a> = PackedVectorView<'a, u64>;
 
-    type Evaluator<'e, 'q>
-        = DotVByteFixedU8QueryEvaluator<'e, 'q>
+    type Evaluator<'e>
+        = DotVByteFixedU8QueryEvaluator<'e>
     where
         Self: 'e;
 
-    fn query_evaluator<'e, 'q>(&'e self, query: Self::QueryVector<'q>) -> Self::Evaluator<'e, 'q> {
+    fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
         DotVByteFixedU8QueryEvaluator::new(query, self)
+    }
+
+    fn vector_evaluator<'e, 'v>(&'e self, vector: Self::EncodedVector<'v>) -> Self::Evaluator<'e> {
+        let decoded = <Self as PackedSparseVectorEncoder>::decode_vector(self, vector);
+        DotVByteFixedU8QueryEvaluator::new(decoded.as_view(), self)
     }
 
     #[inline]
@@ -158,15 +245,15 @@ impl VectorEncoder for DotVByteFixedU8Encoder {
 }
 
 #[derive(Debug, Clone)]
-pub struct DotVByteFixedU8QueryEvaluator<'e, 'q> {
+pub struct DotVByteFixedU8QueryEvaluator<'e> {
     dense_query: Vec<f32>,
-    _phantom: PhantomData<(&'e (), &'q ())>,
+    _phantom: PhantomData<&'e ()>,
 }
 
-impl<'e, 'q> DotVByteFixedU8QueryEvaluator<'e, 'q> {
+impl<'e> DotVByteFixedU8QueryEvaluator<'e> {
     #[inline]
     pub fn new(
-        query: SparseVectorView<'q, u16, f32>,
+        query: SparseVectorView<'_, u16, f32>,
         quantizer: &'e DotVByteFixedU8Encoder,
     ) -> Self {
         let max_c = query
@@ -208,9 +295,7 @@ impl<'e, 'q> DotVByteFixedU8QueryEvaluator<'e, 'q> {
     }
 }
 
-impl<'e, 'q, 'v> QueryEvaluator<PackedVectorView<'v, u64>>
-    for DotVByteFixedU8QueryEvaluator<'e, 'q>
-{
+impl<'e, 'v> QueryEvaluator<PackedVectorView<'v, u64>> for DotVByteFixedU8QueryEvaluator<'e> {
     type Distance = DotProduct;
 
     #[inline]
