@@ -89,9 +89,9 @@ pub trait DenseVectorEncoder:
 pub trait SparseDataEncoder
 where
     for<'a> Self: VectorEncoder<
-        InputVector<'a> = SparseVectorView<'a, Self::InputComponentType, Self::InputValueType>,
-        QueryVector<'a> = SparseVectorView<'a, Self::InputComponentType, f32>,
-    >,
+            InputVector<'a> = SparseVectorView<'a, Self::InputComponentType, Self::InputValueType>,
+            QueryVector<'a> = SparseVectorView<'a, Self::InputComponentType, f32>,
+        >,
 {
     type InputComponentType: ComponentType;
     type InputValueType: ValueType;
@@ -135,9 +135,7 @@ where
 
 pub trait PackedSparseVectorEncoder: SparseDataEncoder
 where
-    for<'a> Self: VectorEncoder<
-        EncodedVector<'a> = PackedVectorView<'a, Self::PackedDataType>,
-    >,
+    for<'a> Self: VectorEncoder<EncodedVector<'a> = PackedVectorView<'a, Self::PackedDataType>>,
 {
     type PackedDataType: ValueType + SpaceUsage;
 
@@ -156,12 +154,4 @@ where
         self.push_encoded(input, &mut data);
         PackedVectorOwned::new(data)
     }
-}
-
-/// Helper trait to query directly from encoded reference if supported?
-/// (Optional, derived from old design, maybe remove if unused)
-pub trait QueryFromEncoded: VectorEncoder {
-    // This seems problematic with GATs and View markers.
-    // Leaving it empty or just removing it if not used.
-    // It was used in SparseScalar impl but implementation was questionable.
 }

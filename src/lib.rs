@@ -43,8 +43,8 @@ pub use core::vector::{
 pub use core::distances::{Distance, DotProduct, SquaredEuclideanDistance};
 
 pub use core::vector_encoder::{
-    DenseVectorEncoder, PackedSparseVectorEncoder, QueryEvaluator, QueryFromEncoded,
-    SparseVectorEncoder, VectorEncoder,
+    DenseVectorEncoder, PackedSparseVectorEncoder, QueryEvaluator, SparseVectorEncoder,
+    VectorEncoder,
 };
 
 pub use encoders::dense_scalar::{
