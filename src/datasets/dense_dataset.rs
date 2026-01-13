@@ -241,12 +241,12 @@ where
     V: ValueType + crate::Float + crate::FromF32,
     D: crate::distances::Distance + crate::encoders::dense_scalar::ScalarDenseSupportedDistance,
 {
-    pub fn new(dim: usize) -> Self {
+    pub fn with_dim(dim: usize) -> Self {
         let encoder = crate::encoders::dense_scalar::ScalarDenseQuantizer::new(dim);
         crate::GrowableDataset::new(encoder)
     }
 
-    pub fn with_capacity(dim: usize, capacity: usize) -> Self {
+    pub fn with_capacity_and_dim(dim: usize, capacity: usize) -> Self {
         let encoder = crate::encoders::dense_scalar::ScalarDenseQuantizer::new(dim);
         Self {
             n_vecs: 0,

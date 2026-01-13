@@ -82,12 +82,16 @@ pub trait DenseVectorEncoder:
     }
 }
 
-pub trait SparseVectorEncoder:
-    for<'a> VectorEncoder<
+/// A minimal shared trait capturing the sparse input/query contract, component/value types, and decode capability.
+/// This lets code reason about sparse datasets without caring whether the encoder produces component/value pairs
+/// or a packed blob; it also keeps trait bounds lean by avoiding the heavier `SparseVectorEncoder`/`PackedSparseVectorEncoder`
+/// when only the shared behavior is needed.
+pub trait SparseDataEncoder
+where
+    for<'a> Self: VectorEncoder<
         InputVector<'a> = SparseVectorView<'a, Self::InputComponentType, Self::InputValueType>,
         QueryVector<'a> = SparseVectorView<'a, Self::InputComponentType, f32>,
-        EncodedVector<'a> = SparseVectorView<'a, Self::OutputComponentType, Self::OutputValueType>,
-    >
+    >,
 {
     type InputComponentType: ComponentType;
     type InputValueType: ValueType;
@@ -101,7 +105,14 @@ pub trait SparseVectorEncoder:
         &self,
         encoded: Self::EncodedVector<'a>,
     ) -> SparseVectorOwned<Self::InputComponentType, f32>;
+}
 
+pub trait SparseVectorEncoder: SparseDataEncoder
+where
+    for<'a> Self: VectorEncoder<
+        EncodedVector<'a> = SparseVectorView<'a, Self::OutputComponentType, Self::OutputValueType>,
+    >,
+{
     fn push_encoded<'a, ComponentContainer, ValueContainer>(
         &self,
         input: Self::InputVector<'a>,
@@ -122,36 +133,25 @@ pub trait SparseVectorEncoder:
     }
 }
 
-pub trait PackedSparseVectorEncoder:
-    for<'a> VectorEncoder<
-        InputVector<'a> = SparseVectorView<'a, Self::InputComponentType, Self::InputValueType>,
-        QueryVector<'a> = SparseVectorView<'a, Self::InputComponentType, f32>,
-        EncodedVector<'a> = PackedVectorView<'a, Self::PackedValueType>,
-    >
+pub trait PackedSparseVectorEncoder: SparseDataEncoder
+where
+    for<'a> Self: VectorEncoder<
+        EncodedVector<'a> = PackedVectorView<'a, Self::PackedDataType>,
+    >,
 {
-    type InputComponentType: ComponentType;
-    type InputValueType: ValueType;
-    type PackedValueType: ValueType + SpaceUsage;
-
-    /// Decode an encoded vector to a plain sparse `f32` vector in the *input component* space.
-    ///
-    /// Intended for index build and other internal workflows.
-    fn decode_vector<'a>(
-        &self,
-        encoded: Self::EncodedVector<'a>,
-    ) -> SparseVectorOwned<Self::InputComponentType, f32>;
+    type PackedDataType: ValueType + SpaceUsage;
 
     fn push_encoded<'a, OutputContainer>(
         &self,
         input: Self::InputVector<'a>,
         output: &mut OutputContainer,
     ) where
-        OutputContainer: Extend<Self::PackedValueType>;
+        OutputContainer: Extend<Self::PackedDataType>;
 
     fn encode_vector<'a>(
         &self,
         input: Self::InputVector<'a>,
-    ) -> PackedVectorOwned<Self::PackedValueType> {
+    ) -> PackedVectorOwned<Self::PackedDataType> {
         let mut data = Vec::new();
         self.push_encoded(input, &mut data);
         PackedVectorOwned::new(data)

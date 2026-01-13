@@ -1,5 +1,7 @@
 use crate::core::sealed;
-use crate::core::vector_encoder::{QueryEvaluator, VectorEncoder};
+use crate::core::vector_encoder::{
+    DenseVectorEncoder, QueryEvaluator, SparseDataEncoder, VectorEncoder,
+};
 use itertools::Itertools;
 
 pub type VectorId = u64;
@@ -173,28 +175,27 @@ where
     }
 }
 
-/// Marker trait representing any dataset that stores dense vectors.
+/// Marker trait representing any dataset whose encoder exposes the dense-vector contract.
 ///
-/// In the current design, the memory layout and structural constraints of a dataset are
-/// rigidly determined by its associated `VectorEncoder` (e.g., `DenseVectorEncoder`).
-/// It is impossible to have a "Dense Dataset" with a "Sparse Encoder" due to type system constraints.
-///
-/// However, external libraries or generic functions often need to express bounds like
-/// "this function accepts any dense dataset" without listing every specific encoder trait or implementation.
-///
-/// This marker trait serves as a semantic category generic over the implementation details.
-pub trait DenseData: Dataset {}
+/// Dense layout, query expectations, and decoding helpers are defined by `DenseVectorEncoder`, so this marker
+/// only makes sense when the encoder implements that trait. Requiring the encoder bound keeps downstream consumers
+/// honest about what they can rely on.
+pub trait DenseData: Dataset
+where
+    Self::Encoder: DenseVectorEncoder,
+{
+}
 
-/// Marker trait representing any dataset that stores sparse vectors.
+/// Marker trait representing datasets whose encoder satisfies the shared sparse-input API.
 ///
-/// This covers both "plain" sparse datasets (using `SparseVectorEncoder`) and
-/// "packed" sparse datasets (using `PackedSparseVectorEncoder`).
-///
-/// While `SparseDataset` and `PackedSparseDataset` are distinct types with distinct memory layouts
-/// enforced by their specific encoders, they both logically represent sparse data.
-/// This trait allows downstream code to treat them uniformly when the exact storage details
-/// (e.g., whether it's component-value pairs or bit-packed blocks) are abstracted away.
-pub trait SparseData: Dataset {}
+/// Both plain `SparseVectorEncoder`s and packed encoders implement `SparseDataEncoder`, which exposes the common
+/// component/value types and decoding helpers. Bounding this marker by `SparseDataEncoder` ensures consumers have
+/// access to the shared behavior without needing to know whether the underlying layout is packed or unpacked.
+pub trait SparseData: Dataset
+where
+    Self::Encoder: SparseDataEncoder,
+{
+}
 
 pub trait GrowableDataset: Dataset {
     /// Create a new growable dataset with the given encoder.

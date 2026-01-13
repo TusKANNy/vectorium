@@ -3,7 +3,8 @@ use std::marker::PhantomData;
 
 use crate::core::vector::SparseVectorView;
 use crate::core::vector_encoder::{
-    DenseVectorOwned, QueryEvaluator, SparseVectorEncoder, SparseVectorOwned, VectorEncoder,
+    DenseVectorOwned, QueryEvaluator, SparseDataEncoder, SparseVectorEncoder, SparseVectorOwned,
+    VectorEncoder,
 };
 use crate::distances::{
     Distance, DotProduct, dot_product_dense_sparse_unchecked,
@@ -77,7 +78,7 @@ impl<C, InValue, OutValue, D> ScalarSparseQuantizer<C, InValue, OutValue, D> {
     }
 }
 
-impl<C, InValue, OutValue, D> SparseVectorEncoder for ScalarSparseQuantizer<C, InValue, OutValue, D>
+impl<C, InValue, OutValue, D> SparseDataEncoder for ScalarSparseQuantizer<C, InValue, OutValue, D>
 where
     C: ComponentType,
     InValue: ValueType + Float,
@@ -102,7 +103,15 @@ where
             .collect();
         SparseVectorOwned::new(components, values)
     }
+}
 
+impl<C, InValue, OutValue, D> SparseVectorEncoder for ScalarSparseQuantizer<C, InValue, OutValue, D>
+where
+    C: ComponentType,
+    InValue: ValueType + Float,
+    OutValue: ValueType + Float + FromF32,
+    D: ScalarSparseSupportedDistance,
+{
     fn push_encoded<'a, ComponentContainer, ValueContainer>(
         &self,
         input: SparseVectorView<'a, C, InValue>,
@@ -142,7 +151,7 @@ where
     }
 
     fn vector_evaluator<'e, 'v>(&'e self, vector: Self::EncodedVector<'v>) -> Self::Evaluator<'e> {
-        let decoded = <Self as SparseVectorEncoder>::decode_vector(self, vector);
+        let decoded = <Self as SparseDataEncoder>::decode_vector(self, vector);
         ScalarSparseQueryEvaluator::new_from_owned_query(decoded, self)
     }
 

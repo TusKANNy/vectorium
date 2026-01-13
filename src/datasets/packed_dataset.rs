@@ -12,14 +12,14 @@ use rayon::prelude::*;
 pub type PackedSparseDatasetGrowable<E> = PackedSparseDatasetGeneric<
     E,
     Vec<usize>,
-    Vec<<E as PackedSparseVectorEncoder>::PackedValueType>,
+    Vec<<E as PackedSparseVectorEncoder>::PackedDataType>,
 >;
 
 /// An immutable packed dataset.
 pub type PackedSparseDataset<E> = PackedSparseDatasetGeneric<
     E,
     Box<[usize]>,
-    Box<[<E as PackedSparseVectorEncoder>::PackedValueType]>,
+    Box<[<E as PackedSparseVectorEncoder>::PackedDataType]>,
 >;
 
 /// Dataset storing variable-length packed encodings in a single concatenated `data` array.
@@ -53,7 +53,7 @@ pub struct PackedSparseDatasetGeneric<E, Offsets, Data>
 where
     E: PackedSparseVectorEncoder,
     Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::PackedValueType]>,
+    Data: AsRef<[E::PackedDataType]>,
 {
     offsets: Offsets,
     data: Data,
@@ -65,7 +65,7 @@ impl<E, Offsets, Data> sealed::Sealed for PackedSparseDatasetGeneric<E, Offsets,
 where
     E: PackedSparseVectorEncoder,
     Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::PackedValueType]>,
+    Data: AsRef<[E::PackedDataType]>,
 {
 }
 
@@ -73,7 +73,7 @@ impl<E, Offsets, Data> PackedSparseDatasetGeneric<E, Offsets, Data>
 where
     E: PackedSparseVectorEncoder,
     Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::PackedValueType]>,
+    Data: AsRef<[E::PackedDataType]>,
 {
     #[inline]
     pub fn offsets(&self) -> &[usize] {
@@ -81,7 +81,7 @@ where
     }
 
     #[inline]
-    pub fn data(&self) -> &[E::PackedValueType] {
+    pub fn data(&self) -> &[E::PackedDataType] {
         self.data.as_ref()
     }
 
@@ -136,7 +136,7 @@ impl<E> GrowableDataset
     for PackedSparseDatasetGeneric<
         E,
         Vec<usize>,
-        Vec<<E as PackedSparseVectorEncoder>::PackedValueType>,
+        Vec<<E as PackedSparseVectorEncoder>::PackedDataType>,
     >
 where
     E: PackedSparseVectorEncoder,
@@ -176,7 +176,7 @@ where
     E: PackedSparseVectorEncoder,
     E: SpaceUsage,
     Offsets: AsRef<[usize]> + SpaceUsage,
-    Data: AsRef<[E::PackedValueType]> + SpaceUsage,
+    Data: AsRef<[E::PackedDataType]> + SpaceUsage,
 {
     fn space_usage_bytes(&self) -> usize {
         self.encoder.space_usage_bytes()
@@ -190,7 +190,7 @@ impl<E, Offsets, Data> Dataset for PackedSparseDatasetGeneric<E, Offsets, Data>
 where
     E: PackedSparseVectorEncoder,
     Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::PackedValueType]>,
+    Data: AsRef<[E::PackedDataType]>,
 {
     type Encoder = E;
 
@@ -259,7 +259,7 @@ impl<E, Offsets, Data> SparseData for PackedSparseDatasetGeneric<E, Offsets, Dat
 where
     E: PackedSparseVectorEncoder,
     Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::PackedValueType]>,
+    Data: AsRef<[E::PackedDataType]>,
 {
 }
 

@@ -54,3 +54,5 @@ assert_eq!(v.values(), &[1.0, 2.0]);
 - `Dataset::range_from_id` returns the slice range for a vector; use that range with `get_by_range`/`prefetch`.
 - The growable dataset types (`*Growable`) can be converted into immutable datasets with `into()`.
 - `Plain*Quantizer` types are concrete implementations of the `VectorEncoder` trait and the relevant `*VectorEncoder` specialization.
+- `DenseData` and `SparseData` are marker traits for dataset categories whose encoders meet richer contracts (`DenseVectorEncoder` and the new `SparseDataEncoder`, respectively). That keeps any helper written for “dense” or “sparse” data honest: it can rely on the layout/query/decoding helpers the encoder exposes rather than guessing at the storage format.
+- `SparseDataEncoder` is the minimal shared sparse-input trait that exposes the input/query sparse views, component/value types, and `decode_vector`, so code that only needs the common sparse behavior can stay agnostic about whether the encoder produces component/value pairs or a packed blob.

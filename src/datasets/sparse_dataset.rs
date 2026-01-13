@@ -920,12 +920,12 @@ where
     V: ValueType + Float + FromF32,
     D: crate::encoders::sparse_scalar::ScalarSparseSupportedDistance,
 {
-    pub fn new(dim: usize) -> Self {
+    pub fn with_dim(dim: usize) -> Self {
         let encoder = crate::encoders::sparse_scalar::ScalarSparseQuantizer::new(dim, dim);
         crate::GrowableDataset::new(encoder)
     }
 
-    pub fn with_capacity(dim: usize, capacity: usize) -> Self {
+    pub fn with_capacity_and_dim(dim: usize, capacity: usize) -> Self {
         let encoder = crate::encoders::sparse_scalar::ScalarSparseQuantizer::new(dim, dim);
         Self {
             storage: GrowableSparseStorage::with_capacity(capacity, 0),

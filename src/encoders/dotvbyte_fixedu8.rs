@@ -7,7 +7,7 @@ mod swizzle;
 use crate::core::sealed;
 use crate::core::vector::{PackedVectorView, SparseVectorView};
 use crate::core::vector_encoder::{
-    PackedSparseVectorEncoder, QueryEvaluator, SparseVectorOwned, VectorEncoder,
+    PackedSparseVectorEncoder, QueryEvaluator, SparseDataEncoder, SparseVectorOwned, VectorEncoder,
 };
 use crate::distances::DotProduct;
 use crate::{FixedU8Q, SpaceUsage, ValueType};
@@ -102,14 +102,15 @@ impl DotVByteFixedU8Encoder {
     }
 }
 
-impl PackedSparseVectorEncoder for DotVByteFixedU8Encoder {
+impl SparseDataEncoder for DotVByteFixedU8Encoder {
     type InputComponentType = u16;
     type InputValueType = FixedU8Q;
-    type PackedValueType = u64;
+    type OutputComponentType = u16;
+    type OutputValueType = FixedU8Q;
 
     fn decode_vector<'a>(
         &self,
-        encoded: PackedVectorView<'a, Self::PackedValueType>,
+        encoded: Self::EncodedVector<'a>,
     ) -> SparseVectorOwned<Self::InputComponentType, f32> {
         let dotvbyte_view = unsafe { DotVbyteFixedu8::from_unchecked_slice(encoded.data()) };
 
@@ -139,13 +140,17 @@ impl PackedSparseVectorEncoder for DotVByteFixedU8Encoder {
 
         SparseVectorOwned::new(components, values)
     }
+}
+
+impl PackedSparseVectorEncoder for DotVByteFixedU8Encoder {
+    type PackedDataType = u64;
 
     fn push_encoded<'a, OutputContainer>(
         &self,
         input: SparseVectorView<'a, Self::InputComponentType, Self::InputValueType>,
         output: &mut OutputContainer,
     ) where
-        OutputContainer: Extend<Self::PackedValueType>,
+        OutputContainer: Extend<Self::PackedDataType>,
     {
         let mut encoded_u8 = Vec::new();
 
@@ -229,7 +234,7 @@ impl VectorEncoder for DotVByteFixedU8Encoder {
     }
 
     fn vector_evaluator<'e, 'v>(&'e self, vector: Self::EncodedVector<'v>) -> Self::Evaluator<'e> {
-        let decoded = <Self as PackedSparseVectorEncoder>::decode_vector(self, vector);
+        let decoded = <Self as SparseDataEncoder>::decode_vector(self, vector);
         DotVByteFixedU8QueryEvaluator::new(decoded.as_view(), self)
     }
 
