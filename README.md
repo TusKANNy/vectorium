@@ -9,8 +9,8 @@ Search here is done witha brute-force parallel scan of the entire dataset. Consi
 
 ```rust
 use vectorium::{
-    Dataset, DenseDataset, DenseVector1DView, DotProduct, GrowableDataset, PlainDenseDatasetGrowable,
-    DenseVectorEncoder, PlainDenseQuantizer, Vector1DViewTrait, VectorEncoder,
+    Dataset, DenseDataset, DenseVectorView, DotProduct, GrowableDataset, PlainDenseDatasetGrowable,
+    DenseVectorEncoder, PlainDenseQuantizer, VectorEncoder,
 };
 
 let encoder = PlainDenseQuantizer::<f32, DotProduct>::new(3);
@@ -18,8 +18,8 @@ let mut dataset = PlainDenseDatasetGrowable::new(encoder);
 let v0 = vec![1.0, 0.0, 2.0];
 let v1 = vec![0.5, 1.5, 0.0];
 
-dataset.push(DenseVector1DView::new(v0.as_slice()));
-dataset.push(DenseVector1DView::new(v1.as_slice()));
+dataset.push(DenseVectorView::new(v0.as_slice()));
+dataset.push(DenseVectorView::new(v1.as_slice()));
 
 let v = dataset.get(0);
 assert_eq!(v.values(), &[1.0, 0.0, 2.0]);
@@ -34,14 +34,14 @@ assert_eq!(v.values(), &[0.5, 1.5, 0.0]);
 ```rust
 use vectorium::{
     Dataset, DotProduct, GrowableDataset, PlainSparseDataset, PlainSparseDatasetGrowable,
-    PlainSparseQuantizer, SparseVector1DView, SparseVectorEncoder, Vector1DViewTrait, VectorEncoder,
+    PlainSparseQuantizer, SparseVectorView, SparseVectorEncoder, VectorEncoder,
 };
 
 let encoder = PlainSparseQuantizer::<u16, f32, DotProduct>::new(5, 5);
 let mut dataset = PlainSparseDatasetGrowable::new(encoder);
 
-dataset.push(SparseVector1DView::new(&[1_u16, 3], &[1.0, 2.0]));
-dataset.push(SparseVector1DView::new(&[0_u16, 4], &[0.5, 3.5]));
+dataset.push(SparseVectorView::new(&[1_u16, 3], &[1.0, 2.0]));
+dataset.push(SparseVectorView::new(&[0_u16, 4], &[0.5, 3.5]));
 
 let frozen: PlainSparseDataset<u16, f32, DotProduct> = dataset.into();
 let v = frozen.get(0);
