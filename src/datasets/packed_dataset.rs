@@ -376,7 +376,7 @@ mod tests {
         let dataset: PackedSparseDataset<DotVByteFixedU8Encoder> = frozen.into();
 
         let query = SparseVectorView::new(&[1_u16, 10, 11][..], &[2.0_f32, 3.0, 4.0][..]);
-        let mut evaluator = dataset.encoder().query_evaluator(query);
+        let evaluator = dataset.encoder().query_evaluator(query);
 
         let d0 = evaluator.compute_distance(dataset.get(0)).distance();
         let d1 = evaluator.compute_distance(dataset.get(1)).distance();
