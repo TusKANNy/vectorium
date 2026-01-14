@@ -332,4 +332,35 @@ mod tests {
         assert_eq!(restored, storage);
         assert!(restored.space_usage_bytes() > 0);
     }
+
+    #[test]
+    fn growable_relabel_preserves_space_usage() {
+        type Encoder = PlainSparseQuantizer<u16, f32, DotProduct>;
+
+        let mut storage = GrowableSparseStorage::<Encoder>::new();
+        storage.components.extend_from_slice(&[0_u16, 3]);
+        storage.values.extend_from_slice(&[0.5_f32, 1.5]);
+        storage.offsets.push(storage.components.len());
+
+        let original_space = storage.space_usage_bytes();
+        let relabeled: GrowableSparseStorage<Encoder> = storage.clone().relabel();
+        assert_eq!(relabeled, storage);
+        let relabeled_space = relabeled.space_usage_bytes();
+        assert!(relabeled_space > 0);
+    }
+
+    #[test]
+    fn immutable_relabel_preserves_data() {
+        type Encoder = PlainSparseQuantizer<u16, f32, DotProduct>;
+
+        let mut storage = GrowableSparseStorage::<Encoder>::new();
+        storage.components.extend_from_slice(&[5_u16]);
+        storage.values.extend_from_slice(&[7.0_f32]);
+        storage.offsets.push(storage.components.len());
+
+        let frozen: ImmutableSparseStorage<Encoder> = storage.into();
+        let relabeled: ImmutableSparseStorage<Encoder> = frozen.clone().relabel();
+        assert_eq!(relabeled, frozen);
+        assert_eq!(relabeled.space_usage_bytes(), frozen.space_usage_bytes());
+    }
 }

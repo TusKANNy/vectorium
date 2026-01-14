@@ -6,6 +6,7 @@
 #![feature(yield_expr)]
 #![feature(associated_type_defaults)]
 #![doc = include_str!("../README.md")]
+#![allow(non_snake_case)]
 
 use num_traits::{AsPrimitive, ToPrimitive, Zero};
 
@@ -34,7 +35,6 @@ pub use utils::space_usage;
 pub use utils::numeric_markers::{Float, FromF32};
 pub use utils::space_usage::SpaceUsage;
 
-#[allow(non_snake_case)]
 pub use core::vector::{
     DenseVectorOwned, DenseVectorView, PackedVectorOwned, PackedVectorView, SparseVectorOwned,
     SparseVectorView, VectorView,

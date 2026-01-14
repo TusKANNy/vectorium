@@ -335,3 +335,20 @@ where
         self.dim.space_usage_bytes()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::vector::SparseVectorView;
+    use crate::distances::DotProduct;
+
+    #[test]
+    fn scalar_sparse_quantizer_encode_vector_default() {
+        type Quant = PlainSparseQuantizer<u16, f32, DotProduct>;
+        let quant = Quant::new(3, 3);
+        let input = SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 2.5]);
+        let encoded = quant.encode_vector(input);
+        assert_eq!(encoded.components(), &[0_u16, 2]);
+        assert_eq!(encoded.values(), &[1.0_f32, 2.5]);
+    }
+}

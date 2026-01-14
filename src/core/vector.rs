@@ -126,6 +126,10 @@ impl<'a, T: SpaceUsage + Copy> PackedVectorView<'a, T> {
         self.data.len()
     }
     #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+    #[inline]
     pub fn data(&self) -> &'a [T] {
         self.data
     }

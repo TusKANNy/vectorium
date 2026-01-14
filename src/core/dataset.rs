@@ -2,7 +2,6 @@ use crate::core::sealed;
 use crate::core::vector_encoder::{
     DenseVectorEncoder, QueryEvaluator, SparseDataEncoder, VectorEncoder,
 };
-use bincode::enc::Encoder;
 use itertools::Itertools;
 
 pub type VectorId = u64;

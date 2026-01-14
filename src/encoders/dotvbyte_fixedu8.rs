@@ -301,6 +301,17 @@ mod tests {
     }
 
     #[test]
+    fn dotvbyte_encode_vector_default_uses_push_encoded() {
+        let encoder = DotVByteFixedU8Encoder::new(3, 3);
+        let values = [fixed(1.0), fixed(2.0)];
+        let input = SparseVectorView::new(&[0_u16, 1], &values);
+        let encoded = encoder.encode_vector(input);
+        assert!(!encoded.data().is_empty());
+        let decoded = encoder.decode_vector(encoded.as_view());
+        assert_eq!(decoded.components(), &[0_u16, 1]);
+    }
+
+    #[test]
     fn dotvbyte_training_sets_component_mapping() {
         let mut encoder = DotVByteFixedU8Encoder::new(3, 3);
         let training_values = [fixed(1.0), fixed(1.0)];
@@ -314,6 +325,23 @@ mod tests {
         for &value in inverse {
             assert!(value < 3);
         }
+    }
+
+    #[test]
+    fn dotvbyte_decode_vector_with_mapping() {
+        let mut encoder = DotVByteFixedU8Encoder::new(3, 3);
+        // Train to set a component mapping.
+        let training_values = [fixed(1.0), fixed(2.0)];
+        let training = vec![SparseVectorView::new(&[0_u16, 2], &training_values)];
+        encoder.train(training.into_iter());
+
+        let values = [fixed(4.0), fixed(5.0)];
+        let mut buffer = Vec::new();
+        encoder.push_encoded(SparseVectorView::new(&[0_u16, 1], &values), &mut buffer);
+        let decoded = encoder.decode_vector(PackedVectorView::new(&buffer));
+        assert_eq!(decoded.values().len(), 2);
+        assert!(encoder.component_mapping().is_some());
+        assert!(encoder.inverse_component_mapping().is_some());
     }
 }
 

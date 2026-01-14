@@ -325,6 +325,7 @@ mod tests {
     use crate::core::vector::DenseVectorView;
     use crate::distances::DotProduct;
     use crate::encoders::dense_scalar::ScalarDenseQuantizer;
+    use crate::dataset::ConvertFrom;
 
     #[test]
     fn dense_dataset_range_and_id_are_consistent() {
@@ -376,5 +377,90 @@ mod tests {
         assert_eq!(par_values, iter_values);
 
         dataset.prefetch_with_range(0..2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Data length must equal n_vecs * encoder.output_dim()")]
+    fn dense_dataset_from_raw_length_mismatch_panics() {
+        type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        let encoder = Encoder::new(2);
+        let _ = DenseDataset::from_raw(vec![1.0f32, 2.0].into_boxed_slice(), 2, encoder);
+    }
+
+    #[test]
+    #[should_panic(expected = "Range does not match vector boundaries.")]
+    fn id_from_range_bad_range_panics() {
+        type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        let encoder = Encoder::new(2);
+        let dataset = DenseDataset::from_raw(
+            vec![1.0f32, 2.0, 3.0, 4.0].into_boxed_slice(),
+            2,
+            encoder,
+        );
+        let _ = dataset.id_from_range(1..3);
+    }
+
+    #[test]
+    fn id_from_range_zero_dim_returns_zero() {
+        type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        let encoder = Encoder::new(0);
+        let dataset = DenseDataset::from_raw(vec![].into_boxed_slice(), 5, encoder);
+        assert_eq!(dataset.id_from_range(0..0), 0);
+    }
+
+    #[test]
+    fn get_with_range_returns_expected_view() {
+        type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        let encoder = Encoder::new(2);
+        let dataset = DenseDataset::from_raw(
+            vec![10.0f32, 20.0, 30.0, 40.0].into_boxed_slice(),
+            2,
+            encoder,
+        );
+        let view = dataset.get_with_range(2..4);
+        assert_eq!(view.values(), &[30.0, 40.0]);
+    }
+
+    #[test]
+    fn growable_capacity_and_reserve_affect_data() {
+        type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        let encoder = Encoder::new(2);
+        let mut growable =
+            DenseDatasetGrowable::<ScalarDenseQuantizer<f32, f32, DotProduct>>::with_dim(2);
+        assert_eq!(growable.capacity(), 0);
+        growable.reserve(3);
+        assert!(growable.capacity() >= 3);
+        growable.push(DenseVectorView::new(&[0.0f32, 1.0]));
+        assert!(growable.capacity() >= 1);
+        growable.push(DenseVectorView::new(&[2.0f32, 3.0]));
+        assert!(growable.len() >= 2);
+        assert_eq!(growable.encoder.output_dim(), 2);
+    }
+
+    #[test]
+    fn with_dim_constructors_return_dataset() {
+        let growable = DenseDatasetGrowable::<ScalarDenseQuantizer<f32, f32, DotProduct>>::with_dim(3);
+        assert_eq!(growable.encoder.input_dim(), 3);
+        let with_capacity = DenseDatasetGrowable::<ScalarDenseQuantizer<f32, f32, DotProduct>>::with_capacity_and_dim(
+            3, 4,
+        );
+        assert_eq!(with_capacity.encoder.output_dim(), 3);
+        assert!(with_capacity.capacity() >= 0);
+    }
+
+    #[test]
+    fn convert_from_dense_dataset_preserves_values() {
+        type SrcEncoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        type MidEncoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        let encoder = SrcEncoder::new(2);
+        let dataset = DenseDataset::from_raw(
+            vec![5.0f32, 6.0, 7.0, 8.0].into_boxed_slice(),
+            2,
+            encoder,
+        );
+        let converted: DenseDatasetGeneric<MidEncoder, Vec<f32>> =
+            ConvertFrom::convert_from(&dataset);
+        assert_eq!(converted.len(), dataset.len());
+        assert_eq!(converted.values(), dataset.values());
     }
 }
