@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::PackedSparseVectorEncoder;
 use crate::SpaceUsage;
 use crate::core::sealed;
+use crate::dataset::ConvertFrom;
 use crate::utils::prefetch_read_slice;
 use crate::{Dataset, GrowableDataset, PackedVectorView, SparseData, VectorId};
 
@@ -277,6 +278,15 @@ where
     }
 }
 
+impl<E> ConvertFrom<PackedSparseDatasetGrowable<E>> for PackedSparseDataset<E>
+where
+    E: PackedSparseVectorEncoder,
+{
+    fn convert_from(dataset: PackedSparseDatasetGrowable<E>) -> Self {
+        dataset.into()
+    }
+}
+
 impl<E> From<PackedSparseDataset<E>> for PackedSparseDatasetGrowable<E>
 where
     E: PackedSparseVectorEncoder,
@@ -288,6 +298,15 @@ where
             encoder: dataset.encoder,
             nnz: dataset.nnz,
         }
+    }
+}
+
+impl<E> ConvertFrom<PackedSparseDataset<E>> for PackedSparseDatasetGrowable<E>
+where
+    E: PackedSparseVectorEncoder,
+{
+    fn convert_from(dataset: PackedSparseDataset<E>) -> Self {
+        dataset.into()
     }
 }
 
@@ -333,6 +352,19 @@ where
             encoder: dotvbyte_encoder,
             nnz: dataset.nnz(),
         }
+    }
+}
+
+impl<EIn, S> ConvertFrom<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
+    for PackedSparseDataset<crate::DotVByteFixedU8Encoder>
+where
+    EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
+    EIn::OutputValueType: crate::ValueType + crate::Float,
+    for<'a> EIn::EncodedVector<'a>: crate::VectorView,
+    S: crate::core::storage::SparseStorage<EIn>,
+{
+    fn convert_from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>) -> Self {
+        dataset.into()
     }
 }
 
