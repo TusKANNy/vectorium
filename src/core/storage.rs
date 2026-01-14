@@ -363,4 +363,22 @@ mod tests {
         assert_eq!(relabeled, frozen);
         assert_eq!(relabeled.space_usage_bytes(), frozen.space_usage_bytes());
     }
+
+    #[test]
+    fn growable_storage_mutable_accessors_allow_editing() {
+        type Encoder = PlainSparseQuantizer<u16, f32, DotProduct>;
+
+        let mut storage = GrowableSparseStorage::<Encoder>::new();
+        storage.components.extend_from_slice(&[2_u16]);
+        storage.values.extend_from_slice(&[3.0_f32]);
+
+        storage.offsets_mut().push(1);
+        storage.offsets_mut().pop();
+        storage.components_mut().push(4_u16);
+        storage.values_mut().push(5.0_f32);
+
+        assert_eq!(storage.offsets(), &[0]);
+        assert_eq!(storage.components(), &[2_u16, 4_u16]);
+        assert_eq!(storage.values(), &[3.0_f32, 5.0_f32]);
+    }
 }

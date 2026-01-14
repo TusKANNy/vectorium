@@ -382,4 +382,23 @@ mod tests {
         let view = PackedVectorView::new(&data);
         assert_eq!(view.iter().collect::<Vec<_>>(), vec![42, 100]);
     }
+
+    #[test]
+    fn dense_vector_view_reports_empty_and_iterates() {
+        let empty = DenseVectorView::<f32>::new(&[]);
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+        assert_eq!(empty.iter().collect::<Vec<_>>(), Vec::<f32>::new());
+        assert!(empty.to_owned().values().is_empty());
+    }
+
+    #[test]
+    fn sparse_vector_view_reports_empty_and_iterates() {
+        let empty_view = SparseVectorView::<u16, f32>::new(&[], &[]);
+        assert!(empty_view.is_empty());
+        assert_eq!(empty_view.len(), 0);
+        assert!(empty_view.iter().next().is_none());
+        let owned = empty_view.to_owned();
+        assert!(owned.is_empty());
+    }
 }

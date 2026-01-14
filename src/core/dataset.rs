@@ -218,6 +218,35 @@ mod tests {
         };
         assert!(r1 < r2);
     }
+
+    #[test]
+    fn dataset_trait_helpers_report_dimensions_and_empty() {
+        type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+
+        let encoder = Encoder::new(2);
+        let mut growable = DenseDatasetGrowable::new(encoder);
+        growable.push(DenseVectorView::new(&[1.0f32, 0.0]));
+        let dataset: DenseDataset<Encoder> = growable.into();
+
+        assert_eq!(dataset.input_dim(), 2);
+        assert_eq!(dataset.output_dim(), 2);
+        assert!(!dataset.is_empty());
+        assert!(dataset.nnz() > 0);
+    }
+
+    #[test]
+    fn dataset_search_with_zero_k_returns_empty() {
+        type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+
+        let encoder = Encoder::new(1);
+        let mut growable = DenseDatasetGrowable::new(encoder);
+        growable.push(DenseVectorView::new(&[0.0f32]));
+        let dataset: DenseDataset<Encoder> = growable.into();
+        let query = DenseVectorView::new(&[0.0f32]);
+
+        assert!(dataset.search(query, 0).is_empty());
+    }
+
 }
 
 /// Marker trait representing any dataset whose encoder exposes the dense-vector contract.

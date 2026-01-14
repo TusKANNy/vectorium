@@ -429,4 +429,25 @@ mod tests {
         let vector = SparseVectorView::new(&[0usize, 2], &[1.0f32, 1.0]);
         let _ = dot_product_sparse_with_merge(query, vector);
     }
+
+    #[test]
+    fn distance_trait_methods_return_inner_value() {
+        let distance = DotProduct::from(2.5);
+        assert_eq!(distance.distance(), 2.5);
+        let euclid = SquaredEuclideanDistance::from(16.0);
+        assert_eq!(euclid.distance(), 16.0);
+        assert_eq!(euclid.sqrt(), 4.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "NaN is not allowed for DotProduct")]
+    fn dot_product_from_nan_panics() {
+        let _ = DotProduct::from(f32::NAN);
+    }
+
+    #[test]
+    #[should_panic(expected = "NaN is not allowed for SquaredEuclideanDistance")]
+    fn squared_euclidean_from_nan_panics() {
+        let _ = SquaredEuclideanDistance::from(f32::NAN);
+    }
 }
