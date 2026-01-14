@@ -358,4 +358,24 @@ mod tests {
         assert_eq!(owned.components(), comps.as_slice());
         assert_eq!(owned.values(), vals.as_slice());
     }
+
+    #[test]
+    fn packed_vector_owned_roundtrip() {
+        let packed = PackedVectorOwned::new(vec![5_u32, 7, 9]);
+        assert_eq!(packed.len(), 3);
+        let view = packed.as_view();
+        assert_eq!(view.len(), 3);
+        assert_eq!(view.data(), &[5, 7, 9]);
+        let cloned = view.to_owned();
+        assert_eq!(cloned, packed);
+        let collected: Vec<_> = view.iter().collect();
+        assert_eq!(collected, vec![5, 7, 9]);
+    }
+
+    #[test]
+    fn packed_vector_view_iterates() {
+        let data = [42_u16, 100];
+        let view = PackedVectorView::new(&data);
+        assert_eq!(view.iter().collect::<Vec<_>>(), vec![42, 100]);
+    }
 }

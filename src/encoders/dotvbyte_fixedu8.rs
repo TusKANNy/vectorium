@@ -249,6 +249,74 @@ impl VectorEncoder for DotVByteFixedU8Encoder {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::vector::{PackedVectorView, SparseVectorView};
+    use crate::distances::DotProduct;
+    use crate::FromF32;
+
+    fn fixed(val: f32) -> FixedU8Q {
+        FixedU8Q::from_f32_saturating(val)
+    }
+
+    #[test]
+    fn dotvbyte_encode_decode_roundtrip() {
+        let encoder = DotVByteFixedU8Encoder::new(4, 4);
+        let values = [fixed(1.0), fixed(2.5)];
+        let input = SparseVectorView::new(&[0_u16, 3], &values);
+
+        let mut buffer = Vec::new();
+        encoder.push_encoded(input, &mut buffer);
+        assert!(!buffer.is_empty());
+
+        let decoded = encoder.decode_vector(PackedVectorView::new(&buffer));
+        assert_eq!(decoded.components(), &[0_u16, 3]);
+        let decoded_vals = decoded.values();
+        assert_eq!(decoded_vals.len(), 2);
+        assert!((decoded_vals[0] - 1.0).abs() < 1e-6);
+        assert!((decoded_vals[1] - 2.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dotvbyte_query_evaluator_hits_sparsified_query() {
+        let encoder = DotVByteFixedU8Encoder::new(4, 4);
+        let mut data = Vec::new();
+        let encoded_values = [fixed(1.0), fixed(2.0)];
+        encoder.push_encoded(
+            SparseVectorView::new(&[0_u16, 2], &encoded_values),
+            &mut data,
+        );
+
+        let query = SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 1.0]);
+        let evaluator = encoder.query_evaluator(query);
+        let packed = PackedVectorView::new(&data);
+        assert_eq!(evaluator.compute_distance(packed), DotProduct::from(3.0));
+
+        let vector_eval = encoder.vector_evaluator(PackedVectorView::new(&data));
+        assert_eq!(
+            vector_eval.compute_distance(PackedVectorView::new(&data)),
+            DotProduct::from(5.0)
+        );
+    }
+
+    #[test]
+    fn dotvbyte_training_sets_component_mapping() {
+        let mut encoder = DotVByteFixedU8Encoder::new(3, 3);
+        let training_values = [fixed(1.0), fixed(1.0)];
+        let training = vec![SparseVectorView::new(&[0_u16, 1], &training_values)];
+        encoder.train(training.into_iter());
+
+        let mapping = encoder.component_mapping().unwrap();
+        let inverse = encoder.inverse_component_mapping().unwrap();
+        assert_eq!(mapping.len(), 3);
+        assert_eq!(inverse.len(), 3);
+        for &value in inverse {
+            assert!(value < 3);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DotVByteFixedU8QueryEvaluator<'e> {
     dense_query: Vec<f32>,

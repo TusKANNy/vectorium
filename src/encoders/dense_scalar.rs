@@ -195,3 +195,45 @@ where
         self.d.space_usage_bytes()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::vector::DenseVectorView;
+    use crate::distances::DotProduct;
+
+    #[test]
+    fn scalar_dense_quantizer_encodes_and_decodes_values() {
+        type Quant = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        let quant = Quant::new(2);
+
+        let input = DenseVectorView::new(&[0.5f32, 1.5]);
+        let mut buffer = Vec::new();
+        quant.push_encoded(input, &mut buffer);
+        assert_eq!(buffer, vec![0.5f32, 1.5]);
+
+        let encoded = quant.encode_vector(input);
+        assert_eq!(encoded.values(), &[0.5f32, 1.5]);
+
+        let decoded = quant.decode_vector(encoded.as_view());
+        assert_eq!(decoded.values(), &[0.5f32, 1.5]);
+    }
+
+    #[test]
+    fn scalar_dense_query_and_vector_evaluator_use_dot_product() {
+        type Quant = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        let quant = Quant::new(2);
+        let query = DenseVectorView::new(&[1.0f32, 2.0]);
+
+        let evaluator = quant.query_evaluator(query);
+        let vector = DenseVectorView::new(&[3.0f32, 4.0]);
+        assert_eq!(evaluator.compute_distance(vector), DotProduct::from(11.0));
+
+        let encoded = quant.encode_vector(DenseVectorView::new(&[1.0f32, 1.0]));
+        let vector_eval = quant.vector_evaluator(encoded.as_view());
+        assert_eq!(
+            vector_eval.compute_distance(DenseVectorView::new(&[2.0f32, 0.0])),
+            DotProduct::from(2.0)
+        );
+    }
+}

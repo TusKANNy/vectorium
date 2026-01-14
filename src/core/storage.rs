@@ -309,3 +309,27 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DotProduct, PlainSparseQuantizer};
+
+    #[test]
+    fn growable_storage_roundtrip_preserves_data() {
+        type Encoder = PlainSparseQuantizer<u16, f32, DotProduct>;
+
+        let mut storage = GrowableSparseStorage::<Encoder>::new();
+        storage.components.extend_from_slice(&[1_u16, 2]);
+        storage.values.extend_from_slice(&[1.0_f32, 2.0]);
+        storage.offsets.push(storage.components.len());
+
+        let frozen: ImmutableSparseStorage<Encoder> = storage.clone().into();
+        assert_eq!(frozen.components().as_ref(), &[1_u16, 2]);
+        assert_eq!(frozen.values().as_ref(), &[1.0_f32, 2.0]);
+
+        let restored: GrowableSparseStorage<Encoder> = frozen.into();
+        assert_eq!(restored, storage);
+        assert!(restored.space_usage_bytes() > 0);
+    }
+}

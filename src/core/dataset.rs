@@ -2,6 +2,7 @@ use crate::core::sealed;
 use crate::core::vector_encoder::{
     DenseVectorEncoder, QueryEvaluator, SparseDataEncoder, VectorEncoder,
 };
+use bincode::enc::Encoder;
 use itertools::Itertools;
 
 pub type VectorId = u64;
@@ -175,6 +176,51 @@ where
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DenseDataset;
+    use crate::core::vector::DenseVectorView;
+    use crate::datasets::dense_dataset::DenseDatasetGrowable;
+    use crate::distances::DotProduct;
+    use crate::encoders::dense_scalar::ScalarDenseQuantizer;
+
+    #[test]
+    fn dataset_search_returns_expected_order() {
+        type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+
+        let encoder = Encoder::new(2);
+        let mut growable = DenseDatasetGrowable::new(encoder);
+        growable.push(DenseVectorView::new(&[1.0f32, 0.5]));
+        growable.push(DenseVectorView::new(&[0.0f32, 1.0]));
+        growable.push(DenseVectorView::new(&[2.0f32, 1.0]));
+
+        let dataset: DenseDataset<Encoder> = growable.into();
+        let query = DenseVectorView::new(&[1.5f32, 1.0]);
+        let results = dataset.search(query, 2);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].vector, 2);
+        assert_eq!(results[0].distance, DotProduct::from(4.0));
+        let second = &results[1];
+        assert!(matches!(second.vector, 0));
+        assert_eq!(second.distance, DotProduct::from(2.0));
+    }
+
+    #[test]
+    fn scored_range_order_obeys_distance_then_start() {
+        let r1 = ScoredRange {
+            distance: DotProduct::from(1.0),
+            range: 0..2,
+        };
+        let r2 = ScoredRange {
+            distance: DotProduct::from(1.0),
+            range: 1..3,
+        };
+        assert!(r1 < r2);
+    }
+}
+
 /// Marker trait representing any dataset whose encoder exposes the dense-vector contract.
 ///
 /// Dense layout, query expectations, and decoding helpers are defined by `DenseVectorEncoder`, so this marker
@@ -191,11 +237,7 @@ where
 /// Both plain `SparseVectorEncoder`s and packed encoders implement `SparseDataEncoder`, which exposes the common
 /// component/value types and decoding helpers. Bounding this marker by `SparseDataEncoder` ensures consumers have
 /// access to the shared behavior without needing to know whether the underlying layout is packed or unpacked.
-pub trait SparseData: Dataset
-where
-    Self::Encoder: SparseDataEncoder,
-{
-}
+pub trait SparseData: Dataset<Encoder: SparseDataEncoder> {}
 
 pub trait GrowableDataset: Dataset {
     /// Create a new growable dataset with the given encoder.

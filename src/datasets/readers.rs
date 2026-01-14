@@ -229,3 +229,56 @@ where
 
     Ok(data.into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::distances::{DotProduct, SquaredEuclideanDistance};
+    use crate::core::dataset::Dataset;
+    use std::path::PathBuf;
+
+    fn toy_dense_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("examples")
+            .join("toy_datasets")
+            .join("toy_dense.npy")
+    }
+
+    fn toy_seismic_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("examples")
+            .join("toy_datasets")
+            .join("toy_seismic.bin")
+    }
+
+    #[test]
+    fn read_npy_dense_dataset() -> Result<(), ReaderError> {
+        let dataset = read_npy_f32::<SquaredEuclideanDistance>(toy_dense_path())?;
+        assert_eq!(dataset.len(), 2);
+        assert_eq!(dataset.output_dim(), 3);
+        let first = dataset.get(0);
+        assert_eq!(first.values(), &[1.0_f32, 2.0, 3.0]);
+        let second = dataset.get(1);
+        assert_eq!(second.values(), &[4.0_f32, 5.0, 6.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn read_seismic_format_dataset_and_limit() -> Result<(), ReaderError> {
+        let dataset = read_seismic_format::<u16, f32, DotProduct>(toy_seismic_path())?;
+        assert_eq!(dataset.len(), 2);
+        assert_eq!(dataset.nnz(), 3);
+
+        let first = dataset.get(0);
+        assert_eq!(first.components(), &[0_u16, 2]);
+        assert_eq!(first.values(), &[1.0_f32, 3.0]);
+
+        let second = dataset.get(1);
+        assert_eq!(second.components(), &[1_u16]);
+        assert_eq!(second.values(), &[2.0_f32]);
+
+        let limited = read_seismic_format_limit::<u16, f32, DotProduct>(toy_seismic_path(), Some(1))?;
+        assert_eq!(limited.len(), 1);
+        Ok(())
+    }
+}

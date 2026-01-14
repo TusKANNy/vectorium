@@ -57,6 +57,12 @@ pub struct ScalarSparseQuantizer<C, InValue, OutValue, D> {
     _phantom: PhantomData<(C, InValue, OutValue, D)>,
 }
 
+impl<C, InValue, OutValue, D> PartialEq for ScalarSparseQuantizer<C, InValue, OutValue, D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.dim == other.dim
+    }
+}
+
 pub type PlainSparseQuantizer<C, V, D> = ScalarSparseQuantizer<C, V, V, D>;
 
 /// Convenience aliases for common configurations (currently only DotProduct is supported)

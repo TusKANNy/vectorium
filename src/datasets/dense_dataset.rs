@@ -318,3 +318,63 @@ where
     Data: AsRef<[E::OutputValueType]>,
 {
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::vector::DenseVectorView;
+    use crate::distances::DotProduct;
+    use crate::encoders::dense_scalar::ScalarDenseQuantizer;
+
+    #[test]
+    fn dense_dataset_range_and_id_are_consistent() {
+        type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        let encoder = Encoder::new(2);
+
+        let mut growable = DenseDatasetGrowable::new(encoder);
+        growable.push(DenseVectorView::new(&[1.0f32, 0.0]));
+        growable.push(DenseVectorView::new(&[0.0f32, 1.0]));
+
+        let frozen: DenseDataset<Encoder> = growable.into();
+        let range = frozen.range_from_id(1);
+        assert_eq!(range, 2..4);
+        assert_eq!(frozen.id_from_range(range), 1);
+    }
+
+    #[test]
+    fn dense_dataset_from_raw_rebuilds_vectors() {
+        type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        let encoder = Encoder::new(2);
+        let raw = vec![1.0f32, 2.0, 3.0, 4.0];
+
+        let dataset = DenseDataset::from_raw(raw.into_boxed_slice(), 2, encoder);
+        assert_eq!(dataset.len(), 2);
+        assert_eq!(dataset.output_dim(), 2);
+        let first = dataset.get(0);
+        assert_eq!(first.values(), &[1.0f32, 2.0]);
+    }
+
+    #[test]
+    fn dense_dataset_values_par_iter_and_space_usage() {
+        type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+
+        let encoder = Encoder::new(2);
+        let mut growable = DenseDatasetGrowable::new(encoder);
+        growable.push(DenseVectorView::new(&[1.0f32, 2.0]));
+        growable.push(DenseVectorView::new(&[3.0f32, 4.0]));
+
+        let dataset: DenseDataset<Encoder> = growable.into();
+        assert_eq!(dataset.values(), &[1.0f32, 2.0, 3.0, 4.0]);
+        assert_eq!(dataset.nnz(), 4);
+        assert!(dataset.space_usage_bytes() > 0);
+
+        let iter_values: Vec<Vec<_>> = dataset.iter().map(|v| v.values().to_vec()).collect();
+        assert_eq!(iter_values, vec![vec![1.0f32, 2.0], vec![3.0f32, 4.0]]);
+
+        let par_values: Vec<Vec<_>> = dataset.par_iter().map(|v| v.values().to_vec()).collect();
+        assert_eq!(par_values.len(), dataset.len());
+        assert_eq!(par_values, iter_values);
+
+        dataset.prefetch_with_range(0..2);
+    }
+}

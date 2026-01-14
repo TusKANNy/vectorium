@@ -952,6 +952,8 @@ mod tests {
         SparseDataset, SparseDatasetGrowable,
     };
     use half::f16;
+    use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
+    use rayon::prelude::*;
 
     #[test]
     fn sparse_dataset_iter_next_then_next_back_returns_last_vector() {
@@ -1052,5 +1054,76 @@ mod tests {
                 f32::from(f16::from_f32(4.25)),
             ]
         );
+    }
+
+    #[test]
+    fn sparse_dataset_iter_range_and_prefetch_work() {
+        type Encoder = PlainSparseQuantizer<u16, f32, DotProduct>;
+
+        let quantizer = Encoder::new(6, 6);
+        let mut growable = PlainSparseDatasetGrowable::new(quantizer);
+        growable.push(SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 2.0]));
+        growable.push(SparseVectorView::new(&[1_u16, 3], &[3.0_f32, 4.0]));
+
+        let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
+        assert_eq!(frozen.len(), 2);
+        assert_eq!(frozen.nnz(), 4);
+
+        let first_range = frozen.range_from_id(0);
+        let second_range = frozen.range_from_id(1);
+        assert_eq!(first_range, 0..2);
+        assert_eq!(second_range, 2..4);
+        assert_eq!(frozen.id_from_range(second_range.clone()), 1);
+
+        let first_vec = frozen.get_with_range(first_range.clone());
+        assert_eq!(first_vec.values(), &[1.0_f32, 2.0]);
+
+        let iter_values: Vec<Vec<_>> = frozen.iter().map(|v| v.values().to_vec()).collect();
+        let par_values: Vec<Vec<_>> = frozen.par_iter().map(|v| v.values().to_vec()).collect();
+        assert_eq!(iter_values, par_values);
+
+        frozen.prefetch_with_range(second_range);
+    }
+
+    #[test]
+    fn sparse_dataset_growable_scalar_relabel_roundtrip() {
+        type ScalarQuant = ScalarSparseQuantizer<u16, f32, f16, DotProduct>;
+
+        let mut growable = SparseDatasetGrowable::new(ScalarQuant::new(4, 4));
+        growable.push(SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 2.0]));
+        growable.push(SparseVectorView::new(&[1_u16, 3], &[3.0_f32, 4.0]));
+
+        let plain = growable.relabel_as_plain();
+        assert_eq!(plain.nnz(), 4);
+
+        let scalar_again = plain.relabel_as_scalar::<f32>();
+        assert_eq!(scalar_again.nnz(), 4);
+        let values: Vec<Vec<f32>> = scalar_again
+            .iter()
+            .map(|v| v.values().iter().map(|&val| val.to_f32()).collect())
+            .collect();
+        assert_eq!(values, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+    }
+
+    #[test]
+    fn sparse_dataset_immutable_relabel_plain_scalar_roundtrip() {
+        type ScalarQuant = ScalarSparseQuantizer<u16, f32, f16, DotProduct>;
+
+        let mut growable = SparseDatasetGrowable::new(ScalarQuant::new(4, 4));
+        growable.push(SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 2.0]));
+        growable.push(SparseVectorView::new(&[1_u16, 3], &[3.0_f32, 4.0]));
+
+        let frozen: SparseDataset<ScalarQuant> = growable.into();
+        let plain_immutable = frozen.clone().relabel_as_plain();
+        assert_eq!(plain_immutable.nnz(), 4);
+
+        let scalar_immutable = plain_immutable.relabel_as_scalar::<f32>();
+        assert_eq!(scalar_immutable.nnz(), 4);
+
+        let values: Vec<Vec<f32>> = scalar_immutable
+            .iter()
+            .map(|v| v.values().iter().map(|&val| val.to_f32()).collect())
+            .collect();
+        assert_eq!(values, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
     }
 }

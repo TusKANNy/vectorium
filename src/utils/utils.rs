@@ -100,7 +100,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::permute_components_with_bisection;
+    use super::{
+        intersection, is_strictly_sorted, permute_components_with_bisection,
+    };
 
     #[test]
     fn permute_components_with_bisection_returns_permutation() {
@@ -116,5 +118,18 @@ mod tests {
             seen[p] = true;
         }
         assert!(seen.into_iter().all(|v| v));
+    }
+
+    #[test]
+    fn is_strictly_sorted_handles_duplicates() {
+        assert!(is_strictly_sorted(&[1u32, 2, 3]));
+        assert!(!is_strictly_sorted(&[1u32, 1, 2]));
+    }
+
+    #[test]
+    fn intersection_counts_shared_elements() {
+        let a = vec![1i32, 2, 3, 5];
+        let b = vec![2i32, 3, 4];
+        assert_eq!(intersection(&a, &b), 2);
     }
 }

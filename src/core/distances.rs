@@ -344,4 +344,32 @@ mod tests {
         let b = DotProduct::from(2.0);
         assert!(b < a);
     }
+
+    #[test]
+    fn dot_product_dense_unchecked_matches_checked() {
+        let query = DenseVectorView::new(&[1.0f32, 2.0, 3.0]);
+        let vector = DenseVectorView::new(&[2.0f32, 1.5, 0.5]);
+        let checked = dot_product_dense(query, vector);
+        let unchecked = unsafe { dot_product_dense_unchecked(query, vector) };
+        assert_eq!(checked, unchecked);
+    }
+
+    #[test]
+    fn dot_product_sparse_with_merge_computes_shared_components() {
+        let query = SparseVectorView::new(&[0usize, 2], &[1.0f32, 2.0]);
+        let vector = SparseVectorView::new(&[0usize, 2], &[3.0f32, 4.0]);
+        let result = dot_product_sparse_with_merge(query, vector);
+        assert_eq!(result, DotProduct::from(11.0));
+    }
+
+    #[test]
+    fn squared_euclidean_dense_unchecked_matches_manual_sum() {
+        let query = DenseVectorView::new(&[0.0f32, 2.0]);
+        let vector = DenseVectorView::new(&[3.0f32, 1.0]);
+        let expected = SquaredEuclideanDistance::from(10.0);
+        let computed = squared_euclidean_distance_dense(query, vector);
+        let unchecked = unsafe { squared_euclidean_distance_dense_unchecked(query, vector) };
+        assert_eq!(computed, expected);
+        assert_eq!(unchecked, expected);
+    }
 }
