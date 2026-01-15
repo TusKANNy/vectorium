@@ -4,7 +4,7 @@ use std::hint::assert_unchecked;
 use crate::SpaceUsage;
 use crate::core::sealed;
 use crate::core::storage::{GrowableSparseStorage, ImmutableSparseStorage, SparseStorage};
-use crate::core::vector::{SparseVectorView, VectorView};
+use crate::core::vector::SparseVectorView;
 use crate::core::vector_encoder::{SparseVectorEncoder, VectorEncoder};
 use crate::utils::{is_strictly_sorted, prefetch_read_slice};
 use crate::{ComponentType, Float, FromF32, ValueType, VectorId};
@@ -161,11 +161,7 @@ where
     /// The returned views borrow from the shared storage buffers, so this iterator avoids
     /// heap allocations while still providing per-vector access.
     #[inline]
-    pub fn par_iter(&self) -> impl IndexedParallelIterator<Item = E::EncodedVector<'_>> + '_
-    where
-        for<'a> E::EncodedVector<'a>: Send,
-        S: Sync,
-    {
+    pub fn par_iter(&self) -> impl IndexedParallelIterator<Item = E::EncodedVector<'_>> + '_ {
         let offsets = self.storage.offsets().as_ref();
         let components = self.storage.components().as_ref();
         let values = self.storage.values().as_ref();
@@ -184,7 +180,6 @@ impl<E, S> Dataset for SparseDatasetGeneric<E, S>
 where
     E: SparseVectorEncoder,
     S: SparseStorage<E>,
-    for<'a> E::EncodedVector<'a>: VectorView,
 {
     type Encoder = E;
 
@@ -355,7 +350,6 @@ where
 impl<E> From<SparseDatasetGrowable<E>> for SparseDataset<E>
 where
     E: SparseVectorEncoder,
-    for<'a> E::EncodedVector<'a>: VectorView,
 {
     /// Converts a mutable sparse dataset into an immutable one.
     ///
@@ -391,7 +385,6 @@ where
 impl<E> From<SparseDataset<E>> for SparseDatasetGrowable<E>
 where
     E: SparseVectorEncoder,
-    for<'a> E::EncodedVector<'a>: VectorView,
 {
     /// Converts an immutable sparse dataset into a mutable one.
     ///

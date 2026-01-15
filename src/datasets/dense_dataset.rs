@@ -73,7 +73,7 @@ where
 
 impl<E, Data> SpaceUsage for DenseDatasetGeneric<E, Data>
 where
-    E: DenseVectorEncoder + SpaceUsage,
+    E: DenseVectorEncoder,
     Data: AsRef<[E::OutputValueType]> + SpaceUsage,
 {
     fn space_usage_bytes(&self) -> usize {
@@ -86,9 +86,7 @@ where
 impl<E, Data> DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    Data: AsRef<[E::OutputValueType]> + Sync,
-    E::OutputValueType: Sync + Send, // For parallel iteration
-    for<'a> E::EncodedVector<'a>: Send,
+    Data: AsRef<[E::OutputValueType]>,
 {
     /// Build a dataset from its raw encoded buffer.
     ///

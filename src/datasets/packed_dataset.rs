@@ -1,3 +1,5 @@
+//! Packed sparse dataset helpers keep the encodings in a single concatenated buffer and expose growable/immutable APIs.
+//! The module reuses `PackedSparseVectorEncoder` implementations so conversions and queries stay efficient.
 use serde::{Deserialize, Serialize};
 
 use crate::PackedSparseVectorEncoder;
@@ -10,6 +12,19 @@ use crate::{Dataset, GrowableDataset, PackedVectorView, SparseData, VectorId};
 use rayon::prelude::*;
 
 /// A growable packed dataset.
+///
+/// # Examples
+///
+/// ```
+/// use vectorium::{
+///     DotVByteFixedU8Encoder, PackedSparseDatasetGrowable, SparseVectorView,
+/// };
+///
+/// let encoder = DotVByteFixedU8Encoder::new(4, 4);
+/// let mut dataset = PackedSparseDatasetGrowable::new(encoder);
+/// dataset.push(SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 2.0_f32]));
+/// assert_eq!(dataset.len(), 1);
+/// ```
 pub type PackedSparseDatasetGrowable<E> = PackedSparseDatasetGeneric<
     E,
     Vec<usize>,
@@ -17,6 +32,22 @@ pub type PackedSparseDatasetGrowable<E> = PackedSparseDatasetGeneric<
 >;
 
 /// An immutable packed dataset.
+///
+/// # Examples
+///
+/// ```
+/// use vectorium::{
+///     DotProduct, DotVByteFixedU8Encoder, PackedSparseDataset, PlainSparseDataset,
+///     PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView,
+/// };
+///
+/// let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(3, 3);
+/// let mut sparse = PlainSparseDatasetGrowable::new(quantizer);
+/// sparse.push(SparseVectorView::new(&[0_u16], &[1.0_f32]));
+/// let frozen: PlainSparseDataset<u16, f32, DotProduct> = sparse.into();
+/// let packed: PackedSparseDataset<DotVByteFixedU8Encoder> = frozen.into();
+/// assert_eq!(packed.len(), 1);
+/// ```
 pub type PackedSparseDataset<E> = PackedSparseDatasetGeneric<
     E,
     Box<[usize]>,
@@ -77,11 +108,13 @@ where
     Data: AsRef<[E::PackedDataType]>,
 {
     #[inline]
+    /// Return the raw offsets array that demarcates each vector slice.
     pub fn offsets(&self) -> &[usize] {
         self.offsets.as_ref()
     }
 
     #[inline]
+    /// Return the pooled packed data buffer shared by all vectors.
     pub fn data(&self) -> &[E::PackedDataType] {
         self.data.as_ref()
     }
@@ -92,6 +125,7 @@ where
     }
 
     #[inline]
+    /// Translate vector id into a data range.
     pub fn range_from_id(&self, id: VectorId) -> std::ops::Range<usize> {
         let index = id as usize;
         let offsets = self.offsets.as_ref();
@@ -100,6 +134,7 @@ where
     }
 
     #[inline]
+    /// Translate a packed data range back into the owning id.
     pub fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId {
         let offsets = self.offsets.as_ref();
         let idx = offsets.binary_search(&range.start).unwrap();
@@ -114,6 +149,22 @@ where
     /// Parallel iterator over dataset encoded vectors.
     ///
     /// Each item is an `E::EncodedVector<'_>` borrowing its slice from the dataset `data`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use vectorium::{
+    ///     DotVByteFixedU8Encoder, PackedSparseDataset, PackedSparseDatasetGrowable,
+    ///     SparseVectorView,
+    /// };
+    ///
+    /// let encoder = DotVByteFixedU8Encoder::new(4, 4);
+    /// let mut growable = PackedSparseDatasetGrowable::new(encoder);
+    /// growable.push(SparseVectorView::new(&[0_u16, 1], &[1.0_f32, 2.0_f32]));
+    /// let packed: PackedSparseDataset<_> = growable.into();
+    /// let collected: Vec<_> = packed.par_iter().collect();
+    /// assert_eq!(collected.len(), packed.len());
+    /// ```
     #[inline]
     pub fn par_iter(&self) -> impl IndexedParallelIterator<Item = E::EncodedVector<'_>> + '_
     where
@@ -164,6 +215,10 @@ where
     }
 
     #[inline]
+    /// Append a packed encoding directly into the dataset buffer.
+    ///
+    /// The implementation relies on `push_encoded` to extend the pooled `data` vector,
+    /// keeping allocations at a minimum.
     fn push<'a>(&mut self, vec: E::InputVector<'a>) {
         self.nnz += vec.components().len(); // Capture length before move if needed? Copy view is cheap.
 
