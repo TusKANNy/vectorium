@@ -119,7 +119,7 @@ pub trait Dataset: sealed::Sealed {
     fn prefetch_with_range(&self, range: std::ops::Range<usize>);
 
     /// Exhaustive search that scores every vector via the configured query evaluator.
-    /// Complexity is `O(n log k)` because of the heap built by `k_smallest`.
+    /// Complexity is `θ(n log k)` because of the heap built by `k_smallest`.
     fn search<'d, 'q>(
         &'d self,
         query: <Self::Encoder as VectorEncoder>::QueryVector<'q>,
