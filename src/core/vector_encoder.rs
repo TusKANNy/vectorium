@@ -84,7 +84,8 @@ pub trait DenseVectorEncoder:
 
     /// Encode `input` into the provided `output` container.
     ///
-    /// This lets callers either store directly within the dataset container or reuse buffers to amortize allocations.
+    /// This lets callers store the encoded values directly in dataset-owned buffers or reuse
+    /// temporary containers, avoiding the extra allocation that would happen inside `encode_vector`.
     fn push_encoded<'a, OutputContainer>(
         &self,
         input: Self::InputVector<'a>,
@@ -94,8 +95,9 @@ pub trait DenseVectorEncoder:
 
     /// Convenience helper that builds a `DenseVectorOwned` from `input`.
     ///
-    /// The default implementation reuses `push_encoded` to append into a temporary
-    /// `Vec`, so callers can drop this method if they already expose `push_encoded`.
+    /// The default implementation reuses `push_encoded` to append into a temporary `Vec`.
+    /// Avoid this helper when you can store results directly via `push_encoded`, since encoding
+    /// through the temporary `Vec` performs an extra allocation.
     fn encode_vector<'a>(
         &self,
         input: Self::InputVector<'a>,
@@ -109,7 +111,8 @@ pub trait DenseVectorEncoder:
 /// A minimal shared trait capturing the sparse input/query contract, component/value types, and decode capability.
 /// This lets code reason about sparse datasets without caring whether the encoder produces component/value pairs
 /// or a packed blob; it also keeps trait bounds lean by avoiding the heavier `SparseVectorEncoder`/`PackedSparseVectorEncoder`
-/// when only the shared behavior is needed.
+/// when only the shared behavior is needed. Implementing this trait signals that the encoder can decode the stored
+/// representation back into component/value pairs, which is necessary for indexing workflows.
 pub trait SparseDataEncoder
 where
     for<'a> Self: VectorEncoder<
@@ -144,8 +147,8 @@ where
         EncodedVector<'a> = SparseVectorView<'a, Self::OutputComponentType, Self::OutputValueType>,
     >,
 {
-    /// Encode `input` directly into dataset-owned component/value containers
-    /// to avoid intermediate allocations.
+    /// Encode `input` directly into dataset-owned component/value containers or reuse buffers,
+    /// so datasets can populate their storage without introducing temporary allocations.
     fn push_encoded<'a, ComponentContainer, ValueContainer>(
         &self,
         input: Self::InputVector<'a>,
@@ -157,7 +160,8 @@ where
 
     /// Convenience helper that builds an owned sparse vector by replaying `push_encoded`.
     ///
-    /// Callers who already manage buffers can skip this method to avoid the additional allocation.
+    /// Callers who already manage buffers can skip this method to avoid the additional allocation
+    /// and keep working buffers alive for reuse.
     fn encode_vector<'a>(
         &self,
         input: Self::InputVector<'a>,
@@ -169,7 +173,8 @@ where
     }
 }
 
-///  Encoder contract for encoding sparse component/value pairs packed into a single container and potentially encoded in some way. For example, compression schemes such as DotVByte use this approach
+/// Encoder contract for encoding sparse component/value pairs packed into a single container and potentially encoded in some way.
+/// For example, compression schemes such as DotVByte use this approach.
 pub trait PackedSparseVectorEncoder: SparseDataEncoder
 where
     for<'a> Self: VectorEncoder<EncodedVector<'a> = PackedVectorView<'a, Self::PackedDataType>>,
@@ -177,7 +182,7 @@ where
     type PackedDataType: ValueType + SpaceUsage;
 
     /// Encode `input` directly into an existing packed data container so datasets can
-    /// avoid intermediate allocations.
+    /// avoid intermediate allocations by reusing buffers.
     fn push_encoded<'a, OutputContainer>(
         &self,
         input: Self::InputVector<'a>,
@@ -187,7 +192,8 @@ where
 
     /// Convenience helper that builds an owned packed vector by replaying `push_encoded`.
     ///
-    /// Implementations expecting to reuse buffers can rely solely on `push_encoded`.
+    /// Implementations expecting to reuse buffers can rely solely on `push_encoded` to keep
+    /// buffers alive across encodings.
     fn encode_vector<'a>(
         &self,
         input: Self::InputVector<'a>,

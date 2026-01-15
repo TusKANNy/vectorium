@@ -363,7 +363,9 @@ where
     for<'a> EIn::EncodedVector<'a>: crate::VectorView,
     S: crate::core::storage::SparseStorage<EIn>,
 {
-    fn convert_from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>) -> Self {
+    fn convert_from(
+        dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>,
+    ) -> Self {
         dataset.into()
     }
 }
@@ -371,10 +373,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FromF32 as _;
-    use crate::core::vector::SparseVectorView;
     use crate::DotVByteFixedU8Encoder;
     use crate::FixedU8Q;
+    use crate::FromF32 as _;
+    use crate::core::vector::SparseVectorView;
     use crate::core::vector_encoder::VectorEncoder;
 
     #[test]
@@ -463,11 +465,11 @@ mod tests {
 
     #[test]
     fn packed_dataset_iter_and_convert_from_traits_work() {
+        use crate::DotVByteFixedU8Encoder;
         use crate::PackedSparseDataset;
         use crate::PackedSparseDatasetGrowable;
         use crate::PlainSparseDataset;
         use crate::PlainSparseDatasetGrowable;
-        use crate::DotVByteFixedU8Encoder;
         use crate::core::vector::PackedVectorView;
         use crate::encoders::sparse_scalar::PlainSparseQuantizer;
         use crate::{DotProduct, SparseVectorView};
@@ -501,8 +503,8 @@ mod tests {
 
     #[test]
     fn packed_dataset_offsets_data_and_prefetch() {
-        use crate::{DotProduct, DotVByteFixedU8Encoder, FixedU8Q, PackedSparseDatasetGrowable};
         use crate::core::vector::SparseVectorView;
+        use crate::{DotProduct, DotVByteFixedU8Encoder, FixedU8Q, PackedSparseDatasetGrowable};
 
         let dim = 5;
         let encoder = DotVByteFixedU8Encoder::new(dim, dim);
@@ -529,7 +531,10 @@ mod tests {
     fn packed_dataset_range_from_id_panics_when_invalid() {
         let encoder = DotVByteFixedU8Encoder::new(3, 3);
         let mut growable = PackedSparseDatasetGrowable::new(encoder);
-        growable.push(SparseVectorView::new(&[0_u16], &[FixedU8Q::from_f32_saturating(0.5)]));
+        growable.push(SparseVectorView::new(
+            &[0_u16],
+            &[FixedU8Q::from_f32_saturating(0.5)],
+        ));
         let dataset: PackedSparseDataset<DotVByteFixedU8Encoder> = growable.into();
         let _ = dataset.range_from_id(1);
     }
@@ -539,7 +544,10 @@ mod tests {
     fn packed_dataset_id_from_range_panics_when_mismatch() {
         let encoder = DotVByteFixedU8Encoder::new(3, 3);
         let mut growable = PackedSparseDatasetGrowable::new(encoder);
-        growable.push(SparseVectorView::new(&[0_u16], &[FixedU8Q::from_f32_saturating(0.5)]));
+        growable.push(SparseVectorView::new(
+            &[0_u16],
+            &[FixedU8Q::from_f32_saturating(0.5)],
+        ));
         let dataset: PackedSparseDataset<DotVByteFixedU8Encoder> = growable.into();
         let _ = dataset.id_from_range(1..2);
     }

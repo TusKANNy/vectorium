@@ -233,8 +233,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::distances::{DotProduct, SquaredEuclideanDistance};
     use crate::core::dataset::Dataset;
+    use crate::distances::{DotProduct, SquaredEuclideanDistance};
     use std::path::PathBuf;
 
     fn toy_dense_path() -> PathBuf {
@@ -277,7 +277,8 @@ mod tests {
         assert_eq!(second.components(), &[1_u16]);
         assert_eq!(second.values(), &[2.0_f32]);
 
-        let limited = read_seismic_format_limit::<u16, f32, DotProduct>(toy_seismic_path(), Some(1))?;
+        let limited =
+            read_seismic_format_limit::<u16, f32, DotProduct>(toy_seismic_path(), Some(1))?;
         assert_eq!(limited.len(), 1);
         Ok(())
     }

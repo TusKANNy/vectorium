@@ -4,19 +4,56 @@ use crate::SpaceUsage;
 use crate::core::sealed;
 use crate::core::vector_encoder::{DenseVectorEncoder, VectorEncoder};
 use crate::{Dataset, GrowableDataset, VectorId};
-// use crate::{DenseVectorView};
 
 use rayon::prelude::*;
 
-// Implementation of a growable dense dataset.
+/// Growable dense dataset backed by a `Vec` buffer.
+///
+/// This alias is the preferred entry point for building datasets incrementally.
+/// The example below shows how to push vectors and freeze the dataset.
+///
+/// # Examples
+///
+/// ```
+/// use vectorium::datasets::dense_dataset::DenseDatasetGrowable;
+/// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
+/// use vectorium::distances::DotProduct;
+/// use vectorium::core::vector::DenseVectorView;
+///
+/// let encoder = ScalarDenseQuantizer::<f32, f32, DotProduct>::new(2);
+/// let mut growable = DenseDatasetGrowable::new(encoder);
+/// growable.push(DenseVectorView::new(&[1.0, 0.0]));
+/// growable.push(DenseVectorView::new(&[0.0, 1.0]));
+/// assert_eq!(growable.len(), 2);
+/// ```
 pub type DenseDatasetGrowable<E> =
     DenseDatasetGeneric<E, Vec<<E as DenseVectorEncoder>::OutputValueType>>;
 
-// Implementation of a (immutable) sparse dataset.
+/// Immutable dataset backed by a boxed slice.
+///
+/// Use this alias for workloads that need a compact, read-only dataset.
+///
+/// # Examples
+///
+/// ```
+/// use vectorium::datasets::{dense_dataset::DenseDatasetGrowable, DenseDataset};
+/// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
+/// use vectorium::distances::DotProduct;
+/// use vectorium::core::vector::DenseVectorView;
+///
+/// let encoder = ScalarDenseQuantizer::<f32, f32, DotProduct>::new(2);
+/// let mut growable = DenseDatasetGrowable::new(encoder);
+/// growable.push(DenseVectorView::new(&[1.0, 0.0]));
+/// growable.push(DenseVectorView::new(&[0.0, 1.0]));
+/// let dataset: DenseDataset<_> = growable.into();
+/// assert_eq!(dataset.len(), 2);
+/// ```
 pub type DenseDataset<E> =
     DenseDatasetGeneric<E, Box<[<E as DenseVectorEncoder>::OutputValueType]>>;
 
 #[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
+/// Shared implementation for growable and frozen dense datasets.
+/// Wraps a contiguous buffer and the encoder so callers can treat both variants with the same API.
 pub struct DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
@@ -53,6 +90,20 @@ where
     E::OutputValueType: Sync + Send, // For parallel iteration
     for<'a> E::EncodedVector<'a>: Send,
 {
+    /// Build a dataset from its raw encoded buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use vectorium::datasets::DenseDataset;
+    /// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
+    /// use vectorium::distances::DotProduct;
+    ///
+    /// let encoder = ScalarDenseQuantizer::<f32, f32, DotProduct>::new(2);
+    /// let dataset: DenseDataset<_> =
+    ///     DenseDataset::from_raw(vec![1.0f32, 2.0, 3.0, 4.0].into_boxed_slice(), 2, encoder);
+    /// assert_eq!(dataset.len(), 2);
+    /// ```
     #[inline]
     pub fn from_raw(data: Data, n_vecs: usize, encoder: E) -> Self {
         assert_eq!(
@@ -67,17 +118,36 @@ where
         }
     }
 
+    /// Access the contiguous storage backing the dataset.
+    ///
+    /// This is the same buffer that gets populated by `DenseDatasetGrowable::push`.
     #[inline]
     pub fn values(&self) -> &[E::OutputValueType] {
         self.data.as_ref()
     }
 
+    /// Number of stored elements (all components are considered non-zero here).
     #[inline]
     pub fn nnz(&self) -> usize {
         self.data.as_ref().len()
     }
 
     // Note: par_iter returns EncodedVector (view)
+    /// Iterate the dataset in parallel without reallocating temporary buffers.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use vectorium::datasets::DenseDataset;
+    /// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
+    /// use vectorium::distances::DotProduct;
+    ///
+    /// let encoder = ScalarDenseQuantizer::<f32, f32, DotProduct>::new(2);
+    /// let dataset: DenseDataset<_> =
+    ///     DenseDataset::from_raw(vec![1.0f32, 2.0, 3.0, 4.0].into_boxed_slice(), 2, encoder);
+    /// let collected: Vec<_> = dataset.par_iter().map(|view| view.values().to_vec()).collect();
+    /// assert_eq!(collected.len(), dataset.len());
+    /// ```
     #[inline]
     pub fn par_iter(&self) -> impl ParallelIterator<Item = E::EncodedVector<'_>> {
         let m = self.encoder.output_dim();
@@ -223,6 +293,9 @@ impl<E> DenseDatasetGrowable<E>
 where
     E: DenseVectorEncoder,
 {
+    /// Return how many vectors can be stored without growing the underlying buffer.
+    ///
+    /// This mirrors the behavior of `Vec::capacity`, but expressed in vector units instead of scalar components.
     pub fn capacity(&self) -> usize {
         if self.encoder.output_dim() == 0 {
             0
@@ -231,6 +304,9 @@ where
         }
     }
 
+    /// Make room for `additional` vectors without extra reallocations.
+    ///
+    /// The argument counts vectors, so the method multiplies it by the encoder output dimension.
     pub fn reserve(&mut self, additional: usize) {
         self.data.reserve(additional * self.encoder.output_dim());
     }
@@ -241,11 +317,14 @@ where
     V: ValueType + crate::Float + crate::FromF32,
     D: crate::distances::Distance + crate::encoders::dense_scalar::ScalarDenseSupportedDistance,
 {
+    /// Convenience constructor for dense scalar quantizers where the input and output
+    /// value types are identical.
     pub fn with_dim(dim: usize) -> Self {
         let encoder = crate::encoders::dense_scalar::ScalarDenseQuantizer::new(dim);
         crate::GrowableDataset::new(encoder)
     }
 
+    /// Convenience constructor that also preallocates room for `capacity` vectors.
     pub fn with_capacity_and_dim(dim: usize, capacity: usize) -> Self {
         let encoder = crate::encoders::dense_scalar::ScalarDenseQuantizer::new(dim);
         Self {
@@ -323,9 +402,9 @@ where
 mod tests {
     use super::*;
     use crate::core::vector::DenseVectorView;
+    use crate::dataset::ConvertFrom;
     use crate::distances::DotProduct;
     use crate::encoders::dense_scalar::ScalarDenseQuantizer;
-    use crate::dataset::ConvertFrom;
 
     #[test]
     fn dense_dataset_range_and_id_are_consistent() {
@@ -392,11 +471,8 @@ mod tests {
     fn id_from_range_bad_range_panics() {
         type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
         let encoder = Encoder::new(2);
-        let dataset = DenseDataset::from_raw(
-            vec![1.0f32, 2.0, 3.0, 4.0].into_boxed_slice(),
-            2,
-            encoder,
-        );
+        let dataset =
+            DenseDataset::from_raw(vec![1.0f32, 2.0, 3.0, 4.0].into_boxed_slice(), 2, encoder);
         let _ = dataset.id_from_range(1..3);
     }
 
@@ -439,7 +515,8 @@ mod tests {
 
     #[test]
     fn with_dim_constructors_return_dataset() {
-        let growable = DenseDatasetGrowable::<ScalarDenseQuantizer<f32, f32, DotProduct>>::with_dim(3);
+        let growable =
+            DenseDatasetGrowable::<ScalarDenseQuantizer<f32, f32, DotProduct>>::with_dim(3);
         assert_eq!(growable.encoder.input_dim(), 3);
         let with_capacity = DenseDatasetGrowable::<ScalarDenseQuantizer<f32, f32, DotProduct>>::with_capacity_and_dim(
             3, 4,
@@ -453,11 +530,8 @@ mod tests {
         type SrcEncoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
         type MidEncoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
         let encoder = SrcEncoder::new(2);
-        let dataset = DenseDataset::from_raw(
-            vec![5.0f32, 6.0, 7.0, 8.0].into_boxed_slice(),
-            2,
-            encoder,
-        );
+        let dataset =
+            DenseDataset::from_raw(vec![5.0f32, 6.0, 7.0, 8.0].into_boxed_slice(), 2, encoder);
         let converted: DenseDatasetGeneric<MidEncoder, Vec<f32>> =
             ConvertFrom::convert_from(&dataset);
         assert_eq!(converted.len(), dataset.len());

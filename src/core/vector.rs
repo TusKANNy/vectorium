@@ -1,7 +1,12 @@
+//! Utilities for borrowing and owning vectors regardless of the encoder representation.
+//! The module centralizes view traits plus owned types so the rest of the core library can
+//! reason about dense, sparse, and packed data uniformly.
+
 use crate::{ComponentType, SpaceUsage, ValueType};
 
-/// Marker trait for vector views.
-/// Does not mandate any accessor methods, just marks the type as a vector view.
+/// Marker trait for vector views that end up as encoder inputs, queries, or results.
+/// Implementers are cheap wrappers around slices or owned buffers, so this trait acts as
+/// a lightweight way to constrain encoders without prescribing any API surface.
 pub trait VectorView {}
 
 impl<T: VectorView> VectorView for &T {}

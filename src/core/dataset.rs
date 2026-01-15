@@ -1,3 +1,5 @@
+//! Core dataset abstractions used by the search/indexing primitives.
+//! Includes type-safe traits to iterate, look up ranges, and integrate with encoders.
 use crate::core::sealed;
 use crate::core::vector_encoder::{
     DenseVectorEncoder, QueryEvaluator, SparseDataEncoder, VectorEncoder,
@@ -144,6 +146,8 @@ pub trait Dataset: sealed::Sealed {
 
 impl<T> sealed::Sealed for &T where T: Dataset {}
 
+/// Allows borrowing any dataset, so callers can pass references through the public APIs
+/// without having to duplicate impls or rely on trait objects.
 impl<T> Dataset for &T
 where
     T: Dataset,

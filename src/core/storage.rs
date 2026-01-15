@@ -122,9 +122,9 @@ where
     pub(crate) fn relabel<E2>(self) -> GrowableSparseStorage<E2>
     where
         E2: SparseVectorEncoder<
-            OutputComponentType = E::OutputComponentType,
-            OutputValueType = E::OutputValueType,
-        >,
+                OutputComponentType = E::OutputComponentType,
+                OutputValueType = E::OutputValueType,
+            >,
     {
         GrowableSparseStorage {
             offsets: self.offsets,
@@ -278,9 +278,9 @@ where
     pub(crate) fn relabel<E2>(self) -> ImmutableSparseStorage<E2>
     where
         E2: SparseVectorEncoder<
-            OutputComponentType = E::OutputComponentType,
-            OutputValueType = E::OutputValueType,
-        >,
+                OutputComponentType = E::OutputComponentType,
+                OutputValueType = E::OutputValueType,
+            >,
     {
         ImmutableSparseStorage {
             offsets: self.offsets,

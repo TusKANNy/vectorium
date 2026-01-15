@@ -947,12 +947,12 @@ mod tests {
     use crate::core::dataset::ConvertInto;
     use crate::core::dataset::GrowableDataset;
     use crate::core::vector::SparseVectorView;
+    use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
     use crate::{
         Dataset, DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer,
         SparseDataset, SparseDatasetGrowable,
     };
     use half::f16;
-    use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
     use rayon::prelude::*;
 
     #[test]

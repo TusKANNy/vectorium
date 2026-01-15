@@ -100,9 +100,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        intersection, is_strictly_sorted, permute_components_with_bisection,
-    };
+    use super::{intersection, is_strictly_sorted, permute_components_with_bisection};
 
     #[test]
     fn permute_components_with_bisection_returns_permutation() {

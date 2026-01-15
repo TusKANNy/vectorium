@@ -252,9 +252,9 @@ impl VectorEncoder for DotVByteFixedU8Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FromF32;
     use crate::core::vector::{PackedVectorView, SparseVectorView};
     use crate::distances::DotProduct;
-    use crate::FromF32;
 
     fn fixed(val: f32) -> FixedU8Q {
         FixedU8Q::from_f32_saturating(val)

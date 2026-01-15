@@ -334,7 +334,7 @@ where
 mod tests {
     use super::*;
     use crate::core::vector::{DenseVectorView, SparseVectorView};
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     #[test]
     fn dot_product_dense_sparse_basic() {
@@ -474,8 +474,9 @@ mod tests {
     fn squared_euclidean_dense_length_assert_coverage() {
         let query = DenseVectorView::new(&[0.0f32, 1.0]);
         let vector = DenseVectorView::new(&[1.0f32, 2.0, 3.0]);
-        let panic =
-            catch_unwind(AssertUnwindSafe(|| squared_euclidean_distance_dense(query, vector)));
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            squared_euclidean_distance_dense(query, vector)
+        }));
         assert!(panic.is_err());
     }
 
@@ -491,7 +492,9 @@ mod tests {
     fn dot_product_sparse_with_merge_vector_unsorted_panics() {
         let query = SparseVectorView::new(&[0usize, 1, 3], &[1.0f32, 2.0, 3.0]);
         let vector = SparseVectorView::new(&[0usize, 2, 1], &[1.0f32, 1.0, 2.0]);
-        let panic = catch_unwind(AssertUnwindSafe(|| dot_product_sparse_with_merge(query, vector)));
+        let panic = catch_unwind(AssertUnwindSafe(|| {
+            dot_product_sparse_with_merge(query, vector)
+        }));
         assert!(panic.is_err());
     }
 
