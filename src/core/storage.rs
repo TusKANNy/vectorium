@@ -156,17 +156,20 @@ where
     type Components = Vec<E::OutputComponentType>;
     type Values = Vec<E::OutputValueType>;
 
-    #[inline]
+    #[cfg_attr(test, inline(never))]
+    #[cfg_attr(not(test), inline)]
     fn offsets(&self) -> &Self::Offsets {
         &self.offsets
     }
 
-    #[inline]
+    #[cfg_attr(test, inline(never))]
+    #[cfg_attr(not(test), inline)]
     fn components(&self) -> &Self::Components {
         &self.components
     }
 
-    #[inline]
+    #[cfg_attr(test, inline(never))]
+    #[cfg_attr(not(test), inline)]
     fn values(&self) -> &Self::Values {
         &self.values
     }
@@ -176,17 +179,20 @@ impl<E> SparseStorageMut<E> for GrowableSparseStorage<E>
 where
     E: SparseVectorEncoder,
 {
-    #[inline]
+    #[cfg_attr(test, inline(never))]
+    #[cfg_attr(not(test), inline)]
     fn offsets_mut(&mut self) -> &mut Self::Offsets {
         &mut self.offsets
     }
 
-    #[inline]
+    #[cfg_attr(test, inline(never))]
+    #[cfg_attr(not(test), inline)]
     fn components_mut(&mut self) -> &mut Self::Components {
         &mut self.components
     }
 
-    #[inline]
+    #[cfg_attr(test, inline(never))]
+    #[cfg_attr(not(test), inline)]
     fn values_mut(&mut self) -> &mut Self::Values {
         &mut self.values
     }
@@ -246,17 +252,20 @@ where
     type Components = Box<[E::OutputComponentType]>;
     type Values = Box<[E::OutputValueType]>;
 
-    #[inline]
+    #[cfg_attr(test, inline(never))]
+    #[cfg_attr(not(test), inline)]
     fn offsets(&self) -> &Self::Offsets {
         &self.offsets
     }
 
-    #[inline]
+    #[cfg_attr(test, inline(never))]
+    #[cfg_attr(not(test), inline)]
     fn components(&self) -> &Self::Components {
         &self.components
     }
 
-    #[inline]
+    #[cfg_attr(test, inline(never))]
+    #[cfg_attr(not(test), inline)]
     fn values(&self) -> &Self::Values {
         &self.values
     }
@@ -380,5 +389,57 @@ mod tests {
         assert_eq!(storage.offsets(), &[0]);
         assert_eq!(storage.components(), &[2_u16, 4_u16]);
         assert_eq!(storage.values(), &[3.0_f32, 5.0_f32]);
+    }
+
+    #[test]
+    fn growable_storage_trait_accessors_cover_getters_and_mutators() {
+        type Encoder = PlainSparseQuantizer<u16, f32, DotProduct>;
+
+        let mut storage = GrowableSparseStorage::<Encoder>::new();
+        storage.components.extend_from_slice(&[2_u16]);
+        storage.values.extend_from_slice(&[3.0_f32]);
+        storage.offsets.push(1);
+
+        let offsets = SparseStorage::<Encoder>::offsets(&storage);
+        let components = SparseStorage::<Encoder>::components(&storage);
+        let values = SparseStorage::<Encoder>::values(&storage);
+
+        let offsets_slice: &[usize] = offsets.as_ref();
+        let components_slice: &[u16] = components.as_ref();
+        let values_slice: &[f32] = values.as_ref();
+        assert_eq!(offsets_slice, &[0, 1]);
+        assert_eq!(components_slice, &[2_u16]);
+        assert_eq!(values_slice, &[3.0_f32]);
+
+        SparseStorageMut::<Encoder>::components_mut(&mut storage).push(4_u16);
+        SparseStorageMut::<Encoder>::values_mut(&mut storage).push(5.0_f32);
+        SparseStorageMut::<Encoder>::offsets_mut(&mut storage).push(3);
+
+        assert_eq!(storage.components(), &[2_u16, 4_u16]);
+        assert_eq!(storage.values(), &[3.0_f32, 5.0_f32]);
+        assert_eq!(storage.offsets(), &[0, 1, 3]);
+    }
+
+    #[test]
+    fn immutable_storage_trait_accessors_cover_getters() {
+        type Encoder = PlainSparseQuantizer<u16, f32, DotProduct>;
+
+        let mut storage = GrowableSparseStorage::<Encoder>::new();
+        storage.components.extend_from_slice(&[7_u16]);
+        storage.values.extend_from_slice(&[11.0_f32]);
+        storage.offsets.push(1);
+
+        let frozen: ImmutableSparseStorage<Encoder> = storage.into();
+
+        let offsets = SparseStorage::<Encoder>::offsets(&frozen);
+        let components = SparseStorage::<Encoder>::components(&frozen);
+        let values = SparseStorage::<Encoder>::values(&frozen);
+
+        let offsets_slice: &[usize] = offsets.as_ref();
+        let components_slice: &[u16] = components.as_ref();
+        let values_slice: &[f32] = values.as_ref();
+        assert_eq!(offsets_slice, &[0, 1]);
+        assert_eq!(components_slice, &[7_u16]);
+        assert_eq!(values_slice, &[11.0_f32]);
     }
 }

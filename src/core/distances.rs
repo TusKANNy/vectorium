@@ -109,7 +109,8 @@ impl Ord for DotProduct {
 }
 
 /// Computes the dot product between a dense query and a sparse vector.
-#[inline]
+#[cfg_attr(test, inline(never))]
+#[cfg_attr(not(test), inline)]
 #[must_use]
 pub fn dot_product_dense_sparse<C, Q, V>(
     query: DenseVectorView<'_, Q>,
@@ -137,7 +138,8 @@ where
 ///
 /// # Safety
 /// Caller must ensure that all components in `vector` are valid indices in `query`.
-#[inline]
+#[cfg_attr(test, inline(never))]
+#[cfg_attr(not(test), inline)]
 #[must_use]
 pub unsafe fn dot_product_dense_sparse_unchecked<C, Q, V>(
     query: DenseVectorView<'_, Q>,
@@ -162,7 +164,8 @@ where
 }
 
 /// Computes the dot product between two sparse vectors using merge style.
-#[inline]
+#[cfg_attr(test, inline(never))]
+#[cfg_attr(not(test), inline)]
 #[must_use]
 pub fn dot_product_sparse_with_merge<C, Q, V>(
     query: SparseVectorView<'_, C, Q>,
@@ -189,7 +192,8 @@ where
 /// * Both `query` and `vector` must be sorted in strictly ascending component order.
 /// * Every component index encountered must be valid for the provided slices to avoid out-of-bounds access.
 /// * The caller must not drop the slices while this function runs.
-#[inline]
+#[cfg_attr(test, inline(never))]
+#[cfg_attr(not(test), inline)]
 #[must_use]
 pub unsafe fn dot_product_sparse_with_merge_unchecked<C, Q, V>(
     query: SparseVectorView<'_, C, Q>,
@@ -234,7 +238,8 @@ where
 }
 
 /// Computes the dot product between two dense vectors.
-#[inline]
+#[cfg_attr(test, inline(never))]
+#[cfg_attr(not(test), inline)]
 #[must_use]
 pub fn dot_product_dense<Q, V>(
     query: DenseVectorView<'_, Q>,
@@ -255,7 +260,8 @@ where
 /// Computes the dot product between two dense vectors (unchecked).
 /// # Safety
 /// The caller must ensure that `query.len() == vector.len()` to keep the zipped iteration within bounds.
-#[inline]
+#[cfg_attr(test, inline(never))]
+#[cfg_attr(not(test), inline)]
 #[must_use]
 pub unsafe fn dot_product_dense_unchecked<Q, V>(
     query: DenseVectorView<'_, Q>,
@@ -275,7 +281,8 @@ where
 }
 
 /// Computes the squared Euclidean distance between two dense vectors.
-#[inline]
+#[cfg_attr(test, inline(never))]
+#[cfg_attr(not(test), inline)]
 #[must_use]
 pub fn squared_euclidean_distance_dense<Q, V>(
     query: DenseVectorView<'_, Q>,
@@ -296,7 +303,8 @@ where
 /// Computes the squared Euclidean distance between two dense vectors (unchecked).
 /// # Safety
 /// The caller must ensure `query.len() == vector.len()` so every subtraction uses valid indices.
-#[inline]
+#[cfg_attr(test, inline(never))]
+#[cfg_attr(not(test), inline)]
 #[must_use]
 pub unsafe fn squared_euclidean_distance_dense_unchecked<Q, V>(
     query: DenseVectorView<'_, Q>,
@@ -326,6 +334,7 @@ where
 mod tests {
     use super::*;
     use crate::core::vector::{DenseVectorView, SparseVectorView};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     #[test]
     fn dot_product_dense_sparse_basic() {
@@ -363,6 +372,14 @@ mod tests {
     }
 
     #[test]
+    fn dot_product_dense_unchecked_direct() {
+        let query = DenseVectorView::new(&[2.0f32, 1.0]);
+        let vector = DenseVectorView::new(&[1.0f32, 3.0]);
+        let result = unsafe { dot_product_dense_unchecked(query, vector) };
+        assert_eq!(result, DotProduct::from(5.0));
+    }
+
+    #[test]
     fn dot_product_sparse_with_merge_computes_shared_components() {
         let query = SparseVectorView::new(&[0usize, 2], &[1.0f32, 2.0]);
         let vector = SparseVectorView::new(&[0usize, 2], &[3.0f32, 4.0]);
@@ -382,6 +399,14 @@ mod tests {
     }
 
     #[test]
+    fn squared_euclidean_distance_dense_unchecked_direct() {
+        let query = DenseVectorView::new(&[1.0f32, 2.0]);
+        let vector = DenseVectorView::new(&[2.0f32, 3.0]);
+        let result = unsafe { squared_euclidean_distance_dense_unchecked(query, vector) };
+        assert_eq!(result, SquaredEuclideanDistance::from(2.0));
+    }
+
+    #[test]
     fn dot_product_dense_sparse_unchecked_sum() {
         let query = DenseVectorView::new(&[1.0f32, 2.0, 3.0]);
         let vector = SparseVectorView::new(&[0usize, 2], &[2.0f32, 4.0]);
@@ -391,8 +416,7 @@ mod tests {
 
     #[test]
     fn dot_product_sparse_with_merge_unchecked_matches_manual() {
-        let query =
-            SparseVectorView::new(&[0usize, 1, 3], &[1.0f32, 2.0, 4.0]);
+        let query = SparseVectorView::new(&[0usize, 1, 3], &[1.0f32, 2.0, 4.0]);
         let vector = SparseVectorView::new(&[0usize, 3], &[3.0f32, 1.0]);
         let result = unsafe { dot_product_sparse_with_merge_unchecked(query, vector) };
         assert_eq!(result, DotProduct::from(7.0));
@@ -407,11 +431,35 @@ mod tests {
     }
 
     #[test]
+    fn dot_product_dense_sparse_bounds_assert_coverage() {
+        let query = DenseVectorView::new(&[1.0f32, 2.0]);
+        let vector = SparseVectorView::new(&[0usize, 4], &[1.0f32, 1.0]);
+        let panic = catch_unwind(AssertUnwindSafe(|| dot_product_dense_sparse(query, vector)));
+        assert!(panic.is_err());
+    }
+
+    #[test]
+    fn dot_product_dense_sparse_unchecked_inner_loop() {
+        let query = DenseVectorView::new(&[1.0f32, 2.0, 3.0]);
+        let vector = SparseVectorView::new(&[0usize, 2], &[2.0f32, 4.0]);
+        let result = unsafe { dot_product_dense_sparse_unchecked(query, vector) };
+        assert_eq!(result, DotProduct::from(14.0));
+    }
+
+    #[test]
     #[should_panic(expected = "query and vector must have the same length")]
     fn dot_product_dense_mismatch_panics() {
         let query = DenseVectorView::new(&[1.0f32, 2.0, 3.0]);
         let vector = DenseVectorView::new(&[1.0f32, 2.0]);
         let _ = dot_product_dense(query, vector);
+    }
+
+    #[test]
+    fn dot_product_dense_length_assert_coverage() {
+        let query = DenseVectorView::new(&[1.0f32, 2.0, 3.0]);
+        let vector = DenseVectorView::new(&[1.0f32, 2.0]);
+        let panic = catch_unwind(AssertUnwindSafe(|| dot_product_dense(query, vector)));
+        assert!(panic.is_err());
     }
 
     #[test]
@@ -423,11 +471,44 @@ mod tests {
     }
 
     #[test]
+    fn squared_euclidean_dense_length_assert_coverage() {
+        let query = DenseVectorView::new(&[0.0f32, 1.0]);
+        let vector = DenseVectorView::new(&[1.0f32, 2.0, 3.0]);
+        let panic =
+            catch_unwind(AssertUnwindSafe(|| squared_euclidean_distance_dense(query, vector)));
+        assert!(panic.is_err());
+    }
+
+    #[test]
     #[should_panic(expected = "query components must be sorted in strictly ascending order")]
     fn dot_product_sparse_with_merge_unsorted_query_panics() {
         let query = SparseVectorView::new(&[0usize, 2, 1], &[1.0f32, 2.0, 3.0]);
         let vector = SparseVectorView::new(&[0usize, 2], &[1.0f32, 1.0]);
         let _ = dot_product_sparse_with_merge(query, vector);
+    }
+
+    #[test]
+    fn dot_product_sparse_with_merge_vector_unsorted_panics() {
+        let query = SparseVectorView::new(&[0usize, 1, 3], &[1.0f32, 2.0, 3.0]);
+        let vector = SparseVectorView::new(&[0usize, 2, 1], &[1.0f32, 1.0, 2.0]);
+        let panic = catch_unwind(AssertUnwindSafe(|| dot_product_sparse_with_merge(query, vector)));
+        assert!(panic.is_err());
+    }
+
+    #[test]
+    fn dot_product_sparse_with_merge_unchecked_handles_empty_vector() {
+        let query = SparseVectorView::new(&[0usize, 2], &[1.0f32, 2.0]);
+        let vector: SparseVectorView<'_, usize, f32> = SparseVectorView::new(&[], &[]);
+        let result = unsafe { dot_product_sparse_with_merge_unchecked(query, vector) };
+        assert_eq!(result, DotProduct::from(0.0));
+    }
+
+    #[test]
+    fn dot_product_sparse_with_merge_unchecked_skips_non_matching_component() {
+        let query = SparseVectorView::new(&[0usize, 1], &[1.0f32, 2.0]);
+        let vector = SparseVectorView::new(&[2usize], &[3.0f32]);
+        let result = unsafe { dot_product_sparse_with_merge_unchecked(query, vector) };
+        assert_eq!(result, DotProduct::from(0.0));
     }
 
     #[test]
