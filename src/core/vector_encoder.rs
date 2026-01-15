@@ -169,11 +169,7 @@ where
     }
 }
 
-/// Encoder contract for handling packed sparse representations.
-///
-/// Implementors produce `PackedVectorView` outputs while still exposing the sparse
-/// metadata captured by `SparseDataEncoder`, letting callers reason about sparsity
-/// without committing to explicit component/value buffers.
+///  Encoder contract for encoding sparse component/value pairs packed into a single container and potentially encoded in some way. For example, compression schemes such as DotVByte use this approach
 pub trait PackedSparseVectorEncoder: SparseDataEncoder
 where
     for<'a> Self: VectorEncoder<EncodedVector<'a> = PackedVectorView<'a, Self::PackedDataType>>,
