@@ -241,9 +241,8 @@ mod tests {
         growable.push(DenseVectorView::new(&[0.0f32, 1.0]));
         growable.push(DenseVectorView::new(&[2.0f32, 1.0]));
 
-        let dataset: DenseDataset<Encoder> = growable.into();
         let query = DenseVectorView::new(&[1.5f32, 1.0]);
-        let results = dataset.search(query, 2);
+        let results = growable.search(query, 2);
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].vector, 2);
@@ -251,6 +250,15 @@ mod tests {
         let second = &results[1];
         assert!(matches!(second.vector, 0));
         assert_eq!(second.distance, DotProduct::from(2.0));
+
+        growable.push(DenseVectorView::new(&[5.0f32, 5.0]));
+        growable.push(DenseVectorView::new(&[6.0f32, 6.0]));
+
+        let results = growable.search(query, 2);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].vector, 4);
+        assert_eq!(results[1].vector, 3);
     }
 
     #[test]
@@ -320,5 +328,71 @@ mod tests {
         let query = DenseVectorView::new(&[0.0f32]);
 
         assert!(dataset.search(query, 0).is_empty());
+    }
+
+    #[test]
+    fn dataset_reference_forwarding_implements_all_methods() {
+        type Encoder = PlainDenseQuantizer<f32, DotProduct>;
+
+        let encoder = Encoder::new(2);
+        let mut growable = DenseDatasetGrowable::new(encoder);
+        growable.push(DenseVectorView::new(&[1.0f32, 0.5]));
+        growable.push(DenseVectorView::new(&[0.0f32, 1.0]));
+        growable.push(DenseVectorView::new(&[2.0f32, 1.0]));
+
+        let dataset: DenseDataset<Encoder> = growable.into();
+
+        fn exercise(dataset: &DenseDataset<Encoder>) {
+            assert_eq!(<&DenseDataset<Encoder> as Dataset>::len(&dataset), 3);
+            assert_eq!(<&DenseDataset<Encoder> as Dataset>::nnz(&dataset), 6);
+            assert!(!<&DenseDataset<Encoder> as Dataset>::is_empty(&dataset));
+            assert_eq!(<&DenseDataset<Encoder> as Dataset>::input_dim(&dataset), 2);
+            assert_eq!(<&DenseDataset<Encoder> as Dataset>::output_dim(&dataset), 2);
+
+            let first_range = <&DenseDataset<Encoder> as Dataset>::range_from_id(&dataset, 0);
+            let second_range = <&DenseDataset<Encoder> as Dataset>::range_from_id(&dataset, 1);
+            let third_range = <&DenseDataset<Encoder> as Dataset>::range_from_id(&dataset, 2);
+            assert_eq!(first_range, 0..2);
+            assert_eq!(second_range, 2..4);
+            assert_eq!(third_range, 4..6);
+
+            assert_eq!(
+                <&DenseDataset<Encoder> as Dataset>::id_from_range(&dataset, first_range.clone()),
+                0
+            );
+            assert_eq!(
+                <&DenseDataset<Encoder> as Dataset>::id_from_range(&dataset, second_range.clone()),
+                1
+            );
+            assert_eq!(
+                <&DenseDataset<Encoder> as Dataset>::id_from_range(&dataset, third_range.clone()),
+                2
+            );
+
+            <&DenseDataset<Encoder> as Dataset>::prefetch_with_range(&dataset, first_range.clone());
+            <&DenseDataset<Encoder> as Dataset>::prefetch_with_range(
+                &dataset,
+                second_range.clone(),
+            );
+            <&DenseDataset<Encoder> as Dataset>::prefetch_with_range(&dataset, third_range.clone());
+
+            let first_vector = <&DenseDataset<Encoder> as Dataset>::get(&dataset, 0);
+            assert_eq!(first_vector, DenseVectorView::new(&[1.0f32, 0.5]));
+
+            let second_vector =
+                <&DenseDataset<Encoder> as Dataset>::get_with_range(&dataset, second_range.clone());
+            assert_eq!(second_vector, DenseVectorView::new(&[0.0f32, 1.0]));
+
+            let iterated = <&DenseDataset<Encoder> as Dataset>::iter(&dataset)
+                .map(|vec| vec.values().to_vec())
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                iterated,
+                vec![vec![1.0f32, 0.5], vec![0.0f32, 1.0], vec![2.0f32, 1.0]]
+            );
+        }
+
+        exercise(&dataset);
     }
 }
