@@ -4,14 +4,18 @@ use crate::core::vector_encoder::{
 };
 use itertools::Itertools;
 
+/// Unique identifier assigned to each vector stored inside a dataset.
 pub type VectorId = u64;
 
+/// Holds a vector identifier together with the distance reported by a search evaluator.
 #[derive(Debug, PartialOrd, Eq, Ord, PartialEq, Copy, Clone)]
 pub struct ScoredItemGeneric<D, T> {
     pub distance: D,
     pub vector: T,
 }
 
+/// Helper type that maintains the ordering guarantees expected by callers of range-based APIs.
+/// The tuple order (distance, range start, range end) is enforced so callers can merge ranges deterministically.
 #[derive(Debug, PartialEq, Clone)]
 pub struct ScoredRange<D> {
     pub distance: D,
@@ -35,13 +39,18 @@ impl<D: Ord> Ord for ScoredRange<D> {
     }
 }
 
+/// Specialized alias where the vector handle is a `VectorId`.
 pub type ScoredVector<D> = ScoredItemGeneric<D, VectorId>;
 
+/// Conversion helper that enforces datasets must be constructible from other datasets.
 pub trait ConvertFrom<T: Dataset>: Dataset {
+    /// Build this dataset type from `value`.
     fn convert_from(value: T) -> Self;
 }
 
+/// Mirror helper that forwards into `ConvertFrom` implementations.
 pub trait ConvertInto<T: Dataset>: Dataset {
+    /// Consume this dataset and produce another dataset wired by `ConvertFrom`.
     fn convert_into(self) -> T;
 }
 
@@ -55,30 +64,41 @@ where
     }
 }
 
-// Note: Removed concrete type aliases for DotProduct/etc to avoid coupling with specific distance implementations here,
-// or I can keep them if I import the concrete distances. I'll omit them for brevity unless required.
-
+/// Core abstraction for any collection of vectors paired with a `VectorEncoder`.
+/// Implementations must expose the encoder but may choose arbitrary storage strategies.
+/// Each vector is identified by a `VectorId` assigned at insertion time. The id is just the index of the vector in the dataset.
+/// Each vector can be retrieved either by id or by specifying the underlying storage range directly.
+/// The latter provides a faster access time on sparse datasets because we don't need to translate the id into a range first, by looking up an offsets table. This saves one memory access per vector retrieval and provides the oppurtunity for prefetching the vector data.
+/// No advantage is expected for dense datasets, where the range can be trivially computed from the id and the vector dimensionality.
 pub trait Dataset: sealed::Sealed {
     type Encoder: VectorEncoder;
 
+    /// Shared encoder instance used to encode, query, and decode vectors.
     fn encoder(&self) -> &Self::Encoder;
 
+    /// Dimensionality of the input vectors accepted by the encoder.
     fn input_dim(&self) -> usize {
         self.encoder().input_dim()
     }
 
+    /// Dimensionality of the output vectors produced by the encoder.
     fn output_dim(&self) -> usize {
         self.encoder().output_dim()
     }
 
+    /// Number of vectors stored in the dataset.
     fn len(&self) -> usize;
 
+    /// Number of non-zero components in the underlying representation.
     fn nnz(&self) -> usize;
 
+    /// Translate a persisted `VectorId` into a storage range.
     fn range_from_id(&self, id: VectorId) -> std::ops::Range<usize>;
 
+    /// Translate a storage range back to the opaque `VectorId`.
     fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId;
 
+    /// Check whether the dataset contains any vectors.
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -86,16 +106,20 @@ pub trait Dataset: sealed::Sealed {
     /// Get the representation of the vector with the given id.
     fn get(&self, index: VectorId) -> <Self::Encoder as VectorEncoder>::EncodedVector<'_>;
 
-    /// Get a vector directy specifying the range in the underlying storage.
+    /// Get a vector directly specifying the range in the underlying storage.
     fn get_with_range(
         &self,
         range: std::ops::Range<usize>,
     ) -> <Self::Encoder as VectorEncoder>::EncodedVector<'_>;
 
+    /// Iterate through raw encoded vectors for cases where the caller is responsible for decoding.
     fn iter(&self) -> impl Iterator<Item = <Self::Encoder as VectorEncoder>::EncodedVector<'_>>;
 
+    /// Touch the provided range to hint that it will be accessed soon.
     fn prefetch_with_range(&self, range: std::ops::Range<usize>);
 
+    /// Exhaustive search that scores every vector via the configured query evaluator.
+    /// Complexity is `O(n log k)` because of the heap built by `k_smallest`.
     fn search<'d, 'q>(
         &'d self,
         query: <Self::Encoder as VectorEncoder>::QueryVector<'q>,
@@ -175,18 +199,41 @@ where
     }
 }
 
+/// Marker trait representing any dataset whose encoder exposes the dense-vector contract.
+///
+/// Dense layout, query expectations, and decoding helpers are defined by `DenseVectorEncoder`,
+/// so this marker only makes sense when the encoder implements that trait.
+/// Requiring the encoder bound keeps downstream consumers honest about what they can rely on.
+pub trait DenseData: Dataset<Encoder: DenseVectorEncoder> {}
+
+/// Marker trait for datasets backed by shared sparse-data helpers.
+/// Both plain `SparseVectorEncoder`s and packed encoders expose the common component/value types
+/// via `SparseDataEncoder`. Consumers can rely on those helpers without needing to distinguish the layout.
+pub trait SparseData: Dataset<Encoder: SparseDataEncoder> {}
+
+pub trait GrowableDataset: Dataset {
+    /// Create a new growable dataset owning the provided encoder.
+    fn new(encoder: Self::Encoder) -> Self;
+
+    /// Create a new growable dataset with the given encoder and reserved certain capacity for vectors.
+    fn with_capacity(encoder: Self::Encoder, capacity: usize) -> Self;
+
+    /// Append another vector, encoded through the dataset encoder, into storage.
+    fn push<'a>(&mut self, vec: <Self::Encoder as VectorEncoder>::InputVector<'a>);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DenseDataset;
     use crate::core::vector::DenseVectorView;
     use crate::datasets::dense_dataset::DenseDatasetGrowable;
     use crate::distances::DotProduct;
-    use crate::encoders::dense_scalar::ScalarDenseQuantizer;
+    use crate::distances::SquaredEuclideanDistance;
+    use crate::{DenseDataset, PlainDenseQuantizer};
 
     #[test]
     fn dataset_search_returns_expected_order() {
-        type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        type Encoder = PlainDenseQuantizer<f32, DotProduct>;
 
         let encoder = Encoder::new(2);
         let mut growable = DenseDatasetGrowable::new(encoder);
@@ -209,6 +256,16 @@ mod tests {
     #[test]
     fn scored_range_order_obeys_distance_then_start() {
         let r1 = ScoredRange {
+            distance: DotProduct::from(2.0),
+            range: 1..5,
+        };
+        let r2 = ScoredRange {
+            distance: DotProduct::from(1.0),
+            range: 0..2,
+        };
+        assert!(r1 < r2);
+
+        let r1 = ScoredRange {
             distance: DotProduct::from(1.0),
             range: 0..2,
         };
@@ -217,26 +274,44 @@ mod tests {
             range: 1..3,
         };
         assert!(r1 < r2);
+        let r1 = ScoredRange {
+            distance: SquaredEuclideanDistance::from(1.0),
+            range: 1..5,
+        };
+        let r2 = ScoredRange {
+            distance: SquaredEuclideanDistance::from(2.0),
+            range: 0..2,
+        };
+        assert!(r1 < r2);
+
+        let r1 = ScoredRange {
+            distance: SquaredEuclideanDistance::from(1.0),
+            range: 0..2,
+        };
+        let r2 = ScoredRange {
+            distance: SquaredEuclideanDistance::from(1.0),
+            range: 1..3,
+        };
+        assert!(r1 < r2);
     }
 
     #[test]
     fn dataset_trait_helpers_report_dimensions_and_empty() {
-        type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        type Encoder = PlainDenseQuantizer<f32, DotProduct>;
 
         let encoder = Encoder::new(2);
         let mut growable = DenseDatasetGrowable::new(encoder);
         growable.push(DenseVectorView::new(&[1.0f32, 0.0]));
-        let dataset: DenseDataset<Encoder> = growable.into();
 
-        assert_eq!(dataset.input_dim(), 2);
-        assert_eq!(dataset.output_dim(), 2);
-        assert!(!dataset.is_empty());
-        assert!(dataset.nnz() > 0);
+        assert_eq!(growable.input_dim(), 2);
+        assert_eq!(growable.output_dim(), 2);
+        assert!(!growable.is_empty());
+        assert!(growable.nnz() > 0);
     }
 
     #[test]
     fn dataset_search_with_zero_k_returns_empty() {
-        type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        type Encoder = PlainDenseQuantizer<f32, SquaredEuclideanDistance>;
 
         let encoder = Encoder::new(1);
         let mut growable = DenseDatasetGrowable::new(encoder);
@@ -246,34 +321,4 @@ mod tests {
 
         assert!(dataset.search(query, 0).is_empty());
     }
-
-}
-
-/// Marker trait representing any dataset whose encoder exposes the dense-vector contract.
-///
-/// Dense layout, query expectations, and decoding helpers are defined by `DenseVectorEncoder`, so this marker
-/// only makes sense when the encoder implements that trait. Requiring the encoder bound keeps downstream consumers
-/// honest about what they can rely on.
-pub trait DenseData: Dataset
-where
-    Self::Encoder: DenseVectorEncoder,
-{
-}
-
-/// Marker trait representing datasets whose encoder satisfies the shared sparse-input API.
-///
-/// Both plain `SparseVectorEncoder`s and packed encoders implement `SparseDataEncoder`, which exposes the common
-/// component/value types and decoding helpers. Bounding this marker by `SparseDataEncoder` ensures consumers have
-/// access to the shared behavior without needing to know whether the underlying layout is packed or unpacked.
-pub trait SparseData: Dataset<Encoder: SparseDataEncoder> {}
-
-pub trait GrowableDataset: Dataset {
-    /// Create a new growable dataset with the given encoder.
-    fn new(encoder: Self::Encoder) -> Self;
-
-    /// Create a new growable dataset with the given encoder and capacity.
-    fn with_capacity(encoder: Self::Encoder, capacity: usize) -> Self;
-
-    /// Push a new vector into the dataset.
-    fn push<'a>(&mut self, vec: <Self::Encoder as VectorEncoder>::InputVector<'a>);
 }
