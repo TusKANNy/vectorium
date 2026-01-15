@@ -379,8 +379,7 @@ where
 
         for chunk in src_data.chunks_exact(m) {
             let vec_view = DenseVectorView::new(chunk);
-            let encoded = encoder.encode_vector(vec_view);
-            new_data.extend_from_slice(encoded.values());
+            encoder.push_encoded(vec_view, &mut new_data);
         }
 
         Self {

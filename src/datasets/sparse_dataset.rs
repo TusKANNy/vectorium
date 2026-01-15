@@ -85,11 +85,41 @@ where
     E: SparseVectorEncoder,
     S: SparseStorage<E>,
 {
+    /// Number of non-zero components stored across the entire dataset.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use vectorium::{Dataset, GrowableDataset};
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
+    ///
+    /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
+    /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
+    ///
+    /// dataset.push(SparseVectorView::new(&[0, 2], &[1.0, 2.0]));
+    /// assert_eq!(dataset.nnz(), 2);
+    /// ```
     #[inline]
     pub fn nnz(&self) -> usize {
         self.storage.components().as_ref().len()
     }
 
+    /// Translate a stored `VectorId` into the component/value range in the storage buffers.
+    ///
+    /// The returned range indexes into `components()`/`values()` rather than into logical vector indices.
+    /// # Examples
+    ///
+    /// ```
+    /// use vectorium::{Dataset, GrowableDataset};
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
+    ///
+    /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
+    /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
+    ///
+    /// dataset.push(SparseVectorView::new(&[0, 2, 4], &[1.0, 2.0, 3.0]));
+    /// let range = dataset.range_from_id(0);
+    /// assert_eq!(range, 0..3);
+    /// ```
     #[inline]
     pub fn range_from_id(&self, id: VectorId) -> std::ops::Range<usize> {
         let offsets = self.storage.offsets().as_ref();
@@ -98,6 +128,22 @@ where
         offsets[index]..offsets[index + 1]
     }
 
+    /// Translate a storage range back to the `VectorId` that owns it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use vectorium::{Dataset, GrowableDataset};
+    /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
+    ///
+    /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
+    /// let mut dataset = PlainSparseDatasetGrowable::<u32, f32, DotProduct>::new(quantizer);
+    ///
+    /// dataset.push(SparseVectorView::new(&[0, 2, 4], &[1.0, 2.0, 3.0]));
+    /// dataset.push(SparseVectorView::new(&[1, 3], &[4.0, 5.0]));
+    /// let range = dataset.range_from_id(1);
+    /// assert_eq!(dataset.id_from_range(range), 1);
+    /// ```
     #[inline]
     pub fn id_from_range(&self, range: std::ops::Range<usize>) -> VectorId {
         let offsets = self.storage.offsets().as_ref();
@@ -111,6 +157,9 @@ where
     }
 
     /// Parallel iterator over all vectors as slice-backed `SparseVectorView`.
+    ///
+    /// The returned views borrow from the shared storage buffers, so this iterator avoids
+    /// heap allocations while still providing per-vector access.
     #[inline]
     pub fn par_iter(&self) -> impl IndexedParallelIterator<Item = E::EncodedVector<'_>> + '_
     where
@@ -196,6 +245,11 @@ where
         self.get_with_range(range)
     }
 
+    /// Returns a view into the specified component/value range so callers can decode subsets.
+    ///
+    /// # Safety
+    ///
+    /// The range must come from `range_from_id` or otherwise align with vector boundaries.
     #[inline]
     fn get_with_range<'a>(&'a self, range: std::ops::Range<usize>) -> E::EncodedVector<'a> {
         let components = self.storage.components().as_ref();
@@ -294,81 +348,7 @@ where
     fn len(&self) -> usize {
         self.storage.offsets().as_ref().len() - 1
     }
-
-    // pub fn from_dataset_f32<D, P, AD, AU>(dataset: SparseDatasetGeneric<D, f32, P, AD, AU>) -> Self
-    // where
-    //     D: ComponentType,
-    //     O: From<P>,
-    //     P: AsRef<[usize]>,
-    //     AC: From<AD>,
-    //     AD: AsRef<[D]>,
-    //     AV: From<Vec<V>>,
-    //     AU: AsRef<[f32]>,
-    // {
-    //     Self {
-    //         dim: dataset.dim,
-    //         offsets: dataset.offsets.into(),
-    //         components: dataset.components.into(),
-    //         values: dataset
-    //             .values
-    //             .as_ref()
-    //             .iter()
-    //             .map(|&v| V::from_f32_saturating(v))
-    //             .collect_vec()
-    //             .into(),
-    //         _phantom: PhantomData,
-    //     }
-    // }
 }
-
-// impl<E, AC, AV> FromIterator<(AC, AV)> for SparseDatasetGrowable<E>
-// where
-//     E: SparseVectorEncoder,
-//     AC: AsRef<[E::OutputComponentType]>,
-//     AV: AsRef<[E::OutputValueType]>,
-// {
-//     /// Constructs a `SparseDatasetGrowable<V>` from an iterator over pairs of references to `[u16]` and `[V]`.
-//     ///
-//     /// This function consumes the provided iterator and constructs a new `SparseDatasetGrowable<V>`.
-//     /// Each pair in the iterator represents a pair of vectors, where the first vector contains
-//     /// the components and the second vector contains their corresponding values.
-//     ///
-//     /// # Parameters
-//     ///
-//     /// * `iter`: An iterator over pairs of vectors `(AsRef<[C]>, AsRef<[V]>)`.
-//     ///
-//     /// # Returns
-//     ///
-//     /// A new instance of `SparseDatasetGrowable<C, V>` populated with the pairs from the iterator.
-//     ///
-//     /// # Examples
-//     ///
-//     /// ```
-//     /// use seismic::SparseDatasetGrowable;
-//     ///
-//     /// let data = vec![
-//     ///                 (vec![0, 2, 4],    vec![1.0, 2.0, 3.0]),
-//     ///                 (vec![1, 3],       vec![4.0, 5.0]),
-//     ///                 (vec![0, 1, 2, 3], &[1.0, 2.0, 3.0, 4.0])
-//     ///                 ];
-//     ///
-//     /// let dataset: SparseDatasetGrowable<u16, f32> = data.into_iter().collect();
-//     ///
-//     /// assert_eq!(dataset.nnz(), 9); // Total non-zero components across all vectors
-//     /// ```
-//     fn from_iter<I>(iter: I) -> Self
-//     where
-//         I: IntoIterator<Item = (AC, AV)>,
-//     {
-//         let mut dataset = SparseDatasetGrowable::<E>::new(E);
-
-//         for (components, values) in iter {
-//             dataset.push(components.as_ref(), values.as_ref());
-//         }
-
-//         dataset
-//     }
-// }
 
 // Unfortunately, Rust doesn't yet support specialization, meaning that we can't use From too generically (otherwise it fails due to reimplementing `From<T> for T`)
 
@@ -611,12 +591,11 @@ where
             );
 
         for src_vec in crate::datasets::sparse_dataset::SparseDatasetIter::new(source) {
-            let encoded = encoder.encode_vector(SparseVectorView::<C, Mid>::new(
-                src_vec.components(),
-                src_vec.values(),
-            ));
-            storage.components.extend_from_slice(encoded.components());
-            storage.values.extend_from_slice(encoded.values());
+            encoder.push_encoded(
+                SparseVectorView::<C, Mid>::new(src_vec.components(), src_vec.values()),
+                &mut storage.components,
+                &mut storage.values,
+            );
             storage.offsets.push(storage.components.len());
         }
 
@@ -947,6 +926,8 @@ mod tests {
     use crate::core::dataset::ConvertInto;
     use crate::core::dataset::GrowableDataset;
     use crate::core::vector::SparseVectorView;
+    use crate::core::vector_encoder::{SparseDataEncoder, SparseVectorEncoder};
+    use crate::dataset::ConvertFrom;
     use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
     use crate::{
         Dataset, DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer,
@@ -1124,6 +1105,72 @@ mod tests {
             .iter()
             .map(|v| v.values().iter().map(|&val| val.to_f32()).collect())
             .collect();
+        assert_eq!(values, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+    }
+
+    #[test]
+    fn scalar_sparse_encoder_encode_decode_roundtrip() {
+        type Encoder = ScalarSparseQuantizer<u16, f32, half::f16, DotProduct>;
+        let encoder = Encoder::new(4, 4);
+        let view = SparseVectorView::new(&[0_u16, 2], &[1.25_f32, 2.5_f32]);
+
+        let mut components = Vec::new();
+        let mut values = Vec::new();
+        encoder.push_encoded(view, &mut components, &mut values);
+        assert_eq!(components, vec![0_u16, 2]);
+
+        let encoded_view = SparseVectorView::new(&components, &values);
+        let decoded = encoder.decode_vector(encoded_view);
+        assert_eq!(decoded.components(), &[0_u16, 2]);
+        assert_eq!(decoded.values(), &[1.25_f32, 2.5_f32]);
+
+        let owned = encoder.encode_vector(view);
+        let owned_vals: Vec<_> = owned.values().iter().map(|v| v.to_f32()).collect();
+        assert_eq!(owned.components(), &[0_u16, 2]);
+        assert_eq!(owned_vals, vec![1.25_f32, 2.5_f32]);
+    }
+
+    #[test]
+    fn sparse_dataset_iter_matches_parallel_and_raw_iter() {
+        type Encoder = PlainSparseQuantizer<u16, f32, DotProduct>;
+
+        let quantizer = Encoder::new(6, 6);
+        let mut growable = PlainSparseDatasetGrowable::new(quantizer);
+        growable.push(SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 2.0]));
+        growable.push(SparseVectorView::new(&[1_u16, 3], &[3.0_f32, 4.0]));
+
+        let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
+        let iter_values: Vec<_> = frozen
+            .iter()
+            .map(|vec| (vec.components().to_vec(), vec.values().to_vec()))
+            .collect();
+        let par_values: Vec<_> = frozen
+            .par_iter()
+            .map(|vec| (vec.components().to_vec(), vec.values().to_vec()))
+            .collect();
+        assert_eq!(iter_values, par_values);
+
+        let raw_values: Vec<_> = SparseDatasetIter::new(&frozen)
+            .map(|vec| (vec.components().to_vec(), vec.values().to_vec()))
+            .collect();
+        assert_eq!(iter_values, raw_values);
+    }
+
+    #[test]
+    fn sparse_dataset_convert_from_reference_reencodes() {
+        type SrcQuant = ScalarSparseQuantizer<u16, f32, half::f16, DotProduct>;
+        type DstQuant = ScalarSparseQuantizer<u16, half::f16, f32, DotProduct>;
+
+        let mut growable = SparseDatasetGrowable::new(SrcQuant::new(4, 4));
+        growable.push(SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 2.0_f32]));
+        growable.push(SparseVectorView::new(&[1_u16, 3], &[3.0_f32, 4.0_f32]));
+
+        let converted: SparseDatasetGrowable<DstQuant> = ConvertFrom::convert_from(&growable);
+
+        assert_eq!(converted.len(), growable.len());
+        assert_eq!(converted.nnz(), growable.nnz());
+
+        let values: Vec<Vec<f32>> = converted.iter().map(|vec| vec.values().to_vec()).collect();
         assert_eq!(values, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
     }
 }
