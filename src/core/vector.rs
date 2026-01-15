@@ -7,26 +7,6 @@ pub trait VectorView {}
 impl<T: VectorView> VectorView for &T {}
 impl<T: VectorView> VectorView for &mut T {}
 
-/// Marker trait for *plain* (not encoded) vector views.
-///
-/// Intended for values supplied by the user (e.g. query vectors), as opposed to vectors
-/// already in an encoder's output representation.
-pub trait PlainVectorView<V: ValueType>: VectorView {}
-
-impl<V, T> PlainVectorView<V> for &T
-where
-    V: ValueType,
-    T: PlainVectorView<V>,
-{
-}
-
-impl<V, T> PlainVectorView<V> for &mut T
-where
-    V: ValueType,
-    T: PlainVectorView<V>,
-{
-}
-
 /// A view over a dense vector (slice of values).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DenseVectorView<'a, V: ValueType> {
@@ -34,26 +14,32 @@ pub struct DenseVectorView<'a, V: ValueType> {
 }
 
 impl<'a, V: ValueType> DenseVectorView<'a, V> {
+    /// Create a view from a borrowed slice.
     #[inline]
     pub fn new(values: &'a [V]) -> Self {
         Self { values }
     }
+    /// Number of elements accessible through the view.
     #[inline]
     pub fn len(&self) -> usize {
         self.values.len()
     }
+    /// True if the view contains no elements.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
+    /// Access the raw slice backing the view.
     #[inline]
     pub fn values(&self) -> &'a [V] {
         self.values
     }
+    /// Iterate over copies of each value.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = V> + '_ {
         self.values.iter().copied()
     }
+    /// Clone the view contents into an owned vector.
     #[inline]
     pub fn to_owned(&self) -> DenseVectorOwned<V> {
         DenseVectorOwned::new(self.values.to_vec())
@@ -62,9 +48,7 @@ impl<'a, V: ValueType> DenseVectorView<'a, V> {
 
 impl<'a, V: ValueType> VectorView for DenseVectorView<'a, V> {}
 
-impl<'a, V: ValueType> PlainVectorView<V> for DenseVectorView<'a, V> {}
-
-/// A view over a sparse vector (slices of components and values).
+/// A view over a sparse vector (parallel slices of component indices and values).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SparseVectorView<'a, C: ComponentType, V: ValueType> {
     components: &'a [C],
@@ -72,27 +56,34 @@ pub struct SparseVectorView<'a, C: ComponentType, V: ValueType> {
 }
 
 impl<'a, C: ComponentType, V: ValueType> SparseVectorView<'a, C, V> {
+    /// Construct a sparse view from parallel component/value slices.
+    /// Panics in debug builds if lengths mismatch.
     #[inline]
     pub fn new(components: &'a [C], values: &'a [V]) -> Self {
         debug_assert_eq!(components.len(), values.len());
         Self { components, values }
     }
+    /// Number of nonzero entries described by this view.
     #[inline]
     pub fn len(&self) -> usize {
         self.components.len()
     }
+    /// True if the view contains no entries.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.components.is_empty()
     }
+    /// Component indices for the sparse vector.
     #[inline]
     pub fn components(&self) -> &'a [C] {
         self.components
     }
+    /// Values corresponding to each component.
     #[inline]
     pub fn values(&self) -> &'a [V] {
         self.values
     }
+    /// Iterate through component/value pairs.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = (C, V)> + '_ {
         self.components
@@ -100,6 +91,7 @@ impl<'a, C: ComponentType, V: ValueType> SparseVectorView<'a, C, V> {
             .copied()
             .zip(self.values.iter().copied())
     }
+    /// Clone this sparse view into owned buffers.
     #[inline]
     pub fn to_owned(&self) -> SparseVectorOwned<C, V> {
         SparseVectorOwned::new(self.components.to_vec(), self.values.to_vec())
@@ -108,8 +100,6 @@ impl<'a, C: ComponentType, V: ValueType> SparseVectorView<'a, C, V> {
 
 impl<'a, C: ComponentType, V: ValueType> VectorView for SparseVectorView<'a, C, V> {}
 
-impl<'a, C: ComponentType, V: ValueType> PlainVectorView<V> for SparseVectorView<'a, C, V> {}
-
 /// A view over a packed vector.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PackedVectorView<'a, T: SpaceUsage + Copy> {
@@ -117,26 +107,32 @@ pub struct PackedVectorView<'a, T: SpaceUsage + Copy> {
 }
 
 impl<'a, T: SpaceUsage + Copy> PackedVectorView<'a, T> {
+    /// Build a view of packed data.
     #[inline]
     pub fn new(data: &'a [T]) -> Self {
         Self { data }
     }
+    /// Number of packed entries available.
     #[inline]
     pub fn len(&self) -> usize {
         self.data.len()
     }
+    /// True when no packed entries exist.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
+    /// Access the raw packed slice.
     #[inline]
     pub fn data(&self) -> &'a [T] {
         self.data
     }
+    /// Iterate over copied packed values.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = T> + '_ {
         self.data.iter().copied()
     }
+    /// Copy the packed data into an owned buffer.
     #[inline]
     pub fn to_owned(&self) -> PackedVectorOwned<T> {
         PackedVectorOwned::new(self.data.to_vec())
@@ -147,36 +143,43 @@ impl<'a, T: SpaceUsage + Copy> VectorView for PackedVectorView<'a, T> {}
 // --- Owned Structs ---
 
 #[derive(Debug, Clone, PartialEq)]
+/// Owned dense vector storage.
 pub struct DenseVectorOwned<V: ValueType> {
     values: Vec<V>,
 }
 
 impl<V: ValueType> DenseVectorOwned<V> {
+    /// Construct from owned values.
     #[inline]
     pub fn new(values: Vec<V>) -> Self {
         Self { values }
     }
 
+    /// Return the number of values.
     #[inline]
     pub fn len(&self) -> usize {
         self.values.len()
     }
 
+    /// True when the underlying vector is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
 
+    /// Borrow shared slice of values.
     #[inline]
     pub fn values(&self) -> &[V] {
         &self.values
     }
 
+    /// Iterate over copies of each value.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = V> + '_ {
         self.values.iter().copied()
     }
 
+    /// Create a view that borrows the inner values.
     #[inline]
     pub fn as_view(&self) -> DenseVectorView<'_, V> {
         DenseVectorView::new(&self.values)
@@ -191,12 +194,14 @@ impl<'a, V: ValueType> From<&'a DenseVectorOwned<V>> for DenseVectorView<'a, V> 
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Owned storage for sparse component/value vectors.
 pub struct SparseVectorOwned<C: ComponentType, V: ValueType> {
     components: Vec<C>,
     values: Vec<V>,
 }
 
 impl<C: ComponentType, V: ValueType> SparseVectorOwned<C, V> {
+    /// Build from owned component/value buffers.
     #[inline]
     pub fn new(components: Vec<C>, values: Vec<V>) -> Self {
         assert!(
@@ -206,26 +211,31 @@ impl<C: ComponentType, V: ValueType> SparseVectorOwned<C, V> {
         Self { components, values }
     }
 
+    /// Number of stored entries.
     #[inline]
     pub fn len(&self) -> usize {
         self.components.len()
     }
 
+    /// True if there are no entries.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.components.is_empty()
     }
 
+    /// Access the component indices.
     #[inline]
     pub fn components(&self) -> &[C] {
         &self.components
     }
 
+    /// Access the stored values.
     #[inline]
     pub fn values(&self) -> &[V] {
         &self.values
     }
 
+    /// Iterate over component/value pairs.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = (C, V)> + '_ {
         self.components
@@ -234,6 +244,7 @@ impl<C: ComponentType, V: ValueType> SparseVectorOwned<C, V> {
             .zip(self.values.iter().copied())
     }
 
+    /// Create a borrowed view on the owned data.
     #[inline]
     pub fn as_view(&self) -> SparseVectorView<'_, C, V> {
         SparseVectorView::new(&self.components, &self.values)
@@ -251,6 +262,7 @@ impl<'a, C: ComponentType, V: ValueType> From<&'a SparseVectorOwned<C, V>>
 
 // PackedVectorOwned
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Owned packed vector storage.
 pub struct PackedVectorOwned<T>
 where
     T: SpaceUsage + Copy,
@@ -262,31 +274,37 @@ impl<T> PackedVectorOwned<T>
 where
     T: SpaceUsage + Copy,
 {
+    /// Build from packed data.
     #[inline]
     pub fn new(data: Vec<T>) -> Self {
         Self { data }
     }
 
+    /// Number of packed entries.
     #[inline]
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
+    /// True when no packed entries exist.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 
+    /// Borrow the underlying packed slice.
     #[inline]
     pub fn data(&self) -> &[T] {
         &self.data
     }
 
+    /// Create a borrowable view of the packed data.
     #[inline]
     pub fn as_view(&self) -> PackedVectorView<'_, T> {
         PackedVectorView::new(&self.data)
     }
 
+    /// Iterate over copies of the packed data.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = T> + '_ {
         self.data.iter().copied()

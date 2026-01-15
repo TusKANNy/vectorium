@@ -1,6 +1,6 @@
 pub use crate::core::vector::{
-    DenseVectorOwned, DenseVectorView, PackedVectorOwned, PackedVectorView, PlainVectorView,
-    SparseVectorOwned, SparseVectorView, VectorView,
+    DenseVectorOwned, DenseVectorView, PackedVectorOwned, PackedVectorView, SparseVectorOwned,
+    SparseVectorView, VectorView,
 };
 use crate::{ComponentType, SpaceUsage, ValueType};
 
@@ -26,7 +26,7 @@ pub trait VectorEncoder: Send + Sync + SpaceUsage {
 
     type InputVector<'a>: VectorView;
 
-    type QueryVector<'q>: PlainVectorView<f32>;
+    type QueryVector<'q>: VectorView;
 
     type EncodedVector<'a>: VectorView;
 
