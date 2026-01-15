@@ -1,3 +1,5 @@
+//! Scalar dense quantizers that simply rescale floats between numeric types.
+//! These modules back the dense datasets and keep distances in `f32` for accurate queries.
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
@@ -14,7 +16,8 @@ use crate::{Float, FromF32, SpaceUsage, ValueType};
 /// Marker trait for distance types supported by scalar dense quantizers.
 /// Provides the computation method specific to dense vectors.
 pub trait ScalarDenseSupportedDistance: Distance {
-    /// Compute distance between two dense float vectors
+    /// Compute a numeric distance between two dense float views.
+    /// Implementations usually call the same distance kernel the dataset uses.
     fn compute_dense<Q: ValueType, V: ValueType>(
         query: DenseVectorView<'_, Q>,
         vector: DenseVectorView<'_, V>,
@@ -39,7 +42,8 @@ impl ScalarDenseSupportedDistance for DotProduct {
     }
 }
 
-/// A scalar dense quantizer that converts values from one float type to another.
+/// A scalar quantizer that casts each component from `In` to `Out`.
+/// The quantizer stores `d` to keep the input/output dimensionality in sync.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScalarDenseQuantizer<In, Out, D> {
     d: usize,
@@ -55,6 +59,8 @@ pub type ScalarDenseQuantizerSquaredEuclidean<V> =
 pub type ScalarDenseQuantizerDotProduct<V> = ScalarDenseQuantizer<V, V, DotProduct>;
 
 impl<In, Out, D> ScalarDenseQuantizer<In, Out, D> {
+    /// Build a quantizer that keeps the input and output dimensionality equal.
+    #[inline]
     pub fn new(d: usize) -> Self {
         Self {
             d,
@@ -73,6 +79,8 @@ where
     type OutputValueType = Out;
 
     #[inline]
+    /// Decode any encoded vector into `DenseVectorOwned<f32>` by converting each element to `f32`.
+    #[inline]
     fn decode_vector<'a>(
         &self,
         encoded: DenseVectorView<'a, Self::OutputValueType>,
@@ -85,6 +93,8 @@ where
         DenseVectorOwned::new(values)
     }
 
+    /// Encode the input view into an existing buffer to avoid temporary allocations.
+    #[inline]
     fn push_encoded<'a, OutputContainer>(
         &self,
         input: DenseVectorView<'a, Self::InputValueType>,
@@ -99,9 +109,7 @@ where
     }
 }
 
-/// Query evaluator for ScalarDenseQuantizer (fixed `f32` query vectors).
-///
-/// This evaluator owns the prepared query state.
+/// Evaluator that computes distances between a frozen query (owned `f32` vector) and encoded vectors.
 #[derive(Debug, Clone)]
 pub struct ScalarDenseQueryEvaluator<'e, In, Out, D>
 where
@@ -160,6 +168,7 @@ where
     where
         Self: 'e;
 
+    /// Build an evaluator from a dense `f32` query.
     #[inline]
     fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
         assert_eq!(
@@ -170,6 +179,7 @@ where
         ScalarDenseQueryEvaluator::new(self, query.to_owned())
     }
 
+    /// Build an evaluator from an encoded vector stored in the dataset.
     #[inline]
     fn vector_evaluator<'e, 'v>(&'e self, vector: Self::EncodedVector<'v>) -> Self::Evaluator<'e> {
         let decoded = <Self as DenseVectorEncoder>::decode_vector(self, vector);
