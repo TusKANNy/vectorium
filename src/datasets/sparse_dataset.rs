@@ -885,22 +885,25 @@ where
     }
 }
 
-impl<C, V, D>
-    SparseDatasetGrowable<crate::encoders::sparse_scalar::ScalarSparseQuantizer<C, V, V, D>>
+impl<C, VIn, VOut, D>
+    SparseDatasetGrowable<crate::encoders::sparse_scalar::ScalarSparseQuantizer<C, VIn, VOut, D>>
 where
     C: ComponentType,
-    V: ValueType + Float + FromF32,
+    VIn: ValueType + Float,
+    VOut: ValueType + Float + FromF32,
     D: crate::encoders::sparse_scalar::ScalarSparseSupportedDistance,
 {
+    /// Convenience constructor that builds a quantizer and an empty growable dataset.
     pub fn with_dim(dim: usize) -> Self {
         let encoder = crate::encoders::sparse_scalar::ScalarSparseQuantizer::new(dim, dim);
         crate::GrowableDataset::new(encoder)
     }
 
-    pub fn with_capacity_and_dim(dim: usize, capacity: usize) -> Self {
+    /// Convenience constructor that reserves space for `n_vecs` vectors and `nnz` total components.
+    pub fn with_dim_and_capacity(dim: usize, n_vecs: usize, nnz: usize) -> Self {
         let encoder = crate::encoders::sparse_scalar::ScalarSparseQuantizer::new(dim, dim);
         Self {
-            storage: GrowableSparseStorage::with_capacity(capacity, 0),
+            storage: GrowableSparseStorage::with_capacity(n_vecs, nnz),
             encoder,
         }
     }
@@ -913,12 +916,29 @@ where
 {
 }
 
+impl<E> SparseDatasetGrowable<E>
+where
+    E: SparseVectorEncoder,
+{
+    #[inline]
+    pub fn new(encoder: E) -> Self {
+        crate::GrowableDataset::new(encoder)
+    }
+
+    #[inline]
+    pub fn with_capacity(encoder: E, capacity: usize) -> Self {
+        crate::GrowableDataset::with_capacity(encoder, capacity)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::SparseDatasetIter;
+
     use crate::core::dataset::ConvertInto;
     use crate::core::dataset::GrowableDataset;
     use crate::core::vector::SparseVectorView;
+    use crate::core::vector_encoder::VectorEncoder;
     use crate::core::vector_encoder::{SparseDataEncoder, SparseVectorEncoder};
     use crate::dataset::ConvertFrom;
     use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
@@ -949,6 +969,19 @@ mod tests {
         assert_eq!(back.values(), &[2.0_f32, 2.0]);
 
         assert!(iter.next_back().is_none());
+    }
+
+    #[test]
+    fn with_dim_and_capacity_supports_generic_sparse_quantizers() {
+        let growable =
+            SparseDatasetGrowable::<ScalarSparseQuantizer<u16, f32, f64, DotProduct>>::with_dim(5);
+        assert_eq!(growable.encoder.output_dim(), 5);
+        let with_capacity =
+            SparseDatasetGrowable::<ScalarSparseQuantizer<u16, f32, f64, DotProduct>>::with_dim_and_capacity(
+                5, 7, 13,
+            );
+        assert_eq!(with_capacity.encoder.output_dim(), 5);
+        assert_eq!(with_capacity.len(), 0);
     }
 
     #[test]

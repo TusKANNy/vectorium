@@ -17,12 +17,19 @@ use rayon::prelude::*;
 ///
 /// ```
 /// use vectorium::{
-///     DotVByteFixedU8Encoder, PackedSparseDatasetGrowable, SparseVectorView,
+///     DotVByteFixedU8Encoder, FixedU8Q, FromF32, PackedSparseDatasetGrowable, GrowableDataset,
+///     Dataset, SparseVectorView,
 /// };
 ///
 /// let encoder = DotVByteFixedU8Encoder::new(4, 4);
 /// let mut dataset = PackedSparseDatasetGrowable::new(encoder);
-/// dataset.push(SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 2.0_f32]));
+/// dataset.push(SparseVectorView::new(
+///     &[0_u16, 2],
+///     &[
+///         FixedU8Q::from_f32_saturating(1.0),
+///         FixedU8Q::from_f32_saturating(2.0),
+///     ],
+/// ));
 /// assert_eq!(dataset.len(), 1);
 /// ```
 pub type PackedSparseDatasetGrowable<E> = PackedSparseDatasetGeneric<
@@ -31,14 +38,29 @@ pub type PackedSparseDatasetGrowable<E> = PackedSparseDatasetGeneric<
     Vec<<E as PackedSparseVectorEncoder>::PackedDataType>,
 >;
 
+impl<E> PackedSparseDatasetGrowable<E>
+where
+    E: PackedSparseVectorEncoder,
+{
+    #[inline]
+    pub fn new(encoder: E) -> Self {
+        crate::GrowableDataset::new(encoder)
+    }
+
+    #[inline]
+    pub fn with_capacity(encoder: E, capacity: usize) -> Self {
+        crate::GrowableDataset::with_capacity(encoder, capacity)
+    }
+}
+
 /// An immutable packed dataset.
 ///
 /// # Examples
 ///
 /// ```
 /// use vectorium::{
-///     DotProduct, DotVByteFixedU8Encoder, PackedSparseDataset, PlainSparseDataset,
-///     PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView,
+///     Dataset, DotProduct, DotVByteFixedU8Encoder, GrowableDataset, PackedSparseDataset,
+///     PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView,
 /// };
 ///
 /// let quantizer = PlainSparseQuantizer::<u16, f32, DotProduct>::new(3, 3);
@@ -150,17 +172,24 @@ where
     ///
     /// Each item is an `E::EncodedVector<'_>` borrowing its slice from the dataset `data`.
     ///
-    /// # Examples
+/// # Examples
+///
+/// ```
+/// use rayon::iter::ParallelIterator;
+/// use vectorium::{
+///     DotVByteFixedU8Encoder, FixedU8Q, FromF32, PackedSparseDataset, PackedSparseDatasetGrowable,
+///     GrowableDataset, Dataset, SparseVectorView,
+/// };
     ///
-    /// ```
-    /// use vectorium::{
-    ///     DotVByteFixedU8Encoder, PackedSparseDataset, PackedSparseDatasetGrowable,
-    ///     SparseVectorView,
-    /// };
-    ///
-    /// let encoder = DotVByteFixedU8Encoder::new(4, 4);
-    /// let mut growable = PackedSparseDatasetGrowable::new(encoder);
-    /// growable.push(SparseVectorView::new(&[0_u16, 1], &[1.0_f32, 2.0_f32]));
+/// let encoder = DotVByteFixedU8Encoder::new(4, 4);
+/// let mut growable = PackedSparseDatasetGrowable::new(encoder);
+/// growable.push(SparseVectorView::new(
+///     &[0_u16, 1],
+///     &[
+///         FixedU8Q::from_f32_saturating(1.0),
+///         FixedU8Q::from_f32_saturating(2.0),
+///     ],
+/// ));
     /// let packed: PackedSparseDataset<_> = growable.into();
     /// let collected: Vec<_> = packed.par_iter().collect();
     /// assert_eq!(collected.len(), packed.len());

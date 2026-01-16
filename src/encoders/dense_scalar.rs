@@ -78,7 +78,6 @@ where
     type InputValueType = In;
     type OutputValueType = Out;
 
-    #[inline]
     /// Decode any encoded vector into `DenseVectorOwned<f32>` by converting each element to `f32`.
     #[inline]
     fn decode_vector<'a>(

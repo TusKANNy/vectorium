@@ -425,7 +425,6 @@ impl<'a> DotVbyteFixedu8<'a> {
 
             let original_length =
                 u16::from_ne_bytes([*slice.get_unchecked(0), *slice.get_unchecked(1)]);
-            // println!("Original length: {}", original_length);
 
             let n_packs = original_length as usize / N;
             let n_remaining = original_length as usize % N;

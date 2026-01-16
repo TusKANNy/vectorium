@@ -19,6 +19,8 @@ use rayon::prelude::*;
 /// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
 /// use vectorium::distances::DotProduct;
 /// use vectorium::core::vector::DenseVectorView;
+/// use vectorium::GrowableDataset;
+/// use vectorium::Dataset;
 ///
 /// let encoder = ScalarDenseQuantizer::<f32, f32, DotProduct>::new(2);
 /// let mut growable = DenseDatasetGrowable::new(encoder);
@@ -36,7 +38,8 @@ pub type DenseDatasetGrowable<E> =
 /// # Examples
 ///
 /// ```
-/// use vectorium::datasets::{dense_dataset::DenseDatasetGrowable, DenseDataset};
+/// use vectorium::datasets::dense_dataset::DenseDatasetGrowable;
+/// use vectorium::{DenseDataset, Dataset, GrowableDataset};
 /// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
 /// use vectorium::distances::DotProduct;
 /// use vectorium::core::vector::DenseVectorView;
@@ -93,9 +96,10 @@ where
     /// # Examples
     ///
     /// ```
-    /// use vectorium::datasets::DenseDataset;
-    /// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
-    /// use vectorium::distances::DotProduct;
+/// use vectorium::DenseDataset;
+/// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
+/// use vectorium::distances::DotProduct;
+/// use vectorium::Dataset;
     ///
     /// let encoder = ScalarDenseQuantizer::<f32, f32, DotProduct>::new(2);
     /// let dataset: DenseDataset<_> =
@@ -135,17 +139,19 @@ where
     ///
     /// # Examples
     ///
-    /// ```
-    /// use vectorium::datasets::DenseDataset;
-    /// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
-    /// use vectorium::distances::DotProduct;
-    ///
-    /// let encoder = ScalarDenseQuantizer::<f32, f32, DotProduct>::new(2);
-    /// let dataset: DenseDataset<_> =
-    ///     DenseDataset::from_raw(vec![1.0f32, 2.0, 3.0, 4.0].into_boxed_slice(), 2, encoder);
-    /// let collected: Vec<_> = dataset.par_iter().map(|view| view.values().to_vec()).collect();
-    /// assert_eq!(collected.len(), dataset.len());
-    /// ```
+/// ```
+/// use vectorium::DenseDataset;
+/// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
+/// use vectorium::distances::DotProduct;
+/// use vectorium::Dataset;
+/// use rayon::iter::ParallelIterator;
+///
+/// let encoder = ScalarDenseQuantizer::<f32, f32, DotProduct>::new(2);
+/// let dataset: DenseDataset<_> =
+///     DenseDataset::from_raw(vec![1.0f32, 2.0, 3.0, 4.0].into_boxed_slice(), 2, encoder);
+/// let collected: Vec<_> = dataset.par_iter().map(|view| view.values().to_vec()).collect();
+/// assert_eq!(collected.len(), dataset.len());
+/// ```
     #[inline]
     pub fn par_iter(&self) -> impl ParallelIterator<Item = E::EncodedVector<'_>> {
         let m = self.encoder.output_dim();
@@ -291,6 +297,18 @@ impl<E> DenseDatasetGrowable<E>
 where
     E: DenseVectorEncoder,
 {
+    /// Build a new growable dataset using the provided encoder.
+    #[inline]
+    pub fn new(encoder: E) -> Self {
+        crate::GrowableDataset::new(encoder)
+    }
+
+    /// Build a growable dataset with the provided encoder and reserved capacity.
+    #[inline]
+    pub fn with_capacity(encoder: E, capacity: usize) -> Self {
+        crate::GrowableDataset::with_capacity(encoder, capacity)
+    }
+
     /// Return how many vectors can be stored without growing the underlying buffer.
     ///
     /// This mirrors the behavior of `Vec::capacity`, but expressed in vector units instead of scalar components.
@@ -310,20 +328,20 @@ where
     }
 }
 
-impl<V, D> DenseDatasetGrowable<crate::encoders::dense_scalar::ScalarDenseQuantizer<V, V, D>>
+impl<VIn, VOut, D> DenseDatasetGrowable<crate::encoders::dense_scalar::ScalarDenseQuantizer<VIn, VOut, D>>
 where
-    V: ValueType + crate::Float + crate::FromF32,
+    VIn: ValueType + crate::Float,
+    VOut: ValueType + crate::Float + crate::FromF32,
     D: crate::distances::Distance + crate::encoders::dense_scalar::ScalarDenseSupportedDistance,
 {
-    /// Convenience constructor for dense scalar quantizers where the input and output
-    /// value types are identical.
+    /// Convenience constructor that creates a quantizer and an empty dataset for any scalar quantizer.
     pub fn with_dim(dim: usize) -> Self {
         let encoder = crate::encoders::dense_scalar::ScalarDenseQuantizer::new(dim);
         crate::GrowableDataset::new(encoder)
     }
 
-    /// Convenience constructor that also preallocates room for `capacity` vectors.
-    pub fn with_capacity_and_dim(dim: usize, capacity: usize) -> Self {
+    /// Convenience constructor that also preallocates enough space for `capacity` vectors.
+    pub fn with_dim_and_capacity(dim: usize, capacity: usize) -> Self {
         let encoder = crate::encoders::dense_scalar::ScalarDenseQuantizer::new(dim);
         Self {
             n_vecs: 0,
@@ -515,11 +533,24 @@ mod tests {
         let growable =
             DenseDatasetGrowable::<ScalarDenseQuantizer<f32, f32, DotProduct>>::with_dim(3);
         assert_eq!(growable.encoder.input_dim(), 3);
-        let with_capacity = DenseDatasetGrowable::<ScalarDenseQuantizer<f32, f32, DotProduct>>::with_capacity_and_dim(
+        let with_capacity = DenseDatasetGrowable::<ScalarDenseQuantizer<f32, f32, DotProduct>>::with_dim_and_capacity(
             3, 4,
         );
         assert_eq!(with_capacity.encoder.output_dim(), 3);
         assert!(with_capacity.capacity() >= 0);
+    }
+
+    #[test]
+    fn with_dim_and_capacity_supported_for_generic_quantizers() {
+        let growable =
+            DenseDatasetGrowable::<ScalarDenseQuantizer<f32, f64, DotProduct>>::with_dim(4);
+        assert_eq!(growable.encoder.output_dim(), 4);
+        let with_capacity =
+            DenseDatasetGrowable::<ScalarDenseQuantizer<f32, f64, DotProduct>>::with_dim_and_capacity(
+                4, 8,
+            );
+        assert_eq!(with_capacity.encoder.output_dim(), 4);
+        assert_eq!(with_capacity.capacity(), 8);
     }
 
     #[test]
