@@ -172,24 +172,24 @@ where
     ///
     /// Each item is an `E::EncodedVector<'_>` borrowing its slice from the dataset `data`.
     ///
-/// # Examples
-///
-/// ```
-/// use rayon::iter::ParallelIterator;
-/// use vectorium::{
-///     DotVByteFixedU8Encoder, FixedU8Q, FromF32, PackedSparseDataset, PackedSparseDatasetGrowable,
-///     GrowableDataset, Dataset, SparseVectorView,
-/// };
+    /// # Examples
     ///
-/// let encoder = DotVByteFixedU8Encoder::new(4, 4);
-/// let mut growable = PackedSparseDatasetGrowable::new(encoder);
-/// growable.push(SparseVectorView::new(
-///     &[0_u16, 1],
-///     &[
-///         FixedU8Q::from_f32_saturating(1.0),
-///         FixedU8Q::from_f32_saturating(2.0),
-///     ],
-/// ));
+    /// ```
+    /// use rayon::iter::ParallelIterator;
+    /// use vectorium::{
+    ///     DotVByteFixedU8Encoder, FixedU8Q, FromF32, PackedSparseDataset, PackedSparseDatasetGrowable,
+    ///     GrowableDataset, Dataset, SparseVectorView,
+    /// };
+    ///
+    /// let encoder = DotVByteFixedU8Encoder::new(4, 4);
+    /// let mut growable = PackedSparseDatasetGrowable::new(encoder);
+    /// growable.push(SparseVectorView::new(
+    ///     &[0_u16, 1],
+    ///     &[
+    ///         FixedU8Q::from_f32_saturating(1.0),
+    ///         FixedU8Q::from_f32_saturating(2.0),
+    ///     ],
+    /// ));
     /// let packed: PackedSparseDataset<_> = growable.into();
     /// let collected: Vec<_> = packed.par_iter().collect();
     /// assert_eq!(collected.len(), packed.len());
@@ -416,7 +416,17 @@ where
 
         // Train using the original dataset components.
         // DotVByte reorders components, so it only needs to see the component distribution.
-        dotvbyte_encoder.train(dataset.iter());
+
+        // Computing the permutation on the whole dataset can be expensive. Do it on a sample with 1/SAMPLE_RATE of the vectors.
+        // For simplicity, we just take the first 5% of the dataset here.
+        const SAMPLE_RATE: usize = 20;
+        let sample_size = if dataset.len() / SAMPLE_RATE < 50_000 {
+            dataset.len()
+        } else {
+            dataset.len() / SAMPLE_RATE
+        };
+
+        dotvbyte_encoder.train(dataset.iter().take(sample_size));
 
         let mut offsets = Vec::with_capacity(dataset.len() + 1);
         offsets.push(0);

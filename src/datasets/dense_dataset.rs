@@ -96,10 +96,10 @@ where
     /// # Examples
     ///
     /// ```
-/// use vectorium::DenseDataset;
-/// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
-/// use vectorium::distances::DotProduct;
-/// use vectorium::Dataset;
+    /// use vectorium::DenseDataset;
+    /// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
+    /// use vectorium::distances::DotProduct;
+    /// use vectorium::Dataset;
     ///
     /// let encoder = ScalarDenseQuantizer::<f32, f32, DotProduct>::new(2);
     /// let dataset: DenseDataset<_> =
@@ -139,19 +139,19 @@ where
     ///
     /// # Examples
     ///
-/// ```
-/// use vectorium::DenseDataset;
-/// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
-/// use vectorium::distances::DotProduct;
-/// use vectorium::Dataset;
-/// use rayon::iter::ParallelIterator;
-///
-/// let encoder = ScalarDenseQuantizer::<f32, f32, DotProduct>::new(2);
-/// let dataset: DenseDataset<_> =
-///     DenseDataset::from_raw(vec![1.0f32, 2.0, 3.0, 4.0].into_boxed_slice(), 2, encoder);
-/// let collected: Vec<_> = dataset.par_iter().map(|view| view.values().to_vec()).collect();
-/// assert_eq!(collected.len(), dataset.len());
-/// ```
+    /// ```
+    /// use vectorium::DenseDataset;
+    /// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
+    /// use vectorium::distances::DotProduct;
+    /// use vectorium::Dataset;
+    /// use rayon::iter::ParallelIterator;
+    ///
+    /// let encoder = ScalarDenseQuantizer::<f32, f32, DotProduct>::new(2);
+    /// let dataset: DenseDataset<_> =
+    ///     DenseDataset::from_raw(vec![1.0f32, 2.0, 3.0, 4.0].into_boxed_slice(), 2, encoder);
+    /// let collected: Vec<_> = dataset.par_iter().map(|view| view.values().to_vec()).collect();
+    /// assert_eq!(collected.len(), dataset.len());
+    /// ```
     #[inline]
     pub fn par_iter(&self) -> impl ParallelIterator<Item = E::EncodedVector<'_>> {
         let m = self.encoder.output_dim();
@@ -328,7 +328,8 @@ where
     }
 }
 
-impl<VIn, VOut, D> DenseDatasetGrowable<crate::encoders::dense_scalar::ScalarDenseQuantizer<VIn, VOut, D>>
+impl<VIn, VOut, D>
+    DenseDatasetGrowable<crate::encoders::dense_scalar::ScalarDenseQuantizer<VIn, VOut, D>>
 where
     VIn: ValueType + crate::Float,
     VOut: ValueType + crate::Float + crate::FromF32,
