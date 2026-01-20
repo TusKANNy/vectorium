@@ -22,6 +22,7 @@ pub type FixedU16Q = FixedU16<U13>;
 pub mod core;
 pub mod datasets;
 pub mod encoders;
+pub mod clustering;
 pub mod utils;
 
 pub use core::dataset;
@@ -46,6 +47,8 @@ pub use core::vector_encoder::{
     DenseVectorEncoder, PackedSparseVectorEncoder, QueryEvaluator, SparseVectorEncoder,
     VectorEncoder,
 };
+
+pub use clustering::{KMeans, KMeansBuilder};
 
 pub use encoders::dense_scalar::{
     PlainDenseQuantizer, PlainDenseQuantizerDotProduct, PlainDenseQuantizerSquaredEuclidean,
