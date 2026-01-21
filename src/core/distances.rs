@@ -285,6 +285,7 @@ where
 #[cfg_attr(not(test), inline)]
 #[must_use]
 pub fn squared_euclidean_distance_dense<Q, V>(
+    dot_query: f32,
     query: DenseVectorView<'_, Q>,
     vector: DenseVectorView<'_, V>,
 ) -> SquaredEuclideanDistance
@@ -297,7 +298,7 @@ where
         vector.len(),
         "query and vector must have the same length"
     );
-    unsafe { squared_euclidean_distance_dense_unchecked(query, vector) }
+    unsafe { squared_euclidean_distance_dense_unchecked(dot_query, query, vector) }
 }
 
 /// Computes the squared Euclidean distance between two dense vectors (unchecked).
@@ -307,6 +308,7 @@ where
 #[cfg_attr(not(test), inline)]
 #[must_use]
 pub unsafe fn squared_euclidean_distance_dense_unchecked<Q, V>(
+    dot_query: f32,
     query: DenseVectorView<'_, Q>,
     vector: DenseVectorView<'_, V>,
 ) -> SquaredEuclideanDistance
@@ -316,18 +318,89 @@ where
 {
     unsafe { assert_unchecked(query.len() == vector.len()) };
 
-    let sum_sq = query
-        .iter()
-        .zip(vector.iter())
-        .map(|(q, v)| {
-            let q = q.to_f32().unwrap();
-            let v = v.to_f32().unwrap();
-            let diff = q.algebraic_sub(v);
-            diff.algebraic_mul(diff)
-        })
-        .fold(0.0f32, |acc, x| acc.algebraic_add(x));
+    let query_slice = query.values();
+    let mut dot_query_b = 0.0f32;
+    let mut dot_b_b = 0.0f32;
 
-    sum_sq.into()
+    for (i, v) in vector.iter().enumerate() {
+        let q = unsafe { *query_slice.get_unchecked(i) }.to_f32().unwrap();
+        let v = v.to_f32().unwrap();
+        dot_query_b = dot_query_b.algebraic_add(q.algebraic_mul(v));
+        dot_b_b = dot_b_b.algebraic_add(v.algebraic_mul(v));
+    }
+
+    let dist = dot_query
+        .algebraic_add(dot_b_b)
+        .algebraic_sub(2.0f32.algebraic_mul(dot_query_b));
+
+    SquaredEuclideanDistance::from(dist)
+}
+
+fn sparse_squared_norm<C, V>(vector: SparseVectorView<'_, C, V>) -> f32
+where
+    C: ComponentType,
+    V: ValueType,
+{
+    vector
+        .values()
+        .iter()
+        .map(|v| {
+            let v = v.to_f32().unwrap();
+            v.algebraic_mul(v)
+        })
+        .fold(0.0f32, |acc, x| acc.algebraic_add(x))
+}
+
+/// Computes the squared Euclidean distance between a dense query and a sparse vector.
+///
+/// `dot_query` must be `dot(query, query)` and is provided by the evaluator so the distance
+/// computation can reuse the precomputed value.
+#[cfg_attr(test, inline(never))]
+#[cfg_attr(not(test), inline)]
+#[must_use]
+pub fn squared_euclidean_distance_sparse_with_dense_query<C, Q, V>(
+    dot_query: f32,
+    query: DenseVectorView<'_, Q>,
+    vector: SparseVectorView<'_, C, V>,
+) -> SquaredEuclideanDistance
+where
+    C: ComponentType,
+    Q: ValueType,
+    V: ValueType,
+{
+    let dot_query_b = dot_product_dense_sparse(query, vector).distance();
+    let dot_b_b = sparse_squared_norm(vector);
+    let dist = dot_query
+        .algebraic_add(dot_b_b)
+        .algebraic_sub(2.0f32.algebraic_mul(dot_query_b));
+
+    SquaredEuclideanDistance::from(dist)
+}
+
+/// Computes the squared Euclidean distance between two sparse vectors.
+///
+/// `dot_query` must be `dot(query, query)` and the caller is expected to ensure both views follow
+/// the same ordering invariants required by the sparse dot-product helpers.
+#[cfg_attr(test, inline(never))]
+#[cfg_attr(not(test), inline)]
+#[must_use]
+pub fn squared_euclidean_distance_sparse_with_merge<C, Q, V>(
+    dot_query: f32,
+    query: SparseVectorView<'_, C, Q>,
+    vector: SparseVectorView<'_, C, V>,
+) -> SquaredEuclideanDistance
+where
+    C: ComponentType,
+    Q: ValueType,
+    V: ValueType,
+{
+    let dot_query_b = dot_product_sparse_with_merge(query, vector).distance();
+    let dot_b_b = sparse_squared_norm(vector);
+    let dist = dot_query
+        .algebraic_add(dot_b_b)
+        .algebraic_sub(2.0f32.algebraic_mul(dot_query_b));
+
+    SquaredEuclideanDistance::from(dist)
 }
 
 #[cfg(test)]
@@ -392,8 +465,10 @@ mod tests {
         let query = DenseVectorView::new(&[0.0f32, 2.0]);
         let vector = DenseVectorView::new(&[3.0f32, 1.0]);
         let expected = SquaredEuclideanDistance::from(10.0);
-        let computed = squared_euclidean_distance_dense(query, vector);
-        let unchecked = unsafe { squared_euclidean_distance_dense_unchecked(query, vector) };
+        let dot_query = dot_product_dense(query, query).distance();
+        let computed = squared_euclidean_distance_dense(dot_query, query, vector);
+        let unchecked =
+            unsafe { squared_euclidean_distance_dense_unchecked(dot_query, query, vector) };
         assert_eq!(computed, expected);
         assert_eq!(unchecked, expected);
     }
@@ -402,7 +477,9 @@ mod tests {
     fn squared_euclidean_distance_dense_unchecked_direct() {
         let query = DenseVectorView::new(&[1.0f32, 2.0]);
         let vector = DenseVectorView::new(&[2.0f32, 3.0]);
-        let result = unsafe { squared_euclidean_distance_dense_unchecked(query, vector) };
+        let dot_query = dot_product_dense(query, query).distance();
+        let result =
+            unsafe { squared_euclidean_distance_dense_unchecked(dot_query, query, vector) };
         assert_eq!(result, SquaredEuclideanDistance::from(2.0));
     }
 
@@ -467,7 +544,7 @@ mod tests {
     fn squared_euclidean_distance_dense_mismatch_panics() {
         let query = DenseVectorView::new(&[0.0f32, 1.0]);
         let vector = DenseVectorView::new(&[1.0f32, 2.0, 3.0]);
-        let _ = squared_euclidean_distance_dense(query, vector);
+        let _ = squared_euclidean_distance_dense(0.0f32, query, vector);
     }
 
     #[test]
@@ -475,7 +552,7 @@ mod tests {
         let query = DenseVectorView::new(&[0.0f32, 1.0]);
         let vector = DenseVectorView::new(&[1.0f32, 2.0, 3.0]);
         let panic = catch_unwind(AssertUnwindSafe(|| {
-            squared_euclidean_distance_dense(query, vector)
+            squared_euclidean_distance_dense(0.0f32, query, vector)
         }));
         assert!(panic.is_err());
     }
@@ -533,5 +610,41 @@ mod tests {
     #[should_panic(expected = "NaN is not allowed for SquaredEuclideanDistance")]
     fn squared_euclidean_from_nan_panics() {
         let _ = SquaredEuclideanDistance::from(f32::NAN);
+    }
+
+    #[test]
+    fn squared_euclidean_sparse_with_dense_query_matches_dense_result() {
+        let query_values = &[1.0f32, 2.5, 0.0];
+        let query = DenseVectorView::new(query_values);
+        let components = &[0usize, 2usize];
+        let values = &[2.0f32, -1.0];
+        let sparse_vector = SparseVectorView::new(components, values);
+        let dot_query = dot_product_dense(query, query).distance();
+
+        let result =
+            squared_euclidean_distance_sparse_with_dense_query(dot_query, query, sparse_vector);
+
+        let expected_dense = DenseVectorView::new(&[2.0f32, 0.0, -1.0]);
+        let expected = squared_euclidean_distance_dense(dot_query, query, expected_dense);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn squared_euclidean_sparse_with_merge_matches_dense_result() {
+        let query_sparse = SparseVectorView::new(&[0usize, 2], &[3.0f32, 1.0]);
+        let dataset_sparse = SparseVectorView::new(&[0usize, 1, 2], &[2.0f32, 4.0, -1.0]);
+        let dot_query = dot_product_sparse_with_merge(query_sparse, query_sparse).distance();
+
+        let result =
+            squared_euclidean_distance_sparse_with_merge(dot_query, query_sparse, dataset_sparse);
+
+        let dense_query = DenseVectorView::new(&[3.0f32, 0.0, 1.0]);
+        let dense_dataset = DenseVectorView::new(&[2.0f32, 4.0, -1.0]);
+        let dense_dot_query = dot_product_dense(dense_query, dense_query).distance();
+        let expected =
+            squared_euclidean_distance_dense(dense_dot_query, dense_query, dense_dataset);
+
+        assert_eq!(result, expected);
     }
 }
