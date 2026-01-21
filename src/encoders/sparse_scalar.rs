@@ -7,8 +7,9 @@ use crate::core::vector_encoder::{
     VectorEncoder,
 };
 use crate::distances::{
-    Distance, DotProduct, dot_product_dense_sparse_unchecked,
-    dot_product_sparse_with_merge_unchecked,
+    Distance, DotProduct, SquaredEuclideanDistance, dot_product_dense_sparse_unchecked,
+    dot_product_sparse_with_merge_unchecked, squared_euclidean_distance_sparse_with_dense_query,
+    squared_euclidean_distance_sparse_with_merge,
 };
 use crate::utils::is_strictly_sorted;
 use crate::{ComponentType, Float, FromF32, SpaceUsage, ValueType};
@@ -17,21 +18,31 @@ use crate::{ComponentType, Float, FromF32, SpaceUsage, ValueType};
 /// Provides the computation method specific to sparse vectors.
 pub trait ScalarSparseSupportedDistance: Distance {
     /// Compute distance between a dense query and a sparse encoded vector
+    fn requires_dot_query() -> bool {
+        false
+    }
+
     fn compute_sparse<C: ComponentType, Q: ValueType, V: ValueType + Float>(
         dense_query: &Option<DenseVectorOwned<Q>>,
-        query: SparseVectorView<'_, C, Q>,
+        query: &Option<SparseVectorOwned<C, Q>>,
         vector_sparse: SparseVectorView<'_, C, V>,
+        dot_query: Option<f32>,
     ) -> Self;
 }
 
-// For now, only DotProduct is implemented.
-// SquaredEuclideanDistance for sparse vectors would require custom implementation.
+fn compute_query_squared_norm(values: &[f32]) -> f32 {
+    values
+        .iter()
+        .fold(0.0f32, |acc, &v| acc.algebraic_add(v.algebraic_mul(v)))
+}
+
 impl ScalarSparseSupportedDistance for DotProduct {
     #[inline]
     fn compute_sparse<C: ComponentType, Q: ValueType, V: ValueType + Float>(
         dense_query: &Option<DenseVectorOwned<Q>>,
-        query: SparseVectorView<'_, C, Q>,
+        query: &Option<SparseVectorOwned<C, Q>>,
         vector_sparse: SparseVectorView<'_, C, V>,
+        _dot_query: Option<f32>,
     ) -> Self {
         // If query is dense (for small dimensions), use dense-sparse dot product
         if let Some(dense_q) = dense_query {
@@ -42,7 +53,38 @@ impl ScalarSparseSupportedDistance for DotProduct {
         } else {
             // Otherwise use sparse-sparse dot product (merge sort style)
             // Assumes both are strictly sorted
-            unsafe { dot_product_sparse_with_merge_unchecked(query, vector_sparse) }
+            unsafe {
+                dot_product_sparse_with_merge_unchecked(
+                    query.as_ref().unwrap().as_view(),
+                    vector_sparse,
+                )
+            }
+        }
+    }
+}
+
+impl ScalarSparseSupportedDistance for SquaredEuclideanDistance {
+    #[inline]
+    fn requires_dot_query() -> bool {
+        true
+    }
+
+    #[inline]
+    fn compute_sparse<C: ComponentType, Q: ValueType, V: ValueType + Float>(
+        dense_query: &Option<DenseVectorOwned<Q>>,
+        query: &Option<SparseVectorOwned<C, Q>>,
+        vector_sparse: SparseVectorView<'_, C, V>,
+        dot_query: Option<f32>,
+    ) -> Self {
+        let dot_query = dot_query
+            .expect("SquaredEuclideanDistance requires a precomputed query dot product value");
+
+        if let Some(dense_q) = dense_query {
+            let dense_view = dense_q.as_view();
+            squared_euclidean_distance_sparse_with_dense_query(dot_query, dense_view, vector_sparse)
+        } else {
+            let sparse_view = query.as_ref().unwrap().as_view();
+            squared_euclidean_distance_sparse_with_merge(dot_query, sparse_view, vector_sparse)
         }
     }
 }
@@ -148,7 +190,7 @@ where
     type EncodedVector<'a> = SparseVectorView<'a, C, OutValue>;
 
     type Evaluator<'e>
-        = ScalarSparseQueryEvaluator<'e, C, OutValue, D>
+        = ScalarSparseQueryEvaluator<C, OutValue, D>
     where
         Self: 'e;
 
@@ -174,7 +216,7 @@ where
 
 /// Query evaluator for ScalarSparseQuantizer.
 #[derive(Debug, Clone)]
-pub struct ScalarSparseQueryEvaluator<'e, C, OutValue, D>
+pub struct ScalarSparseQueryEvaluator<C, OutValue, D>
 where
     C: ComponentType,
     OutValue: ValueType + Float + FromF32,
@@ -182,10 +224,11 @@ where
 {
     dense_query: Option<DenseVectorOwned<f32>>,
     sparse_query: Option<SparseVectorOwned<C, f32>>,
-    _phantom: PhantomData<(&'e (), OutValue, D)>,
+    dot_query: Option<f32>,
+    _phantom: PhantomData<(OutValue, D)>,
 }
 
-impl<'e, C, OutValue, D> ScalarSparseQueryEvaluator<'e, C, OutValue, D>
+impl<C, OutValue, D> ScalarSparseQueryEvaluator<C, OutValue, D>
 where
     C: ComponentType,
     OutValue: ValueType + Float + FromF32,
@@ -194,11 +237,17 @@ where
     #[inline]
     pub fn new_from_owned_query<InValue>(
         query: SparseVectorOwned<C, f32>,
-        quantizer: &'e ScalarSparseQuantizer<C, InValue, OutValue, D>,
+        quantizer: &ScalarSparseQuantizer<C, InValue, OutValue, D>,
     ) -> Self
     where
         InValue: ValueType + Float,
     {
+        let dot_query = if D::requires_dot_query() {
+            Some(compute_query_squared_norm(query.values()))
+        } else {
+            None
+        };
+
         let max_c = query
             .components()
             .iter()
@@ -222,6 +271,7 @@ where
             Self {
                 dense_query: Some(DenseVectorOwned::new(dense_query_vec)),
                 sparse_query: None,
+                dot_query,
                 _phantom: PhantomData,
             }
         } else {
@@ -233,6 +283,7 @@ where
             Self {
                 dense_query: None,
                 sparse_query: Some(query),
+                dot_query,
                 _phantom: PhantomData,
             }
         }
@@ -240,11 +291,17 @@ where
 
     pub fn new<InValue>(
         query: SparseVectorView<'_, C, f32>,
-        quantizer: &'e ScalarSparseQuantizer<C, InValue, OutValue, D>,
+        quantizer: &ScalarSparseQuantizer<C, InValue, OutValue, D>,
     ) -> Self
     where
         InValue: ValueType + Float,
     {
+        let dot_query = if D::requires_dot_query() {
+            Some(compute_query_squared_norm(query.values()))
+        } else {
+            None
+        };
+
         let max_c = query
             .components()
             .iter()
@@ -294,13 +351,14 @@ where
         Self {
             dense_query,
             sparse_query,
+            dot_query,
             _phantom: PhantomData,
         }
     }
 }
 
-impl<'e, 'v, C, OutValue, D> QueryEvaluator<SparseVectorView<'v, C, OutValue>>
-    for ScalarSparseQueryEvaluator<'e, C, OutValue, D>
+impl<'v, C, OutValue, D> QueryEvaluator<SparseVectorView<'v, C, OutValue>>
+    for ScalarSparseQueryEvaluator<C, OutValue, D>
 where
     C: ComponentType,
     OutValue: ValueType + Float + FromF32,
@@ -312,15 +370,12 @@ where
     fn compute_distance(&self, vector: SparseVectorView<'v, C, OutValue>) -> D {
         debug_assert!(self.dense_query.is_some() || self.sparse_query.is_some());
 
-        // If we have a dense query, the distance implementation should prefer it.
-        // Still, we must pass a well-formed sparse view for the API.
-        let (query_components, query_values): (&[C], &[f32]) = match &self.sparse_query {
-            Some(sparse) => (sparse.components(), sparse.values()),
-            None => (&[] as &[C], &[] as &[f32]),
-        };
-
-        let query_view = SparseVectorView::new(query_components, query_values);
-        D::compute_sparse(&self.dense_query, query_view, vector)
+        D::compute_sparse(
+            &self.dense_query,
+            &self.sparse_query,
+            vector,
+            self.dot_query,
+        )
     }
 }
 
