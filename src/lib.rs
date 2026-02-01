@@ -19,10 +19,10 @@ use fixed::types::extra::U13;
 pub type FixedU8Q = FixedU8<U6>;
 pub type FixedU16Q = FixedU16<U13>;
 
+pub mod clustering;
 pub mod core;
 pub mod datasets;
 pub mod encoders;
-pub mod clustering;
 pub mod utils;
 
 pub use core::dataset;
@@ -56,6 +56,7 @@ pub use encoders::dense_scalar::{
     ScalarDenseQuantizerSquaredEuclidean, ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
 };
 pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Encoder, DotVByteFixedU8QueryEvaluator};
+pub use encoders::pq::ProductQuantizer;
 pub use encoders::sparse_scalar::{
     PlainSparseQuantizer, PlainSparseQuantizerDotProduct, ScalarSparseQuantizer,
     ScalarSparseQuantizerDotProduct, ScalarSparseQueryEvaluator, ScalarSparseSupportedDistance,

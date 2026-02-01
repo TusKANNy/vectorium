@@ -5,12 +5,18 @@ use std::time::Instant;
 
 use half::{bf16, f16};
 use indicatif::{ParallelProgressIterator, ProgressStyle};
+use rand::seq::SliceRandom;
 use rayon::iter::ParallelIterator;
 
+use vectorium::DenseVectorEncoder;
 use vectorium::dataset::{ConvertInto, ScoredVector as DatasetResult};
 use vectorium::distances;
+use vectorium::encoders::pq::{ProductQuantizer, ProductQuantizerDistance};
 use vectorium::readers;
-use vectorium::{Dataset, FixedU8Q, FixedU16Q, PlainSparseDataset, ScalarDenseDataset, SpaceUsage};
+use vectorium::{
+    Dataset, DenseDataset, FixedU8Q, FixedU16Q, PlainDenseDataset, PlainSparseDataset,
+    ScalarDenseDataset, SpaceUsage,
+};
 use vectorium::{Distance, Float};
 
 #[derive(Parser, Debug)]
@@ -53,10 +59,26 @@ struct Args {
     #[arg(default_value = "u32")]
     component_type: String,
 
-    /// Encoder: 'plain' or 'dotvbyte' (default: plain)
+    /// Encoder: 'plain', 'pq' (dense only), or 'dotvbyte' (default: plain)
     #[clap(long, value_parser)]
     #[arg(default_value = "plain")]
     encoder: String,
+
+    /// PQ subspace count (multiple of 4). 0 auto-selects from [32,16,8,4] that divide the dimension.
+    #[clap(long, value_parser)]
+    #[arg(default_value_t = 0)]
+    pq_subspaces: usize,
+
+    /// PQ bits per subspace (1..=8). Only used when encoder='pq'.
+    #[clap(long, value_parser)]
+    #[arg(default_value_t = 8)]
+    pq_nbits: usize,
+
+    /// PQ training sample size. If smaller than dataset size, a random sample is selected.
+    /// If 0 or not specified, uses automatic heuristic. Only used when encoder='pq'.
+    #[clap(long, value_parser)]
+    #[arg(default_value_t = 0)]
+    pq_sample_size: usize,
 }
 
 fn main() {
@@ -71,6 +93,13 @@ fn main() {
     let dataset_type = args.dataset_type.to_lowercase();
     let component_type = args.component_type.to_lowercase();
     let encoder = args.encoder.to_lowercase();
+    let pq_subspaces = args.pq_subspaces;
+    let pq_nbits = args.pq_nbits;
+    let pq_sample_size = if args.pq_sample_size == 0 {
+        None
+    } else {
+        Some(args.pq_sample_size)
+    };
 
     // Print chosen configuration
     println!("Dataset type: {}", dataset_type);
@@ -82,22 +111,17 @@ fn main() {
     if encoder == "dotvbyte" {
         println!("Dotvbyte encoder: quantizing values using FixedU8Q.");
     }
-    if encoder != "plain" && encoder != "dotvbyte" {
+    if encoder != "plain" && encoder != "dotvbyte" && encoder != "pq" {
         eprintln!(
-            "Unknown encoder='{}'. Use encoder='plain'|'dotvbyte'.",
+            "Unknown encoder='{}'. Use encoder='plain'|'dotvbyte'|'pq' (dense only).",
             encoder
         );
         return;
     }
 
     match dataset_type.as_str() {
-        "dense" => {
-            if encoder != "plain" {
-                eprintln!("Encoder '{}' non supportato per dataset densi.", encoder);
-                return;
-            }
-            // Dense dataset logic
-            match (distance.as_str(), value_type.as_str()) {
+        "dense" => match encoder.as_str() {
+            "plain" => match (distance.as_str(), value_type.as_str()) {
                 ("euclidean", "f32") => compute_dense_groundtruth::<
                     f32,
                     distances::SquaredEuclideanDistance,
@@ -158,9 +182,41 @@ fn main() {
                         distance, value_type
                     );
                 }
+            },
+            "pq" => {
+                if value_type != "f32" {
+                    eprintln!("Encoder 'pq' requires value_type='f32'.");
+                    return;
+                }
+                if pq_nbits == 0 || pq_nbits > 8 {
+                    eprintln!("pq_nbits must be between 1 and 8 (found {}).", pq_nbits);
+                    return;
+                }
+                if let Err(err) = compute_dense_groundtruth_pq(
+                    input_path,
+                    query_path,
+                    output_path,
+                    k,
+                    pq_subspaces,
+                    pq_nbits,
+                    pq_sample_size,
+                    &distance,
+                ) {
+                    eprintln!("Failed to compute PQ groundtruth: {}", err);
+                }
             }
-        }
+            _ => {
+                eprintln!(
+                    "Encoder '{}' is not supported for dense datasets. Use 'plain' or 'pq'.",
+                    encoder
+                );
+            }
+        },
         "sparse" => {
+            if encoder == "pq" {
+                eprintln!("Encoder 'pq' is only supported with dataset_type='dense'.");
+                return;
+            }
             // Sparse dataset logic
             if encoder == "dotvbyte" {
                 if component_type != "u16" {
@@ -351,6 +407,285 @@ fn compute_dense_groundtruth<V, D>(
         .with_style(pb_style)
         .map(|qvec| {
             let res: Vec<DatasetResult<D>> = dataset.search(qvec, k);
+            res.into_iter()
+                .map(|r| (r.distance.distance(), r.vector))
+                .collect()
+        })
+        .collect();
+
+    let elapsed = start_time.elapsed();
+    println!("Computation completed in {:.3}s", elapsed.as_secs_f64());
+
+    let mut output_file = File::create(output_path).expect("failed to create output file");
+
+    for (query_id, result) in results.iter().enumerate() {
+        for (idx, (score, doc_id)) in result.iter().enumerate() {
+            writeln!(
+                &mut output_file,
+                "{query_id}\t{doc_id}\t{}\t{score}",
+                idx + 1
+            )
+            .expect("failed to write result");
+        }
+    }
+}
+
+fn create_random_sampled_dataset(
+    dataset: &PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
+    sample_size: usize,
+) -> PlainDenseDataset<f32, distances::SquaredEuclideanDistance> {
+    let d = dataset.output_dim();
+    let dataset_size = dataset.len();
+
+    // Create random indices
+    let mut indices: Vec<usize> = (0..dataset_size).collect();
+    let mut rng = rand::thread_rng();
+    indices.partial_shuffle(&mut rng, sample_size);
+
+    // Extract sampled vectors
+    let mut values = Vec::with_capacity(sample_size * d);
+    for &idx in &indices[..sample_size] {
+        let start = idx * d;
+        values.extend_from_slice(&dataset.values()[start..start + d]);
+    }
+
+    PlainDenseDataset::<f32, distances::SquaredEuclideanDistance>::from_raw(
+        values.into_boxed_slice(),
+        sample_size,
+        dataset.encoder().clone(),
+    )
+}
+
+const PQ_SUPPORTED_SUBSPACES: [usize; 4] = [32, 16, 8, 4];
+
+#[derive(Copy, Clone, Debug)]
+enum PqDistanceKind {
+    Euclidean,
+    DotProduct,
+}
+
+fn choose_pq_subspaces(dim: usize, requested: usize) -> Result<usize, String> {
+    if requested != 0 {
+        if !PQ_SUPPORTED_SUBSPACES.contains(&requested) {
+            let supported = PQ_SUPPORTED_SUBSPACES
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "pq_subspaces={} unsupported; supported values: {}",
+                requested, supported
+            ));
+        }
+        if requested > dim {
+            return Err(format!(
+                "pq_subspaces={} exceeds dataset dimension {}",
+                requested, dim
+            ));
+        }
+        if dim % requested != 0 {
+            return Err(format!(
+                "dataset dimension {} is not divisible by pq_subspaces={}",
+                dim, requested
+            ));
+        }
+        return Ok(requested);
+    }
+
+    PQ_SUPPORTED_SUBSPACES
+        .iter()
+        .copied()
+        .find(|&m| m <= dim && dim % m == 0)
+        .ok_or_else(|| {
+            let supported = PQ_SUPPORTED_SUBSPACES
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "dataset dimension {} has no compatible pq_subspaces; try one of {}",
+                dim, supported
+            )
+        })
+}
+
+fn compute_dense_groundtruth_pq(
+    input_path: String,
+    query_path: String,
+    output_path: String,
+    k: usize,
+    pq_subspaces: usize,
+    pq_nbits: usize,
+    pq_sample_size: Option<usize>,
+    distance: &str,
+) -> Result<(), String> {
+    let dataset = readers::read_npy_f32::<distances::SquaredEuclideanDistance>(&input_path)
+        .expect("failed to read dataset");
+    let queries = readers::read_npy_f32::<distances::SquaredEuclideanDistance>(&query_path)
+        .expect("failed to read queries");
+
+    let selected_m = choose_pq_subspaces(dataset.input_dim(), pq_subspaces)?;
+    let distance_kind = match distance {
+        "euclidean" => PqDistanceKind::Euclidean,
+        "dotproduct" => PqDistanceKind::DotProduct,
+        _ => unreachable!("distance validated before"),
+    };
+
+    let mut dataset = Some(dataset);
+    let mut queries = Some(queries);
+    let mut output_path = Some(output_path);
+
+    match selected_m {
+        32 => match distance_kind {
+            PqDistanceKind::Euclidean => {
+                run_dense_groundtruth_pq::<32, distances::SquaredEuclideanDistance>(
+                    dataset.take().unwrap(),
+                    queries.take().unwrap(),
+                    k,
+                    pq_nbits,
+                    pq_sample_size,
+                    output_path.take().unwrap(),
+                )
+            }
+            PqDistanceKind::DotProduct => run_dense_groundtruth_pq::<32, distances::DotProduct>(
+                dataset.take().unwrap(),
+                queries.take().unwrap(),
+                k,
+                pq_nbits,
+                pq_sample_size,
+                output_path.take().unwrap(),
+            ),
+        },
+        16 => match distance_kind {
+            PqDistanceKind::Euclidean => {
+                run_dense_groundtruth_pq::<16, distances::SquaredEuclideanDistance>(
+                    dataset.take().unwrap(),
+                    queries.take().unwrap(),
+                    k,
+                    pq_nbits,
+                    pq_sample_size,
+                    output_path.take().unwrap(),
+                )
+            }
+            PqDistanceKind::DotProduct => run_dense_groundtruth_pq::<16, distances::DotProduct>(
+                dataset.take().unwrap(),
+                queries.take().unwrap(),
+                k,
+                pq_nbits,
+                pq_sample_size,
+                output_path.take().unwrap(),
+            ),
+        },
+        8 => match distance_kind {
+            PqDistanceKind::Euclidean => {
+                run_dense_groundtruth_pq::<8, distances::SquaredEuclideanDistance>(
+                    dataset.take().unwrap(),
+                    queries.take().unwrap(),
+                    k,
+                    pq_nbits,
+                    pq_sample_size,
+                    output_path.take().unwrap(),
+                )
+            }
+            PqDistanceKind::DotProduct => run_dense_groundtruth_pq::<8, distances::DotProduct>(
+                dataset.take().unwrap(),
+                queries.take().unwrap(),
+                k,
+                pq_nbits,
+                pq_sample_size,
+                output_path.take().unwrap(),
+            ),
+        },
+        4 => match distance_kind {
+            PqDistanceKind::Euclidean => {
+                run_dense_groundtruth_pq::<4, distances::SquaredEuclideanDistance>(
+                    dataset.take().unwrap(),
+                    queries.take().unwrap(),
+                    k,
+                    pq_nbits,
+                    pq_sample_size,
+                    output_path.take().unwrap(),
+                )
+            }
+            PqDistanceKind::DotProduct => run_dense_groundtruth_pq::<4, distances::DotProduct>(
+                dataset.take().unwrap(),
+                queries.take().unwrap(),
+                k,
+                pq_nbits,
+                pq_sample_size,
+                output_path.take().unwrap(),
+            ),
+        },
+        _ => unreachable!("select_pq_subspaces returned unsupported value"),
+    }
+
+    Ok(())
+}
+
+fn run_dense_groundtruth_pq<const M: usize, D>(
+    dataset: PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
+    queries: PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
+    k: usize,
+    pq_nbits: usize,
+    pq_sample_size: Option<usize>,
+    output_path: String,
+) where
+    D: ProductQuantizerDistance + 'static,
+{
+    // Create sampled dataset if sample_size is specified and smaller than dataset size
+    let start_time = Instant::now();
+
+    let pq_encoder = match pq_sample_size {
+        Some(sample_size) if sample_size < dataset.len() => {
+            println!(
+                "Sampling {} vectors from {} for PQ training",
+                sample_size,
+                dataset.len()
+            );
+            let training_dataset = create_random_sampled_dataset(&dataset, sample_size);
+            ProductQuantizer::<M, D>::train(&training_dataset, pq_nbits)
+        }
+        _ => ProductQuantizer::<M, D>::train(&dataset, pq_nbits),
+    };
+
+    let encoded_vector_len = pq_encoder.output_dim();
+    let mut encoded_data = Vec::with_capacity(dataset.len() * encoded_vector_len);
+    for vector in dataset.iter() {
+        pq_encoder.push_encoded(vector, &mut encoded_data);
+    }
+
+    let encoded_data = encoded_data.into_boxed_slice();
+    let pq_dataset =
+        DenseDataset::<ProductQuantizer<M, D>>::from_raw(encoded_data, dataset.len(), pq_encoder);
+
+    let elapsed = start_time.elapsed();
+    println!("Computation completed in {:.3}s", elapsed.as_secs_f64());
+
+    println!("N documents: {}", pq_dataset.len());
+    println!("N dims: {}", pq_dataset.input_dim());
+    println!("N non-zeroes: {}", pq_dataset.nnz());
+    println!("N queries: {}", queries.len());
+    println!("N dims: {}", queries.input_dim());
+    println!("Dataset size: {:.3} GiB", pq_dataset.space_usage_GiB());
+    println!(
+        "PQ codes: {} bytes vector / {} bits per subspace",
+        encoded_vector_len, pq_nbits
+    );
+    println!("Computing ground truth for {} queries...", queries.len());
+
+    let start_time = Instant::now();
+
+    let pb_style = ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec}, ETA: {eta})")
+        .unwrap()
+        .progress_chars("=>-");
+
+    let results: Vec<Vec<(f32, u64)>> = queries
+        .par_iter()
+        .progress_count(queries.len() as u64)
+        .with_style(pb_style)
+        .map(|qvec| {
+            let res: Vec<DatasetResult<D>> = pq_dataset.search(qvec, k);
             res.into_iter()
                 .map(|r| (r.distance.distance(), r.vector))
                 .collect()

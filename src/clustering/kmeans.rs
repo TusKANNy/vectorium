@@ -409,7 +409,6 @@ impl KMeans {
     }
 }
 
-#[derive(Default)]
 pub struct KMeansBuilder {
     n_iter: usize,
     n_redo: usize,
@@ -503,7 +502,9 @@ mod tests {
             encoder.clone(),
         );
         let assignments: Vec<(f32, usize)> =
-            KMeans::compute_assignments(&dataset, &centroids_dataset, 0).collect();
+            KMeans::compute_assignments(&dataset, &centroids_dataset, 0)
+                .into_iter()
+                .collect();
 
         assert_eq!(assignments.len(), dataset.len());
         assert_eq!(assignments[0].1, 0);
@@ -525,7 +526,7 @@ mod tests {
 
         assert_eq!(centroids.len(), 2);
         let assignments = KMeans::compute_assignments(&dataset, &centroids, 0);
-        let assignments: Vec<(f32, usize)> = assignments.collect();
+        let assignments: Vec<(f32, usize)> = assignments.into_iter().collect();
         let cluster_ids: std::collections::HashSet<usize> =
             assignments.iter().map(|&(_, idx)| idx).collect();
         assert_eq!(cluster_ids.len(), 2);

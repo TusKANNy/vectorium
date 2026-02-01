@@ -366,8 +366,43 @@ where
 }
 
 use crate::dataset::ConvertFrom;
+use crate::distances::{DotProduct, SquaredEuclideanDistance};
 use crate::encoders::dense_scalar::ScalarDenseQuantizer;
 use crate::encoders::dense_scalar::ScalarDenseSupportedDistance;
+
+/// Convert ScalarDenseDataset from SquaredEuclideanDistance to DotProduct without copying data
+impl<VIn, VOut> From<DenseDataset<ScalarDenseQuantizer<VIn, VOut, SquaredEuclideanDistance>>>
+    for DenseDataset<ScalarDenseQuantizer<VIn, VOut, DotProduct>>
+where
+    VIn: crate::ValueType + crate::Float,
+    VOut: crate::ValueType + crate::Float + crate::FromF32,
+{
+    fn from(
+        dataset: DenseDataset<ScalarDenseQuantizer<VIn, VOut, SquaredEuclideanDistance>>,
+    ) -> Self {
+        Self {
+            n_vecs: dataset.n_vecs,
+            data: dataset.data,
+            encoder: ScalarDenseQuantizer::new(dataset.encoder.output_dim()),
+        }
+    }
+}
+
+/// Convert ScalarDenseDataset from DotProduct to SquaredEuclideanDistance without copying data
+impl<VIn, VOut> From<DenseDataset<ScalarDenseQuantizer<VIn, VOut, DotProduct>>>
+    for DenseDataset<ScalarDenseQuantizer<VIn, VOut, SquaredEuclideanDistance>>
+where
+    VIn: crate::ValueType + crate::Float,
+    VOut: crate::ValueType + crate::Float + crate::FromF32,
+{
+    fn from(dataset: DenseDataset<ScalarDenseQuantizer<VIn, VOut, DotProduct>>) -> Self {
+        Self {
+            n_vecs: dataset.n_vecs,
+            data: dataset.data,
+            encoder: ScalarDenseQuantizer::new(dataset.encoder.output_dim()),
+        }
+    }
+}
 
 impl<SrcIn, Mid, DstOut, D, SrcStorage, DstStorage>
     ConvertFrom<&DenseDatasetGeneric<ScalarDenseQuantizer<SrcIn, Mid, D>, SrcStorage>>
