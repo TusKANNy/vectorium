@@ -13,9 +13,7 @@ use crate::distances::{Distance, DotProduct, SquaredEuclideanDistance};
 use crate::{Dataset, DatasetGrowable, PlainDenseDatasetGrowable};
 
 use simd_distances::{
-    compute_distance_table_avx2_d2, compute_distance_table_avx2_d4, compute_distance_table_avx2_d8,
-    compute_distance_table_avx2_d16, compute_distance_table_ip_d2, compute_distance_table_ip_d4,
-    compute_distance_table_ip_d8, compute_distance_table_ip_d16, find_nearest_centroid_idx,
+    compute_distance_table, compute_dot_product_table, find_nearest_centroid_idx,
 };
 
 /// Minimum dataset size below which no sampling is performed for PQ training
@@ -335,8 +333,11 @@ where
     }
 
     #[inline]
-    pub fn get_centroids(&self, subspace_idx: usize) -> &[f32] {
-        self.centroids[subspace_idx].values()
+    pub fn get_centroids_dataset(
+        &self,
+        subspace_idx: usize,
+    ) -> &PlainDenseDataset<f32, SquaredEuclideanDistance> {
+        &self.centroids[subspace_idx]
     }
 
     fn compute_euclidean_distance_table(&self, query: DenseVectorView<'_, f32>) -> Vec<f32> {
@@ -344,19 +345,10 @@ where
         let mut table = vec![0.0_f32; KSUB * M];
         for m in 0..M {
             let start = m * self.dsub;
-            let query_sub = &query.values()[start..start + self.dsub];
-            let centroids = self.get_centroids(m);
+            let query_sub = DenseVectorView::new(&query.values()[start..start + self.dsub]);
+            let centroids = self.get_centroids_dataset(m);
             let chunk = &mut table[m * KSUB..(m + 1) * KSUB];
-            #[cfg(target_arch = "x86_64")]
-            match self.dsub {
-                2 => unsafe { compute_distance_table_avx2_d2(chunk, query_sub, centroids, KSUB) },
-                4 => unsafe { compute_distance_table_avx2_d4(chunk, query_sub, centroids, KSUB) },
-                8 => unsafe { compute_distance_table_avx2_d8(chunk, query_sub, centroids, KSUB) },
-                16 => unsafe { compute_distance_table_avx2_d16(chunk, query_sub, centroids, KSUB) },
-                _ => Self::compute_distance_table_scalar(chunk, query_sub, centroids),
-            };
-            #[cfg(not(target_arch = "x86_64"))]
-            Self::compute_distance_table_scalar(chunk, query_sub, centroids);
+            compute_distance_table(chunk, query_sub, centroids);
         }
         table
     }
@@ -366,49 +358,12 @@ where
         let mut table = vec![0.0_f32; KSUB * M];
         for m in 0..M {
             let start = m * self.dsub;
-            let query_sub = &query.values()[start..start + self.dsub];
-            let centroids = self.get_centroids(m);
+            let query_sub = DenseVectorView::new(&query.values()[start..start + self.dsub]);
+            let centroids = self.get_centroids_dataset(m);
             let chunk = &mut table[m * KSUB..(m + 1) * KSUB];
-            #[cfg(target_arch = "x86_64")]
-            match self.dsub {
-                2 => unsafe { compute_distance_table_ip_d2(chunk, query_sub, centroids, KSUB) },
-                4 => unsafe { compute_distance_table_ip_d4(chunk, query_sub, centroids, KSUB) },
-                8 => unsafe { compute_distance_table_ip_d8(chunk, query_sub, centroids, KSUB) },
-                16 => unsafe { compute_distance_table_ip_d16(chunk, query_sub, centroids, KSUB) },
-                _ => Self::compute_dot_product_table_scalar(chunk, query_sub, centroids),
-            };
-            #[cfg(not(target_arch = "x86_64"))]
-            Self::compute_dot_product_table_scalar(chunk, query_sub, centroids);
+            compute_dot_product_table(chunk, query_sub, centroids);
         }
         table
-    }
-
-    fn compute_distance_table_scalar(distance_table: &mut [f32], query: &[f32], centroids: &[f32]) {
-        let dsub = query.len();
-        for i in 0..distance_table.len() {
-            let base = i * dsub;
-            distance_table[i] = query
-                .iter()
-                .zip(&centroids[base..base + dsub])
-                .map(|(q, c)| (q - c) * (q - c))
-                .sum();
-        }
-    }
-
-    fn compute_dot_product_table_scalar(
-        distance_table: &mut [f32],
-        query: &[f32],
-        centroids: &[f32],
-    ) {
-        let dsub = query.len();
-        for i in 0..distance_table.len() {
-            let base = i * dsub;
-            distance_table[i] = query
-                .iter()
-                .zip(&centroids[base..base + dsub])
-                .map(|(q, c)| q * c)
-                .sum();
-        }
     }
 
     fn compute_distance(&self, distance_table: &[f32], code: DenseVectorView<'_, u8>) -> f32 {
@@ -430,9 +385,9 @@ where
         let mut decoded = Vec::with_capacity(self.d());
         for m in 0..M {
             let index = code_bytes[m] as usize;
-            let centroid = self.get_centroids(m);
-            let start = index * self.dsub;
-            decoded.extend_from_slice(&centroid[start..start + self.dsub]);
+            let centroids = self.get_centroids_dataset(m);
+            let centroid = centroids.get(index as crate::VectorId);
+            decoded.extend_from_slice(centroid.values());
         }
         DenseVectorOwned::new(decoded)
     }
@@ -477,12 +432,8 @@ where
         for m in 0..M {
             let start = m * self.dsub;
             let end = start + self.dsub;
-            let centroid_idx = find_nearest_centroid_idx(
-                &input.values()[start..end],
-                self.get_centroids(m),
-                self.dsub,
-                KSUB,
-            );
+            let query_sub = DenseVectorView::new(&input.values()[start..end]);
+            let centroid_idx = find_nearest_centroid_idx(query_sub, self.get_centroids_dataset(m));
             output.extend(std::iter::once(centroid_idx as u8));
         }
     }
