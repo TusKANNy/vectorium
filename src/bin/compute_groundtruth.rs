@@ -5,17 +5,15 @@ use std::time::Instant;
 
 use half::{bf16, f16};
 use indicatif::{ParallelProgressIterator, ProgressStyle};
-use rand::seq::SliceRandom;
 use rayon::iter::ParallelIterator;
 
-use vectorium::DenseVectorEncoder;
 use vectorium::dataset::{ConvertInto, ScoredVector as DatasetResult};
 use vectorium::distances;
 use vectorium::encoders::pq::{ProductQuantizer, ProductQuantizerDistance};
 use vectorium::readers;
 use vectorium::{
-    Dataset, DenseDataset, FixedU8Q, FixedU16Q, PlainDenseDataset, PlainSparseDataset,
-    ScalarDenseDataset, SpaceUsage,
+    Dataset, FixedU8Q, FixedU16Q, PlainDenseDataset, PlainSparseDataset, ScalarDenseDataset,
+    SpaceUsage,
 };
 use vectorium::{Distance, Float};
 
@@ -73,12 +71,6 @@ struct Args {
     #[clap(long, value_parser)]
     #[arg(default_value_t = 8)]
     pq_nbits: usize,
-
-    /// PQ training sample size. If smaller than dataset size, a random sample is selected.
-    /// If 0 or not specified, uses automatic heuristic. Only used when encoder='pq'.
-    #[clap(long, value_parser)]
-    #[arg(default_value_t = 0)]
-    pq_sample_size: usize,
 }
 
 fn main() {
@@ -95,11 +87,6 @@ fn main() {
     let encoder = args.encoder.to_lowercase();
     let pq_subspaces = args.pq_subspaces;
     let pq_nbits = args.pq_nbits;
-    let pq_sample_size = if args.pq_sample_size == 0 {
-        None
-    } else {
-        Some(args.pq_sample_size)
-    };
 
     // Print chosen configuration
     println!("Dataset type: {}", dataset_type);
@@ -199,7 +186,6 @@ fn main() {
                     k,
                     pq_subspaces,
                     pq_nbits,
-                    pq_sample_size,
                     &distance,
                 ) {
                     eprintln!("Failed to compute PQ groundtruth: {}", err);
@@ -430,32 +416,6 @@ fn compute_dense_groundtruth<V, D>(
     }
 }
 
-fn create_random_sampled_dataset(
-    dataset: &PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
-    sample_size: usize,
-) -> PlainDenseDataset<f32, distances::SquaredEuclideanDistance> {
-    let d = dataset.output_dim();
-    let dataset_size = dataset.len();
-
-    // Create random indices
-    let mut indices: Vec<usize> = (0..dataset_size).collect();
-    let mut rng = rand::thread_rng();
-    indices.partial_shuffle(&mut rng, sample_size);
-
-    // Extract sampled vectors
-    let mut values = Vec::with_capacity(sample_size * d);
-    for &idx in &indices[..sample_size] {
-        let start = idx * d;
-        values.extend_from_slice(&dataset.values()[start..start + d]);
-    }
-
-    PlainDenseDataset::<f32, distances::SquaredEuclideanDistance>::from_raw(
-        values.into_boxed_slice(),
-        sample_size,
-        dataset.encoder().clone(),
-    )
-}
-
 const PQ_SUPPORTED_SUBSPACES: [usize; 4] = [32, 16, 8, 4];
 
 #[derive(Copy, Clone, Debug)]
@@ -516,7 +476,6 @@ fn compute_dense_groundtruth_pq(
     k: usize,
     pq_subspaces: usize,
     pq_nbits: usize,
-    pq_sample_size: Option<usize>,
     distance: &str,
 ) -> Result<(), String> {
     let dataset = readers::read_npy_f32::<distances::SquaredEuclideanDistance>(&input_path)
@@ -543,7 +502,6 @@ fn compute_dense_groundtruth_pq(
                     queries.take().unwrap(),
                     k,
                     pq_nbits,
-                    pq_sample_size,
                     output_path.take().unwrap(),
                 )
             }
@@ -552,7 +510,6 @@ fn compute_dense_groundtruth_pq(
                 queries.take().unwrap(),
                 k,
                 pq_nbits,
-                pq_sample_size,
                 output_path.take().unwrap(),
             ),
         },
@@ -563,7 +520,6 @@ fn compute_dense_groundtruth_pq(
                     queries.take().unwrap(),
                     k,
                     pq_nbits,
-                    pq_sample_size,
                     output_path.take().unwrap(),
                 )
             }
@@ -572,7 +528,6 @@ fn compute_dense_groundtruth_pq(
                 queries.take().unwrap(),
                 k,
                 pq_nbits,
-                pq_sample_size,
                 output_path.take().unwrap(),
             ),
         },
@@ -583,7 +538,6 @@ fn compute_dense_groundtruth_pq(
                     queries.take().unwrap(),
                     k,
                     pq_nbits,
-                    pq_sample_size,
                     output_path.take().unwrap(),
                 )
             }
@@ -592,7 +546,6 @@ fn compute_dense_groundtruth_pq(
                 queries.take().unwrap(),
                 k,
                 pq_nbits,
-                pq_sample_size,
                 output_path.take().unwrap(),
             ),
         },
@@ -603,7 +556,6 @@ fn compute_dense_groundtruth_pq(
                     queries.take().unwrap(),
                     k,
                     pq_nbits,
-                    pq_sample_size,
                     output_path.take().unwrap(),
                 )
             }
@@ -612,7 +564,6 @@ fn compute_dense_groundtruth_pq(
                 queries.take().unwrap(),
                 k,
                 pq_nbits,
-                pq_sample_size,
                 output_path.take().unwrap(),
             ),
         },
@@ -627,39 +578,20 @@ fn run_dense_groundtruth_pq<const M: usize, D>(
     queries: PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
     k: usize,
     pq_nbits: usize,
-    pq_sample_size: Option<usize>,
     output_path: String,
 ) where
     D: ProductQuantizerDistance + 'static,
 {
-    // Create sampled dataset if sample_size is specified and smaller than dataset size
     let start_time = Instant::now();
 
-    let pq_encoder = match pq_sample_size {
-        Some(sample_size) if sample_size < dataset.len() => {
-            println!(
-                "Sampling {} vectors from {} for PQ training",
-                sample_size,
-                dataset.len()
-            );
-            let training_dataset = create_random_sampled_dataset(&dataset, sample_size);
-            ProductQuantizer::<M, D>::train(&training_dataset, pq_nbits)
-        }
-        _ => ProductQuantizer::<M, D>::train(&dataset, pq_nbits),
-    };
-
-    let encoded_vector_len = pq_encoder.output_dim();
-    let mut encoded_data = Vec::with_capacity(dataset.len() * encoded_vector_len);
-    for vector in dataset.iter() {
-        pq_encoder.push_encoded(vector, &mut encoded_data);
-    }
-
-    let encoded_data = encoded_data.into_boxed_slice();
-    let pq_dataset =
-        DenseDataset::<ProductQuantizer<M, D>>::from_raw(encoded_data, dataset.len(), pq_encoder);
+    // Use the encode_dataset method with automatic sampling
+    let pq_dataset = ProductQuantizer::<M, D>::encode_dataset(&dataset, pq_nbits);
 
     let elapsed = start_time.elapsed();
-    println!("Computation completed in {:.3}s", elapsed.as_secs_f64());
+    println!(
+        "Product quantization completed in {:.3}s",
+        elapsed.as_secs_f64()
+    );
 
     println!("N documents: {}", pq_dataset.len());
     println!("N dims: {}", pq_dataset.input_dim());
@@ -669,7 +601,8 @@ fn run_dense_groundtruth_pq<const M: usize, D>(
     println!("Dataset size: {:.3} GiB", pq_dataset.space_usage_GiB());
     println!(
         "PQ codes: {} bytes vector / {} bits per subspace",
-        encoded_vector_len, pq_nbits
+        pq_dataset.encoder().output_dim(),
+        pq_nbits
     );
     println!("Computing ground truth for {} queries...", queries.len());
 
@@ -693,7 +626,7 @@ fn run_dense_groundtruth_pq<const M: usize, D>(
         .collect();
 
     let elapsed = start_time.elapsed();
-    println!("Computation completed in {:.3}s", elapsed.as_secs_f64());
+    println!("Groundtruth computed in in {:.3}s", elapsed.as_secs_f64());
 
     let mut output_file = File::create(output_path).expect("failed to create output file");
 
