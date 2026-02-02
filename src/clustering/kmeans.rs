@@ -16,8 +16,8 @@ pub struct KMeans {
     n_iter: usize,
     n_redo: usize,
     verbose: bool,
-    min_points_per_centroid: usize,
-    sample_size: Option<usize>,
+    // min_points_per_centroid: usize,
+    // sample_size: Option<usize>,
     // Threshold for number of centroids above which HNSW index is used instead of flat search
     // index_threshold: usize,
 }
@@ -329,7 +329,7 @@ impl KMeans {
         let mut rng = StdRng::from_entropy();
 
         for redo in 0..self.n_redo {
-            let mut centroids =
+            let mut centroids_builder =
                 PlainDenseDatasetGrowable::with_capacity(ScalarDenseQuantizer::new(output_dim), k);
 
             // Randomly select k vectors for initial centroids
@@ -338,8 +338,11 @@ impl KMeans {
 
             for i in indices.iter().take(k) {
                 let vector = training_dataset.get(*i as VectorId);
-                centroids.push(vector);
+                centroids_builder.push(vector);
             }
+
+            let mut centroids: PlainDenseDataset<VOut, SquaredEuclideanDistance> =
+                centroids_builder.into();
 
             let mut obj;
             let mut average_imbalance_factor = 0.0;
@@ -356,7 +359,7 @@ impl KMeans {
                 obj = assignments.iter().map(|&(value, _)| value).sum();
 
                 // Update: recompute centroids
-                let (n_split, histograms, centroids) =
+                let (n_split, histograms, new_centroids) =
                     Self::update_and_split(&training_dataset, w, k, &assignments, &mut rng);
 
                 let imbalance_factor = Self::imbalance_factor(&histograms, k);
@@ -370,8 +373,10 @@ impl KMeans {
                         println!("New best objective: {} (keep new clusters)", obj);
                     }
                     best_obj = obj;
-                    best_centroids = centroids;
+                    best_centroids = new_centroids.clone();
                 }
+
+                centroids = new_centroids;
 
                 if self.verbose {
                     println!(
@@ -398,9 +403,9 @@ pub struct KMeansBuilder {
     n_iter: usize,
     n_redo: usize,
     verbose: bool,
-    min_points_per_centroid: usize,
+    // min_points_per_centroid: usize,
     max_points_per_centroid: usize,
-    sample_size: Option<usize>,
+    // sample_size: Option<usize>,
 }
 
 impl Default for KMeansBuilder {
@@ -409,9 +414,9 @@ impl Default for KMeansBuilder {
             n_iter: 10,
             n_redo: 1,
             verbose: false,
-            min_points_per_centroid: 39,
+            // min_points_per_centroid: 39,
             max_points_per_centroid: 256,
-            sample_size: None,
+            // sample_size: None,
         }
     }
 }
@@ -436,28 +441,28 @@ impl KMeansBuilder {
         self
     }
 
-    pub fn min_points_per_centroid(mut self, min_points_per_centroid: usize) -> KMeansBuilder {
-        self.min_points_per_centroid = min_points_per_centroid;
-        self
-    }
+    // pub fn min_points_per_centroid(mut self, min_points_per_centroid: usize) -> KMeansBuilder {
+    //     self.min_points_per_centroid = min_points_per_centroid;
+    //     self
+    // }
 
     pub fn max_points_per_centroid(mut self, max_points_per_centroid: usize) -> KMeansBuilder {
         self.max_points_per_centroid = max_points_per_centroid;
         self
     }
 
-    pub fn sample_size(mut self, sample_size: usize) -> KMeansBuilder {
-        self.sample_size = Some(sample_size);
-        self
-    }
+    // pub fn sample_size(mut self, sample_size: usize) -> KMeansBuilder {
+    //     self.sample_size = Some(sample_size);
+    //     self
+    // }
 
     pub fn build(self) -> KMeans {
         KMeans {
             n_iter: self.n_iter,
             n_redo: self.n_redo,
             verbose: self.verbose,
-            min_points_per_centroid: self.min_points_per_centroid,
-            sample_size: self.sample_size,
+            // min_points_per_centroid: self.min_points_per_centroid,
+            // sample_size: self.sample_size,
         }
     }
 }
