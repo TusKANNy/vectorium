@@ -8,7 +8,7 @@ use crate::core::vector::SparseVectorView;
 use crate::core::vector_encoder::{SparseVectorEncoder, VectorEncoder};
 use crate::utils::{is_strictly_sorted, prefetch_read_slice};
 use crate::{ComponentType, Float, FromF32, ValueType, VectorId};
-use crate::{Dataset, GrowableDataset, SparseData};
+use crate::{Dataset, DatasetGrowable, SparseData};
 use num_traits::AsPrimitive;
 
 use crate::dataset::ConvertFrom;
@@ -20,7 +20,7 @@ use rayon::prelude::{IndexedParallelIterator, ParallelIterator, ParallelSlice};
 /// # Examples
 ///
 /// ```rust
-/// use vectorium::{Dataset, GrowableDataset};
+/// use vectorium::{Dataset, DatasetGrowable};
 /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer};
 ///
 /// // Create a new empty dataset
@@ -45,7 +45,7 @@ pub type SparseDataset<E> = SparseDatasetGeneric<E, ImmutableSparseStorage<E>>;
 /// # Example
 /// ```
 /// use vectorium::{
-///     Dataset, DotProduct, GrowableDataset, PlainSparseDataset, PlainSparseQuantizer,
+///     Dataset, DotProduct, DatasetGrowable, PlainSparseDataset, PlainSparseQuantizer,
 ///     SparseDatasetGrowable, SparseVectorView, VectorView, VectorEncoder,
 /// };
 ///
@@ -90,7 +90,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use vectorium::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, DatasetGrowable};
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
     ///
     /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
@@ -110,7 +110,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use vectorium::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, DatasetGrowable};
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
     ///
     /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
@@ -133,7 +133,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use vectorium::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, DatasetGrowable};
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
     ///
     /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
@@ -220,7 +220,7 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, DatasetGrowable};
     /// use vectorium::VectorView;
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
     ///
@@ -278,7 +278,7 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, DatasetGrowable};
     /// use vectorium::VectorView;
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
     ///
@@ -328,7 +328,7 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, DatasetGrowable};
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
     ///
     /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
@@ -361,7 +361,7 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, DatasetGrowable};
     /// use vectorium::{DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
     ///
     /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
@@ -396,7 +396,7 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, DatasetGrowable};
     /// use vectorium::{DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
     ///
     /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
@@ -692,7 +692,7 @@ where
     }
 }
 
-impl<E> GrowableDataset for SparseDatasetGrowable<E>
+impl<E> DatasetGrowable for SparseDatasetGrowable<E>
 where
     E: SparseVectorEncoder,
 {
@@ -734,7 +734,7 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, DatasetGrowable};
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView};
     ///
     /// let quantizer = PlainSparseQuantizer::<u32, f32, DotProduct>::new(5, 5);
@@ -828,7 +828,7 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use vectorium::{Dataset, GrowableDataset};
+    /// use vectorium::{Dataset, DatasetGrowable};
     /// use vectorium::datasets::sparse_dataset::SparseDatasetIter;
     /// use vectorium::{DotProduct, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView, VectorView};
     ///
@@ -896,7 +896,7 @@ where
     /// Convenience constructor that builds a quantizer and an empty growable dataset.
     pub fn with_dim(dim: usize) -> Self {
         let encoder = crate::encoders::sparse_scalar::ScalarSparseQuantizer::new(dim, dim);
-        crate::GrowableDataset::new(encoder)
+        crate::DatasetGrowable::new(encoder)
     }
 
     /// Convenience constructor that reserves space for `n_vecs` vectors and `nnz` total components.
@@ -922,12 +922,12 @@ where
 {
     #[inline]
     pub fn new(encoder: E) -> Self {
-        crate::GrowableDataset::new(encoder)
+        crate::DatasetGrowable::new(encoder)
     }
 
     #[inline]
     pub fn with_capacity(encoder: E, capacity: usize) -> Self {
-        crate::GrowableDataset::with_capacity(encoder, capacity)
+        crate::DatasetGrowable::with_capacity(encoder, capacity)
     }
 }
 
@@ -936,7 +936,7 @@ mod tests {
     use super::SparseDatasetIter;
 
     use crate::core::dataset::ConvertInto;
-    use crate::core::dataset::GrowableDataset;
+    use crate::core::dataset::DatasetGrowable;
     use crate::core::vector::SparseVectorView;
     use crate::core::vector_encoder::VectorEncoder;
     use crate::core::vector_encoder::{SparseDataEncoder, SparseVectorEncoder};

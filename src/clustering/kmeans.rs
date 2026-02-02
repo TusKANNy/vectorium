@@ -1,10 +1,14 @@
-use crate::core::dataset::{GrowableDataset, VectorId};
+use crate::core::dataset::{DatasetGrowable, VectorId};
 use crate::core::distances::{Distance, SquaredEuclideanDistance, dot_product_dense};
 use crate::core::vector::DenseVectorView;
 use crate::core::vector_encoder::{QueryEvaluator, VectorEncoder};
+use crate::datasets::dense_dataset::DenseDatasetGeneric;
+use crate::encoders::dense_scalar::ScalarDenseQuantizer;
 use crate::{Dataset, Float, FromF32, PlainDenseDataset, PlainDenseDatasetGrowable, ValueType};
+use rand::Rng;
+use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::seq::SliceRandom;
 use rayon::prelude::*;
 use std::time::Instant;
 
@@ -40,14 +44,21 @@ impl KMeans {
     /// Assignment: for each vector, find nearest centroid by parallelizing over vectors
     /// Internally decides whether to use HNSW index or flat search based on the number of centroids.
     /// For small k (< index_threshold), uses flat dataset search. For large k, builds HNSW index.
-    pub fn compute_assignments<T>(
-        dataset: &PlainDenseDataset<T, SquaredEuclideanDistance>,
-        centroids: &PlainDenseDataset<T, SquaredEuclideanDistance>,
+    pub fn compute_assignments<VIn, VOut>(
+        dataset: &DenseDatasetGeneric<
+            ScalarDenseQuantizer<VIn, VOut, SquaredEuclideanDistance>,
+            impl AsRef<[VOut]>,
+        >,
+        centroids: &DenseDatasetGeneric<
+            ScalarDenseQuantizer<VOut, VOut, SquaredEuclideanDistance>,
+            impl AsRef<[VOut]> + Sync,
+        >,
         _index_threshold: usize,
     ) -> Vec<(f32, usize)>
     // sum of distances and assignments
     where
-        T: Float + ValueType + FromF32,
+        VIn: Float + ValueType + FromF32,
+        VOut: Float + ValueType + FromF32,
     {
         // HNSW path disabled: always fall back to flat dataset search.
         /*
@@ -116,8 +127,11 @@ impl KMeans {
     ///
     /// returns: the number of splits, a vector storing how many vectors are assigned to each cluster and the new centroids in a Dataset.
 
-    fn update_and_split<T>(
-        dataset: &PlainDenseDataset<T, SquaredEuclideanDistance>,
+    fn update_and_split<VIn, VOut, Data>(
+        dataset: &DenseDatasetGeneric<
+            ScalarDenseQuantizer<VIn, VOut, SquaredEuclideanDistance>,
+            Data,
+        >,
         weights: Option<&[f32]>,
         k: usize,
         assignments: &Vec<(f32, usize)>,
@@ -125,10 +139,12 @@ impl KMeans {
     ) -> (
         usize,
         Vec<f32>,
-        PlainDenseDataset<T, SquaredEuclideanDistance>,
+        PlainDenseDataset<VOut, SquaredEuclideanDistance>,
     )
     where
-        T: Float + ValueType + FromF32 + num_traits::ToPrimitive + num_traits::FromPrimitive,
+        VIn: Float + ValueType + FromF32,
+        VOut: Float + ValueType + FromF32 + num_traits::ToPrimitive + num_traits::FromPrimitive,
+        Data: AsRef<[VOut]> + Sync,
     {
         let n = dataset.len();
         let d = dataset.output_dim();
@@ -223,16 +239,19 @@ impl KMeans {
             n_splits += 1;
         }
 
-        // Convert f32 centroids back to T
-        let centroids_t: Vec<T> = centroids.iter().map(|&x| T::from_f32(x).unwrap()).collect();
+        // Convert f32 centroids back to VOut
+        let centroids_vout: Vec<VOut> = centroids
+            .iter()
+            .map(|&x| VOut::from_f32(x).unwrap())
+            .collect();
 
         (
             n_splits,
             histograms,
-            PlainDenseDataset::<T, SquaredEuclideanDistance>::from_raw(
-                centroids_t.into_boxed_slice(),
+            PlainDenseDataset::<VOut, SquaredEuclideanDistance>::from_raw(
+                centroids_vout.into_boxed_slice(),
                 k,
-                dataset.encoder().clone(),
+                ScalarDenseQuantizer::new(dataset.encoder().output_dim()),
             ),
         )
     }
@@ -252,101 +271,75 @@ impl KMeans {
     ///
     /// returns: the best computed centroids in the training.
     ///
-    pub fn train<T>(
+    pub fn train<VIn, VOut, Data>(
         &self,
-        dataset: &PlainDenseDataset<T, SquaredEuclideanDistance>,
+        training_dataset: &DenseDatasetGeneric<
+            ScalarDenseQuantizer<VIn, VOut, SquaredEuclideanDistance>,
+            Data,
+        >,
         k: usize,
         weights: Option<Vec<f32>>,
-    ) -> PlainDenseDataset<T, SquaredEuclideanDistance>
+    ) -> PlainDenseDataset<VOut, SquaredEuclideanDistance>
     where
-        T: Float + ValueType + FromF32 + num_traits::ToPrimitive + num_traits::FromPrimitive,
+        VIn: Float + ValueType + FromF32,
+        VOut: Float
+            + ValueType
+            + FromF32
+            + num_traits::ToPrimitive
+            + num_traits::FromPrimitive
+            + Clone,
+        Data: AsRef<[VOut]> + Sync,
     {
-        let n = dataset.len();
+        let n = training_dataset.len();
 
         if n == k {
             if self.verbose {
                 println!("WARNING: number of training data is equal to the number of clusters.");
             }
-            return dataset.clone();
+            // Convert generic dataset to PlainDenseDataset for return
+            return PlainDenseDataset::<VOut, SquaredEuclideanDistance>::from_raw(
+                training_dataset.values().to_vec().into_boxed_slice(),
+                n,
+                ScalarDenseQuantizer::new(training_dataset.encoder().output_dim()),
+            );
         }
 
-        if self.verbose && n <= k * self.min_points_per_centroid {
-            println!(
-                "WARNING: You provided {} training points for {} centroids,
-                but the minimum number of points per centroid set to {}.
-                Consider increasing the number of training points.
-                ",
-                n, k, self.min_points_per_centroid
-            )
-        }
-
-        // Create a seeded RNG for reproducibility (seed 524 for k-means)
-        let mut rng = StdRng::seed_from_u64(524);
-
-        // Determine the sample size using the new sampling strategy
-        let actual_sample_size = if let Some(sample_size) = self.sample_size {
-            // User-provided sample size
-            sample_size
-        } else if n > 1_000_000 {
-            // If dataset is larger than 1M, use sampling strategy:
-            // min(10^7, N, max(10^6, 2 * min_points_per_centroid * k, N/(2*n_iter)))
-            let min_by_cluster = 2 * self.min_points_per_centroid * k;
-            let min_by_iter = n / (2 * self.n_iter);
-            let candidate = std::cmp::max(std::cmp::max(1_000_000, min_by_cluster), min_by_iter);
-            std::cmp::min(std::cmp::min(10_000_000, n), candidate)
-        } else {
-            // For datasets <= 1M, use all data
-            n
-        };
-
-        // Use sample_size if we need to subsample, otherwise use full dataset
-        let (training_dataset, training_weights) = if actual_sample_size < n {
-            if self.verbose {
-                println!(
-                    "Sampling {} training points requested but not implemented; using all {} points",
-                    actual_sample_size, n
-                );
-            }
-            (dataset.clone(), None)
-        } else {
-            if self.verbose {
-                println!("Using all {} training points (no sampling)", n);
-            }
-            (dataset.clone(), weights)
-        };
-
-        let training_n = training_dataset.len();
         let d = training_dataset.output_dim();
 
         if self.verbose {
             println!(
                 "Clustering {} points in {}D to {} clusters, redo {} times, {} iterations",
-                training_n, d, k, self.n_redo, self.n_iter
+                n, d, k, self.n_redo, self.n_iter
             );
         }
 
         let mut best_obj = f32::MAX;
 
         // clustering-related
-        let mut best_centroids = PlainDenseDataset::<T, SquaredEuclideanDistance>::from_raw(
+        let output_dim = training_dataset.output_dim();
+        let mut best_centroids = PlainDenseDataset::<VOut, SquaredEuclideanDistance>::from_raw(
             Vec::new().into_boxed_slice(),
             0,
-            dataset.encoder().clone(),
+            ScalarDenseQuantizer::new(output_dim),
         );
 
-        let w = training_weights.as_deref();
+        let w = weights.as_deref();
 
         // HNSW logging disabled while index usage is deferred.
+        let mut rng = StdRng::from_entropy();
 
         for redo in 0..self.n_redo {
-            let mut centroids_builder =
-                PlainDenseDatasetGrowable::new(training_dataset.encoder().clone());
-            for i in 0..k {
-                let vec = training_dataset.get(i as VectorId);
-                centroids_builder.push(vec);
+            let mut centroids =
+                PlainDenseDatasetGrowable::with_capacity(ScalarDenseQuantizer::new(output_dim), k);
+
+            // Randomly select k vectors for initial centroids
+            let mut indices: Vec<usize> = (0..n).collect();
+            indices.shuffle(&mut rng);
+
+            for i in indices.iter().take(k) {
+                let vector = training_dataset.get(*i as VectorId);
+                centroids.push(vector);
             }
-            let mut centroids_dataset: PlainDenseDataset<T, SquaredEuclideanDistance> =
-                centroids_builder.into();
 
             let mut obj;
             let mut average_imbalance_factor = 0.0;
@@ -356,9 +349,7 @@ impl KMeans {
                 let t0 = Instant::now();
 
                 // Assignment: find nearest centroid for each vector
-                // compute_assignments will internally decide whether to use HNSW or flat search
-                let assignments =
-                    Self::compute_assignments(&training_dataset, &centroids_dataset, 0);
+                let assignments = Self::compute_assignments(&training_dataset, &centroids, 0);
 
                 let search_time = t0.elapsed();
                 let t0 = Instant::now();
@@ -379,14 +370,8 @@ impl KMeans {
                         println!("New best objective: {} (keep new clusters)", obj);
                     }
                     best_obj = obj;
-                    best_centroids = centroids.clone();
+                    best_centroids = centroids;
                 }
-
-                centroids_dataset = PlainDenseDataset::<T, SquaredEuclideanDistance>::from_raw(
-                    centroids.values().to_vec().into_boxed_slice(),
-                    k,
-                    training_dataset.encoder().clone(),
-                );
 
                 if self.verbose {
                     println!(
@@ -461,8 +446,8 @@ impl KMeansBuilder {
         self
     }
 
-    pub fn sample_size(mut self, sample_size: Option<usize>) -> KMeansBuilder {
-        self.sample_size = sample_size;
+    pub fn sample_size(mut self, sample_size: usize) -> KMeansBuilder {
+        self.sample_size = Some(sample_size);
         self
     }
 

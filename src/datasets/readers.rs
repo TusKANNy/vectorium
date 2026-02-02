@@ -9,7 +9,7 @@ use std::io::{BufReader, Read};
 use ndarray::Array2;
 use ndarray_npy::ReadNpyExt;
 
-use crate::GrowableDataset;
+use crate::DatasetGrowable;
 use crate::encoders::dense_scalar::{PlainDenseQuantizer, ScalarDenseSupportedDistance};
 use crate::encoders::sparse_scalar::{PlainSparseQuantizer, ScalarSparseSupportedDistance};
 use crate::{ComponentType, Float, FromF32, SpaceUsage, ValueType};
@@ -177,7 +177,7 @@ where
 
     // Pass 2: construct dataset and re-read, now that the dimensionality is known.
     let quantizer = PlainSparseQuantizer::<C, V, D>::new(input_dim, input_dim);
-    let mut data: PlainSparseDatasetGrowable<C, V, D> = GrowableDataset::new(quantizer);
+    let mut data: PlainSparseDatasetGrowable<C, V, D> = DatasetGrowable::new(quantizer);
 
     let mut br = BufReader::new(File::open(path)?);
     br.read_exact(&mut buffer_d)?; // n_vecs header

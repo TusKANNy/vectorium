@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::SpaceUsage;
 use crate::core::sealed;
 use crate::core::vector_encoder::{DenseVectorEncoder, VectorEncoder};
-use crate::{Dataset, GrowableDataset, VectorId};
+use crate::{Dataset, DatasetGrowable, VectorId};
 
 use rayon::prelude::*;
 
@@ -19,7 +19,7 @@ use rayon::prelude::*;
 /// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
 /// use vectorium::distances::DotProduct;
 /// use vectorium::core::vector::DenseVectorView;
-/// use vectorium::GrowableDataset;
+/// use vectorium::DatasetGrowable;
 /// use vectorium::Dataset;
 ///
 /// let encoder = ScalarDenseQuantizer::<f32, f32, DotProduct>::new(2);
@@ -39,7 +39,7 @@ pub type DenseDatasetGrowable<E> =
 ///
 /// ```
 /// use vectorium::datasets::dense_dataset::DenseDatasetGrowable;
-/// use vectorium::{DenseDataset, Dataset, GrowableDataset};
+/// use vectorium::{DenseDataset, Dataset, DatasetGrowable};
 /// use vectorium::encoders::dense_scalar::ScalarDenseQuantizer;
 /// use vectorium::distances::DotProduct;
 /// use vectorium::core::vector::DenseVectorView;
@@ -256,18 +256,18 @@ where
     }
 }
 
-// GrowableDataset implementation
+// DatasetGrowable implementation
 // We need to implement push which takes EncodedVector?
-// No, GrowableDataset takes InputVectorType to push.
+// No, DatasetGrowable takes InputVectorType to push.
 // But InputVectorType was removed from VectorEncoder trait.
 // It is now defined by `encode_vector` method signature which takes `DenseVectorView`.
-// So we should adapt `GrowableDataset` trait or implementation.
+// So we should adapt `DatasetGrowable` trait or implementation.
 // `DenseDatasetGeneric` assumes inputs are compatible with `E`.
 
 use crate::core::vector::DenseVectorView;
 use crate::{Float, FromF32, ValueType};
 
-impl<E> GrowableDataset for DenseDatasetGeneric<E, Vec<E::OutputValueType>>
+impl<E> DatasetGrowable for DenseDatasetGeneric<E, Vec<E::OutputValueType>>
 where
     E: DenseVectorEncoder,
 {
@@ -300,13 +300,13 @@ where
     /// Build a new growable dataset using the provided encoder.
     #[inline]
     pub fn new(encoder: E) -> Self {
-        crate::GrowableDataset::new(encoder)
+        crate::DatasetGrowable::new(encoder)
     }
 
     /// Build a growable dataset with the provided encoder and reserved capacity.
     #[inline]
     pub fn with_capacity(encoder: E, capacity: usize) -> Self {
-        crate::GrowableDataset::with_capacity(encoder, capacity)
+        crate::DatasetGrowable::with_capacity(encoder, capacity)
     }
 
     /// Return how many vectors can be stored without growing the underlying buffer.
@@ -338,7 +338,7 @@ where
     /// Convenience constructor that creates a quantizer and an empty dataset for any scalar quantizer.
     pub fn with_dim(dim: usize) -> Self {
         let encoder = crate::encoders::dense_scalar::ScalarDenseQuantizer::new(dim);
-        crate::GrowableDataset::new(encoder)
+        crate::DatasetGrowable::new(encoder)
     }
 
     /// Convenience constructor that also preallocates enough space for `capacity` vectors.

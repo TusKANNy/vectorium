@@ -7,7 +7,7 @@ use crate::SpaceUsage;
 use crate::core::sealed;
 use crate::dataset::ConvertFrom;
 use crate::utils::prefetch_read_slice;
-use crate::{Dataset, GrowableDataset, PackedVectorView, SparseData, VectorId};
+use crate::{Dataset, DatasetGrowable, PackedVectorView, SparseData, VectorId};
 
 use rayon::prelude::*;
 
@@ -17,7 +17,7 @@ use rayon::prelude::*;
 ///
 /// ```
 /// use vectorium::{
-///     DotVByteFixedU8Encoder, FixedU8Q, FromF32, PackedSparseDatasetGrowable, GrowableDataset,
+///     DotVByteFixedU8Encoder, FixedU8Q, FromF32, PackedSparseDatasetGrowable, DatasetGrowable,
 ///     Dataset, SparseVectorView,
 /// };
 ///
@@ -44,12 +44,12 @@ where
 {
     #[inline]
     pub fn new(encoder: E) -> Self {
-        crate::GrowableDataset::new(encoder)
+        crate::DatasetGrowable::new(encoder)
     }
 
     #[inline]
     pub fn with_capacity(encoder: E, capacity: usize) -> Self {
-        crate::GrowableDataset::with_capacity(encoder, capacity)
+        crate::DatasetGrowable::with_capacity(encoder, capacity)
     }
 }
 
@@ -59,7 +59,7 @@ where
 ///
 /// ```
 /// use vectorium::{
-///     Dataset, DotProduct, DotVByteFixedU8Encoder, GrowableDataset, PackedSparseDataset,
+///     Dataset, DotProduct, DotVByteFixedU8Encoder, DatasetGrowable, PackedSparseDataset,
 ///     PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView,
 /// };
 ///
@@ -88,7 +88,7 @@ pub type PackedSparseDataset<E> = PackedSparseDatasetGeneric<
 /// # Example
 /// ```
 /// use vectorium::{
-///     Dataset, DotProduct, DotVByteFixedU8Encoder, GrowableDataset, PackedSparseDataset,
+///     Dataset, DotProduct, DotVByteFixedU8Encoder, DatasetGrowable, PackedSparseDataset,
 ///     PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView, VectorEncoder,
 /// };
 ///
@@ -178,7 +178,7 @@ where
     /// use rayon::iter::ParallelIterator;
     /// use vectorium::{
     ///     DotVByteFixedU8Encoder, FixedU8Q, FromF32, PackedSparseDataset, PackedSparseDatasetGrowable,
-    ///     GrowableDataset, Dataset, SparseVectorView,
+    ///     DatasetGrowable, Dataset, SparseVectorView,
     /// };
     ///
     /// let encoder = DotVByteFixedU8Encoder::new(4, 4);
@@ -213,7 +213,7 @@ where
     }
 }
 
-impl<E> GrowableDataset
+impl<E> DatasetGrowable
     for PackedSparseDatasetGeneric<
         E,
         Vec<usize>,
@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn conversion_and_dot_product() {
-        use crate::GrowableDataset;
+        use crate::DatasetGrowable;
         use crate::QueryEvaluator as _;
         use crate::VectorEncoder as _;
         use crate::core::vector::SparseVectorView;
@@ -525,7 +525,7 @@ mod tests {
     fn packed_growable_immutable_roundtrip() {
         use crate::PackedSparseDatasetGrowable;
         use crate::core::vector::SparseVectorView;
-        use crate::{DotVByteFixedU8Encoder, FixedU8Q, GrowableDataset, PackedSparseDataset};
+        use crate::{DotVByteFixedU8Encoder, FixedU8Q, DatasetGrowable, PackedSparseDataset};
 
         let dim = 8;
         let encoder = DotVByteFixedU8Encoder::new(dim, dim);

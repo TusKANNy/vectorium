@@ -66,11 +66,6 @@ struct Args {
     #[clap(long, value_parser)]
     #[arg(default_value_t = 0)]
     pq_subspaces: usize,
-
-    /// PQ bits per subspace (1..=8). Only used when encoder='pq'.
-    #[clap(long, value_parser)]
-    #[arg(default_value_t = 8)]
-    pq_nbits: usize,
 }
 
 fn main() {
@@ -86,7 +81,6 @@ fn main() {
     let component_type = args.component_type.to_lowercase();
     let encoder = args.encoder.to_lowercase();
     let pq_subspaces = args.pq_subspaces;
-    let pq_nbits = args.pq_nbits;
 
     // Print chosen configuration
     println!("Dataset type: {}", dataset_type);
@@ -175,17 +169,12 @@ fn main() {
                     eprintln!("Encoder 'pq' requires value_type='f32'.");
                     return;
                 }
-                if pq_nbits == 0 || pq_nbits > 8 {
-                    eprintln!("pq_nbits must be between 1 and 8 (found {}).", pq_nbits);
-                    return;
-                }
                 if let Err(err) = compute_dense_groundtruth_pq(
                     input_path,
                     query_path,
                     output_path,
                     k,
                     pq_subspaces,
-                    pq_nbits,
                     &distance,
                 ) {
                     eprintln!("Failed to compute PQ groundtruth: {}", err);
@@ -475,7 +464,6 @@ fn compute_dense_groundtruth_pq(
     output_path: String,
     k: usize,
     pq_subspaces: usize,
-    pq_nbits: usize,
     distance: &str,
 ) -> Result<(), String> {
     let dataset = readers::read_npy_f32::<distances::SquaredEuclideanDistance>(&input_path)
@@ -501,7 +489,6 @@ fn compute_dense_groundtruth_pq(
                     dataset.take().unwrap(),
                     queries.take().unwrap(),
                     k,
-                    pq_nbits,
                     output_path.take().unwrap(),
                 )
             }
@@ -509,7 +496,6 @@ fn compute_dense_groundtruth_pq(
                 dataset.take().unwrap(),
                 queries.take().unwrap(),
                 k,
-                pq_nbits,
                 output_path.take().unwrap(),
             ),
         },
@@ -519,7 +505,6 @@ fn compute_dense_groundtruth_pq(
                     dataset.take().unwrap(),
                     queries.take().unwrap(),
                     k,
-                    pq_nbits,
                     output_path.take().unwrap(),
                 )
             }
@@ -527,7 +512,6 @@ fn compute_dense_groundtruth_pq(
                 dataset.take().unwrap(),
                 queries.take().unwrap(),
                 k,
-                pq_nbits,
                 output_path.take().unwrap(),
             ),
         },
@@ -537,7 +521,6 @@ fn compute_dense_groundtruth_pq(
                     dataset.take().unwrap(),
                     queries.take().unwrap(),
                     k,
-                    pq_nbits,
                     output_path.take().unwrap(),
                 )
             }
@@ -545,7 +528,6 @@ fn compute_dense_groundtruth_pq(
                 dataset.take().unwrap(),
                 queries.take().unwrap(),
                 k,
-                pq_nbits,
                 output_path.take().unwrap(),
             ),
         },
@@ -555,7 +537,6 @@ fn compute_dense_groundtruth_pq(
                     dataset.take().unwrap(),
                     queries.take().unwrap(),
                     k,
-                    pq_nbits,
                     output_path.take().unwrap(),
                 )
             }
@@ -563,7 +544,6 @@ fn compute_dense_groundtruth_pq(
                 dataset.take().unwrap(),
                 queries.take().unwrap(),
                 k,
-                pq_nbits,
                 output_path.take().unwrap(),
             ),
         },
@@ -577,7 +557,6 @@ fn run_dense_groundtruth_pq<const M: usize, D>(
     dataset: PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
     queries: PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
     k: usize,
-    pq_nbits: usize,
     output_path: String,
 ) where
     D: ProductQuantizerDistance + 'static,
@@ -585,7 +564,7 @@ fn run_dense_groundtruth_pq<const M: usize, D>(
     let start_time = Instant::now();
 
     // Use the encode_dataset method with automatic sampling
-    let pq_dataset = ProductQuantizer::<M, D>::encode_dataset(&dataset, pq_nbits);
+    let pq_dataset = ProductQuantizer::<M, D>::encode_dataset(&dataset);
 
     let elapsed = start_time.elapsed();
     println!(
@@ -600,9 +579,9 @@ fn run_dense_groundtruth_pq<const M: usize, D>(
     println!("N dims: {}", queries.input_dim());
     println!("Dataset size: {:.3} GiB", pq_dataset.space_usage_GiB());
     println!(
-        "PQ codes: {} bytes vector / {} bits per subspace",
+        "PQ codes: {} bytes per vector ({} subspaces)",
         pq_dataset.encoder().output_dim(),
-        pq_nbits
+        M
     );
     println!("Computing ground truth for {} queries...", queries.len());
 

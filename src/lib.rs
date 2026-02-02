@@ -62,7 +62,7 @@ pub use encoders::sparse_scalar::{
     ScalarSparseQuantizerDotProduct, ScalarSparseQueryEvaluator, ScalarSparseSupportedDistance,
 };
 
-pub use core::dataset::{Dataset, DenseData, GrowableDataset, SparseData, VectorId};
+pub use core::dataset::{Dataset, DenseData, DatasetGrowable, SparseData, VectorId};
 pub use core::storage::{
     GrowableSparseStorage, ImmutableSparseStorage, SparseStorage, SparseStorageMut,
 };

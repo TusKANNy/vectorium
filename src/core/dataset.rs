@@ -215,7 +215,7 @@ pub trait DenseData: Dataset<Encoder: DenseVectorEncoder> {}
 /// via `SparseDataEncoder`. Consumers can rely on those helpers without needing to distinguish the layout.
 pub trait SparseData: Dataset<Encoder: SparseDataEncoder> {}
 
-pub trait GrowableDataset: Dataset {
+pub trait DatasetGrowable: Dataset {
     /// Create a new growable dataset owning the provided encoder.
     fn new(encoder: Self::Encoder) -> Self;
 
