@@ -378,10 +378,9 @@ where
         assert_eq!(vector.len(), M);
         let code_bytes = vector.values();
         let mut decoded = Vec::with_capacity(self.d());
-        for m in 0..M {
-            let index = code_bytes[m] as usize;
-            let centroids = &self.centroids[m];
-            let centroid = centroids.get(index as crate::VectorId);
+        for (sub_id, code_byte) in code_bytes.iter().enumerate() {
+            let centroids = &self.centroids[sub_id as usize];
+            let centroid = centroids.get(*code_byte as crate::VectorId);
             decoded.extend_from_slice(centroid.values());
         }
         DenseVectorOwned::new(decoded)
@@ -427,10 +426,11 @@ where
         assert_eq!(input.len(), self.d());
         let values = input.values();
         for (sub_id, query_sub) in values.chunks(self.dsub).enumerate() {
-            let centroid_idx =
-                find_nearest_centroid_idx(DenseVectorView::new(query_sub), &self.centroids[sub_id])
-                    as u8;
-            output.extend(std::iter::once(centroid_idx as u8));
+            let centroid_idx = self.centroids[sub_id]
+                .search_nearest(DenseVectorView::new(query_sub))
+                .map(|scored| scored.vector as u8)
+                .unwrap_or(0);
+            output.extend(std::iter::once(centroid_idx));
         }
     }
 }
@@ -502,27 +502,4 @@ where
         let raw = self.encoder.compute_distance(&self.distance_table, vector);
         D::from(raw)
     }
-}
-
-/// Find the nearest centroid inside a subspace by scanning all `ksub` entries.
-#[inline(always)]
-fn find_nearest_centroid_idx(
-    query_sub: DenseVectorView<'_, f32>,
-    centroids: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
-) -> usize {
-    let mut best_idx = 0;
-    let mut best_distance = f32::INFINITY.into();
-
-    for (i, centroid) in centroids.iter().enumerate() {
-        // SAFETY: same size checked by caller
-        let dist = unsafe {
-            crate::distances::squared_euclidean_distance_dense_unchecked(query_sub, centroid)
-        };
-
-        if dist < best_distance {
-            best_distance = dist;
-            best_idx = i;
-        }
-    }
-    best_idx
 }

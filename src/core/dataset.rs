@@ -142,6 +142,23 @@ pub trait Dataset: sealed::Sealed {
             .k_smallest(k)
             .collect()
     }
+
+    /// Search for the single nearest neighbor to the given query.
+    #[inline]
+    fn search_nearest<'d, 'q>(
+        &'d self,
+        query: <Self::Encoder as VectorEncoder>::QueryVector<'q>,
+    ) -> Option<ScoredVector<<Self::Encoder as VectorEncoder>::Distance>> {
+        let evaluator = self.encoder().query_evaluator(query);
+
+        self.iter()
+            .enumerate()
+            .map(|(i, vector)| ScoredVector {
+                distance: evaluator.compute_distance(vector),
+                vector: i as VectorId,
+            })
+            .min_by_key(|scored| scored.distance)
+    }
 }
 
 impl<T> sealed::Sealed for &T where T: Dataset {}
