@@ -525,7 +525,7 @@ mod tests {
     fn packed_growable_immutable_roundtrip() {
         use crate::PackedSparseDatasetGrowable;
         use crate::core::vector::SparseVectorView;
-        use crate::{DotVByteFixedU8Encoder, FixedU8Q, DatasetGrowable, PackedSparseDataset};
+        use crate::{DatasetGrowable, DotVByteFixedU8Encoder, FixedU8Q, PackedSparseDataset};
 
         let dim = 8;
         let encoder = DotVByteFixedU8Encoder::new(dim, dim);
