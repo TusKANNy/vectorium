@@ -1,7 +1,6 @@
 mod simd_distances;
 
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
 
 use crate::PlainDenseDataset;
 use crate::PlainDenseQuantizer;
@@ -83,48 +82,35 @@ where
         training_data: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
         dsub: usize,
     ) -> [PlainDenseDataset<f32, SquaredEuclideanDistance>; M] {
+        use rayon::prelude::*;
+
         println!("Running K-Means for {} subspaces", M);
 
-        let results: Arc<Mutex<Vec<Option<PlainDenseDataset<f32, SquaredEuclideanDistance>>>>> =
-            Arc::new(Mutex::new(vec![None; M]));
-        rayon::scope(|scope| {
-            for m in 0..M {
-                let results = Arc::clone(&results);
-                scope.spawn(move |_| {
-                    let quantizer = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(dsub);
-                    let mut sub_dataset =
-                        PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
-                            quantizer,
-                            training_data.len(),
-                        );
+        // Use par_iter().map().collect() which preserves order
+        // (unlike reduce() which combines results in arbitrary order)
+        let datasets: Vec<PlainDenseDataset<f32, SquaredEuclideanDistance>> = (0..M)
+            .into_par_iter()
+            .map(|m| {
+                let quantizer = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(dsub);
+                let mut sub_dataset =
+                    PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
+                        quantizer,
+                        training_data.len(),
+                    );
 
-                    for vector in training_data.iter() {
-                        let start = m * dsub;
-                        let end = start + dsub;
-                        let sub_vector = DenseVectorView::new(&vector.values()[start..end]);
-                        sub_dataset.push(sub_vector);
-                    }
+                for vector in training_data.iter() {
+                    let start = m * dsub;
+                    let end = start + dsub;
+                    let sub_vector = DenseVectorView::new(&vector.values()[start..end]);
+                    sub_dataset.push(sub_vector);
+                }
 
-                    let kmeans = KMeansBuilder::new().build();
-                    let centroids = kmeans.train(&sub_dataset, KSUB, None);
-
-                    let mut guard = results.lock().unwrap();
-                    guard[m] = Some(centroids);
-                });
-            }
-        });
+                let kmeans = KMeansBuilder::new().build();
+                kmeans.train(&sub_dataset, KSUB, None)
+            })
+            .collect();
 
         println!("K-Means finished");
-
-        let guard = Arc::try_unwrap(results)
-            .expect("Arc still has multiple owners")
-            .into_inner()
-            .expect("Mutex poisoned");
-
-        let datasets: Vec<PlainDenseDataset<f32, SquaredEuclideanDistance>> = guard
-            .into_iter()
-            .map(|opt| opt.expect("KMeans did not produce centroids"))
-            .collect();
 
         datasets
             .try_into()
