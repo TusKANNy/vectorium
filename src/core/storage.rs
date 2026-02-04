@@ -351,7 +351,7 @@ mod tests {
         storage.values.extend_from_slice(&[0.5_f32, 1.5]);
         storage.offsets.push(storage.components.len());
 
-        let original_space = storage.space_usage_bytes();
+        let _original_space = storage.space_usage_bytes();
         let relabeled: GrowableSparseStorage<Encoder> = storage.clone().relabel();
         assert_eq!(relabeled, storage);
         let relabeled_space = relabeled.space_usage_bytes();

@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn growable_capacity_and_reserve_affect_data() {
         type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
-        let encoder = Encoder::new(2);
+        let _encoder = Encoder::new(2);
         let mut growable =
             DenseDatasetGrowable::<ScalarDenseQuantizer<f32, f32, DotProduct>>::with_dim(2);
         assert_eq!(growable.capacity(), 0);
@@ -573,7 +573,7 @@ mod tests {
             3, 4,
         );
         assert_eq!(with_capacity.encoder.output_dim(), 3);
-        assert!(with_capacity.capacity() >= 0);
+        // Capacity is always >= 0 for unsigned types, so no need to assert
     }
 
     #[test]

@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn packed_dataset_offsets_data_and_prefetch() {
         use crate::core::vector::SparseVectorView;
-        use crate::{DotProduct, DotVByteFixedU8Encoder, FixedU8Q, PackedSparseDatasetGrowable};
+        use crate::{DotVByteFixedU8Encoder, FixedU8Q, PackedSparseDatasetGrowable};
 
         let dim = 5;
         let encoder = DotVByteFixedU8Encoder::new(dim, dim);
