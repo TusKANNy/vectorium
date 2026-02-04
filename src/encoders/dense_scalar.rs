@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
 use crate::core::distances::{
-    Distance, DotProduct, SquaredEuclideanDistance, dot_product_dense, dot_product_dense_unchecked,
+    Distance, DotProduct, SquaredEuclideanDistance, dot_product_dense_unchecked,
     squared_euclidean_distance_dense_unchecked,
 };
 use crate::core::vector::DenseVectorView;
@@ -19,7 +19,6 @@ pub trait ScalarDenseSupportedDistance: Distance {
     /// Compute a numeric distance between two dense float views.
     /// Implementations usually call the same distance kernel the dataset uses.
     fn compute_dense<Q: ValueType, V: ValueType>(
-        dot_query: f32,
         query: DenseVectorView<'_, Q>,
         vector: DenseVectorView<'_, V>,
     ) -> Self;
@@ -27,17 +26,15 @@ pub trait ScalarDenseSupportedDistance: Distance {
 
 impl ScalarDenseSupportedDistance for SquaredEuclideanDistance {
     fn compute_dense<Q: ValueType, V: ValueType>(
-        dot_query: f32,
         query: DenseVectorView<'_, Q>,
         vector: DenseVectorView<'_, V>,
     ) -> Self {
-        unsafe { squared_euclidean_distance_dense_unchecked(dot_query, query, vector) }
+        unsafe { squared_euclidean_distance_dense_unchecked(query, vector) }
     }
 }
 
 impl ScalarDenseSupportedDistance for DotProduct {
     fn compute_dense<Q: ValueType, V: ValueType>(
-        _dot_query: f32,
         query: DenseVectorView<'_, Q>,
         vector: DenseVectorView<'_, V>,
     ) -> Self {
@@ -121,7 +118,6 @@ where
 {
     encoder: &'e ScalarDenseQuantizer<In, Out, D>,
     query: DenseVectorOwned<f32>,
-    dot_query: f32,
 }
 
 impl<'e, In, Out, D> ScalarDenseQueryEvaluator<'e, In, Out, D>
@@ -135,12 +131,7 @@ where
         encoder: &'e ScalarDenseQuantizer<In, Out, D>,
         query: DenseVectorOwned<f32>,
     ) -> Self {
-        let dot_query = dot_product_dense(query.as_view(), query.as_view()).distance();
-        Self {
-            encoder,
-            query,
-            dot_query,
-        }
+        Self { encoder, query }
     }
 }
 
@@ -156,7 +147,7 @@ where
     #[inline]
     fn compute_distance(&self, vector: DenseVectorView<'v, Out>) -> D {
         let _ = self.encoder;
-        D::compute_dense(self.dot_query, self.query.as_view(), vector)
+        D::compute_dense(self.query.as_view(), vector)
     }
 }
 

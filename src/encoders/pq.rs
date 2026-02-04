@@ -1,5 +1,3 @@
-mod simd_distances;
-
 use std::marker::PhantomData;
 
 use crate::PlainDenseDataset;
@@ -10,10 +8,6 @@ use crate::core::vector::{DenseVectorOwned, DenseVectorView};
 use crate::core::vector_encoder::{DenseVectorEncoder, QueryEvaluator, VectorEncoder};
 use crate::distances::{Distance, DotProduct, SquaredEuclideanDistance};
 use crate::{Dataset, DatasetGrowable, PlainDenseDatasetGrowable};
-
-use simd_distances::{
-    compute_distance_table, compute_dot_product_table, find_nearest_centroid_idx,
-};
 
 /// Minimum dataset size below which no sampling is performed for PQ training
 const PQ_TRAIN_SAMPLING_MIN_SIZE: usize = 1_000_000;
@@ -318,23 +312,25 @@ where
         M
     }
 
-    #[inline]
-    pub fn get_centroids_dataset(
-        &self,
-        subspace_idx: usize,
-    ) -> &PlainDenseDataset<f32, SquaredEuclideanDistance> {
-        &self.centroids[subspace_idx]
-    }
-
     fn compute_euclidean_distance_table(&self, query: DenseVectorView<'_, f32>) -> Vec<f32> {
         assert_eq!(query.len(), self.d());
         let mut table = vec![0.0_f32; KSUB * M];
-        for m in 0..M {
-            let start = m * self.dsub;
-            let query_sub = DenseVectorView::new(&query.values()[start..start + self.dsub]);
-            let centroids = self.get_centroids_dataset(m);
-            let chunk = &mut table[m * KSUB..(m + 1) * KSUB];
-            compute_distance_table(chunk, query_sub, centroids);
+
+        for (sub_id, (sub_distance_table, query_sub)) in table
+            .chunks_mut(KSUB)
+            .zip(query.values().chunks(self.dsub))
+            .enumerate()
+        {
+            let centroids = &self.centroids[sub_id];
+
+            let query = DenseVectorView::new(query_sub);
+            for (i, slot) in sub_distance_table.iter_mut().enumerate() {
+                let centroid = centroids.get(i as crate::VectorId);
+                *slot = unsafe {
+                    crate::distances::squared_euclidean_distance_dense_unchecked(query, centroid)
+                }
+                .distance();
+            }
         }
         table
     }
@@ -342,12 +338,24 @@ where
     fn compute_dot_product_table(&self, query: DenseVectorView<'_, f32>) -> Vec<f32> {
         assert_eq!(query.len(), self.d());
         let mut table = vec![0.0_f32; KSUB * M];
-        for m in 0..M {
-            let start = m * self.dsub;
-            let query_sub = DenseVectorView::new(&query.values()[start..start + self.dsub]);
-            let centroids = self.get_centroids_dataset(m);
-            let chunk = &mut table[m * KSUB..(m + 1) * KSUB];
-            compute_dot_product_table(chunk, query_sub, centroids);
+
+        for (sub_id, (sub_distance_table, query_sub)) in table
+            .chunks_mut(KSUB)
+            .zip(query.values().chunks(self.dsub))
+            .enumerate()
+        {
+            let centroids = &self.centroids[sub_id];
+            let query = DenseVectorView::new(query_sub);
+
+            // For dot product, we need to compute q · c for each centroid
+            // We use the raw dot product computation since the centroids dataset
+            // is stored with SquaredEuclideanDistance but we need dot products
+            for (i, slot) in sub_distance_table.iter_mut().enumerate() {
+                let centroid = centroids.get(i as crate::VectorId);
+                *slot = unsafe {
+                    crate::distances::dot_product_dense_unchecked(query, centroid).distance()
+                };
+            }
         }
         table
     }
@@ -356,10 +364,11 @@ where
         assert_eq!(code.len(), M);
         let code_bytes = code.values();
         let mut total = 0.0_f32;
-        for m in 0..M {
-            let idx = code_bytes[m] as usize;
+        for (sub_id, code_byte) in code_bytes.iter().enumerate() {
             unsafe {
-                total += *distance_table.get_unchecked(m * KSUB + idx);
+                total = total.algebraic_add(
+                    *distance_table.get_unchecked(sub_id * KSUB + *code_byte as usize),
+                );
             }
         }
         total
@@ -371,7 +380,7 @@ where
         let mut decoded = Vec::with_capacity(self.d());
         for m in 0..M {
             let index = code_bytes[m] as usize;
-            let centroids = self.get_centroids_dataset(m);
+            let centroids = &self.centroids[m];
             let centroid = centroids.get(index as crate::VectorId);
             decoded.extend_from_slice(centroid.values());
         }
@@ -407,6 +416,7 @@ where
         self.decode_vector(encoded)
     }
 
+    #[inline]
     fn push_encoded<'a, OutputContainer>(
         &self,
         input: DenseVectorView<'a, Self::InputValueType>,
@@ -415,11 +425,11 @@ where
         OutputContainer: Extend<Self::OutputValueType>,
     {
         assert_eq!(input.len(), self.d());
-        for m in 0..M {
-            let start = m * self.dsub;
-            let end = start + self.dsub;
-            let query_sub = DenseVectorView::new(&input.values()[start..end]);
-            let centroid_idx = find_nearest_centroid_idx(query_sub, self.get_centroids_dataset(m));
+        let values = input.values();
+        for (sub_id, query_sub) in values.chunks(self.dsub).enumerate() {
+            let centroid_idx =
+                find_nearest_centroid_idx(DenseVectorView::new(query_sub), &self.centroids[sub_id])
+                    as u8;
             output.extend(std::iter::once(centroid_idx as u8));
         }
     }
@@ -492,4 +502,27 @@ where
         let raw = self.encoder.compute_distance(&self.distance_table, vector);
         D::from(raw)
     }
+}
+
+/// Find the nearest centroid inside a subspace by scanning all `ksub` entries.
+#[inline(always)]
+fn find_nearest_centroid_idx(
+    query_sub: DenseVectorView<'_, f32>,
+    centroids: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
+) -> usize {
+    let mut best_idx = 0;
+    let mut best_distance = f32::INFINITY.into();
+
+    for (i, centroid) in centroids.iter().enumerate() {
+        // SAFETY: same size checked by caller
+        let dist = unsafe {
+            crate::distances::squared_euclidean_distance_dense_unchecked(query_sub, centroid)
+        };
+
+        if dist < best_distance {
+            best_distance = dist;
+            best_idx = i;
+        }
+    }
+    best_idx
 }
