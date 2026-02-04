@@ -473,7 +473,6 @@ where
 {
     encoder: &'a ProductQuantizer<M, D>,
     distance_table: Vec<f32>,
-    _query: DenseVectorOwned<f32>,
 }
 
 impl<'a, const M: usize, D> ProductQuantizerQueryEvaluator<'a, M, D>
@@ -481,12 +480,10 @@ where
     D: ProductQuantizerDistance,
 {
     fn new(encoder: &'a ProductQuantizer<M, D>, query: DenseVectorView<'_, f32>) -> Self {
-        let owned = query.to_owned();
-        let table = D::compute_query_distance_table(encoder, owned.as_view());
+        let table = D::compute_query_distance_table(encoder, query);
         Self {
             encoder,
             distance_table: table,
-            _query: owned,
         }
     }
 }
