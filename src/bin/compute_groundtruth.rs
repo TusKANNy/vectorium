@@ -611,8 +611,8 @@ fn run_dense_groundtruth_pq<const M: usize, D>(
 {
     let start_time = Instant::now();
 
-    // Use the encode_dataset method with automatic sampling
-    let pq_dataset = ProductQuantizer::<M, D>::encode_dataset(&dataset);
+    // Convert dataset using ConvertFrom trait with automatic sampling
+    let pq_dataset: vectorium::DenseDataset<ProductQuantizer<M, D>> = dataset.convert_into();
 
     let elapsed = start_time.elapsed();
     println!(

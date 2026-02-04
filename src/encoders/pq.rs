@@ -151,101 +151,6 @@ where
         }
     }
 
-    /// Train PQ encoder and encode an entire PlainDenseDataset into a PQ dataset.
-    ///
-    /// Uses automatic sampling strategy for training:
-    /// - If dataset size ≤ 1,000,000: train on full dataset
-    /// - If dataset size > 1,000,000: sample max(10% of dataset, 1,000,000)
-    ///
-    /// # Arguments
-    /// * `dataset` - Source dataset with f32 values and SquaredEuclideanDistance
-    pub fn encode_dataset(
-        dataset: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
-    ) -> crate::DenseDataset<Self> {
-        let sample_size = Self::compute_training_sample_size(dataset.len());
-
-        // Sample if needed
-        let training_dataset = match sample_size {
-            Some(size) => {
-                println!(
-                    "Sampling {} vectors from {} for PQ training",
-                    size,
-                    dataset.len()
-                );
-                Self::sample_random_dataset(dataset, size)
-            }
-            None => dataset.clone(),
-        };
-
-        // Train the encoder
-        let pq_encoder = Self::train(&training_dataset);
-
-        // Encode all vectors from the original dataset
-        let encoded_vector_len = pq_encoder.output_dim();
-        let mut encoded_data = Vec::with_capacity(dataset.len() * encoded_vector_len);
-        for vector in dataset.iter() {
-            pq_encoder.push_encoded(vector, &mut encoded_data);
-        }
-
-        let encoded_data = encoded_data.into_boxed_slice();
-        crate::DenseDataset::<ProductQuantizer<M, D>>::from_raw(
-            encoded_data,
-            dataset.len(),
-            pq_encoder,
-        )
-    }
-
-    /// Train PQ encoder and encode an entire PlainDenseDataset with DotProduct distance.
-    ///
-    /// Converts to SquaredEuclideanDistance for training (zero-copy distance change),
-    /// then encodes with target distance D.
-    ///
-    /// Uses automatic sampling strategy for training:
-    /// - If dataset size ≤ 1,000,000: train on full dataset
-    /// - If dataset size > 1,000,000: sample max(10% of dataset, 1,000,000)
-    ///
-    /// # Arguments
-    /// * `dataset` - Source dataset with f32 values and DotProduct distance
-    pub fn encode_dataset_from_dotproduct(
-        dataset: &PlainDenseDataset<f32, DotProduct>,
-    ) -> crate::DenseDataset<Self> {
-        // Convert to SquaredEuclideanDistance for training (zero-copy distance change)
-        let euclidean_dataset: PlainDenseDataset<f32, SquaredEuclideanDistance> =
-            dataset.clone().into();
-
-        let sample_size = Self::compute_training_sample_size(euclidean_dataset.len());
-
-        // Sample if needed
-        let training_dataset = match sample_size {
-            Some(size) => {
-                println!(
-                    "Sampling {} vectors from {} for PQ training",
-                    size,
-                    euclidean_dataset.len()
-                );
-                Self::sample_random_dataset(&euclidean_dataset, size)
-            }
-            None => euclidean_dataset,
-        };
-
-        // Train the encoder
-        let pq_encoder = Self::train(&training_dataset);
-
-        // Encode all vectors from the original dataset
-        let encoded_vector_len = pq_encoder.output_dim();
-        let mut encoded_data = Vec::with_capacity(dataset.len() * encoded_vector_len);
-        for vector in dataset.iter() {
-            pq_encoder.push_encoded(vector, &mut encoded_data);
-        }
-
-        let encoded_data = encoded_data.into_boxed_slice();
-        crate::DenseDataset::<ProductQuantizer<M, D>>::from_raw(
-            encoded_data,
-            dataset.len(),
-            pq_encoder,
-        )
-    }
-
     #[inline]
     pub fn from_pretrained(
         d: usize,
@@ -480,6 +385,7 @@ where
     D: ProductQuantizerDistance,
 {
     fn new(encoder: &'a ProductQuantizer<M, D>, query: DenseVectorView<'_, f32>) -> Self {
+
         let table = D::compute_query_distance_table(encoder, query);
         Self {
             encoder,
@@ -498,5 +404,89 @@ where
     fn compute_distance(&self, vector: DenseVectorView<'_, u8>) -> Self::Distance {
         let raw = self.encoder.compute_distance(&self.distance_table, vector);
         D::from(raw)
+    }
+}
+
+use crate::dataset::ConvertFrom;
+
+/// Convert from PlainDenseDataset<f32, SquaredEuclideanDistance> to PQ-encoded dataset
+/// with automatic training (optionally sampled) and encoding.
+impl<const M: usize, D> ConvertFrom<PlainDenseDataset<f32, SquaredEuclideanDistance>>
+    for crate::DenseDataset<ProductQuantizer<M, D>>
+where
+    D: ProductQuantizerDistance + 'static,
+{
+    fn convert_from(dataset: PlainDenseDataset<f32, SquaredEuclideanDistance>) -> Self {
+        let sample_size = ProductQuantizer::<M, D>::compute_training_sample_size(dataset.len());
+
+        let training_dataset = match sample_size {
+            Some(size) => {
+                println!(
+                    "Sampling {} vectors from {} for PQ training",
+                    size,
+                    dataset.len()
+                );
+                ProductQuantizer::<M, D>::sample_random_dataset(&dataset, size)
+            }
+            None => dataset.clone(),
+        };
+
+        let pq_encoder = ProductQuantizer::<M, D>::train(&training_dataset);
+        let encoded_vector_len = pq_encoder.output_dim();
+        let mut encoded_data = Vec::with_capacity(dataset.len() * encoded_vector_len);
+
+        for vector in dataset.iter() {
+            pq_encoder.push_encoded(vector, &mut encoded_data);
+        }
+
+        let encoded_data = encoded_data.into_boxed_slice();
+        crate::DenseDataset::<ProductQuantizer<M, D>>::from_raw(
+            encoded_data,
+            dataset.len(),
+            pq_encoder,
+        )
+    }
+}
+
+/// Convert from PlainDenseDataset<f32, DotProduct> to PQ-encoded dataset
+/// with automatic training (optionally sampled) and encoding.
+/// Training uses SquaredEuclideanDistance internally (zero-copy conversion).
+impl<const M: usize, D> ConvertFrom<PlainDenseDataset<f32, DotProduct>>
+    for crate::DenseDataset<ProductQuantizer<M, D>>
+where
+    D: ProductQuantizerDistance + 'static,
+{
+    fn convert_from(dataset: PlainDenseDataset<f32, DotProduct>) -> Self {
+        let euclidean_dataset: PlainDenseDataset<f32, SquaredEuclideanDistance> =
+            dataset.clone().into();
+
+        let sample_size = ProductQuantizer::<M, D>::compute_training_sample_size(euclidean_dataset.len());
+
+        let training_dataset = match sample_size {
+            Some(size) => {
+                println!(
+                    "Sampling {} vectors from {} for PQ training",
+                    size,
+                    euclidean_dataset.len()
+                );
+                ProductQuantizer::<M, D>::sample_random_dataset(&euclidean_dataset, size)
+            }
+            None => euclidean_dataset,
+        };
+
+        let pq_encoder = ProductQuantizer::<M, D>::train(&training_dataset);
+        let encoded_vector_len = pq_encoder.output_dim();
+        let mut encoded_data = Vec::with_capacity(dataset.len() * encoded_vector_len);
+
+        for vector in dataset.iter() {
+            pq_encoder.push_encoded(vector, &mut encoded_data);
+        }
+
+        let encoded_data = encoded_data.into_boxed_slice();
+        crate::DenseDataset::<ProductQuantizer<M, D>>::from_raw(
+            encoded_data,
+            dataset.len(),
+            pq_encoder,
+        )
     }
 }
