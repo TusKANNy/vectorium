@@ -9,7 +9,7 @@ Search here is done witha brute-force parallel scan of the entire dataset. Consi
 
 ```rust
 use vectorium::{
-    Dataset, DenseDataset, DenseVectorView, DotProduct, GrowableDataset, PlainDenseDatasetGrowable,
+    Dataset, DenseDataset, DenseVectorView, DotProduct, DatasetGrowable, PlainDenseDatasetGrowable,
     DenseVectorEncoder, PlainDenseQuantizer, VectorEncoder,
 };
 
@@ -33,7 +33,7 @@ assert_eq!(v.values(), &[0.5, 1.5, 0.0]);
 
 ```rust
 use vectorium::{
-    Dataset, DotProduct, GrowableDataset, PlainSparseDataset, PlainSparseDatasetGrowable,
+    Dataset, DotProduct, DatasetGrowable, PlainSparseDataset, PlainSparseDatasetGrowable,
     PlainSparseQuantizer, SparseVectorView, SparseVectorEncoder, VectorEncoder,
 };
 
