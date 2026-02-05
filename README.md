@@ -34,7 +34,7 @@ RUSTFLAGS="-C target-cpu=native" cargo run --release --features cli --bin comput
 
 
 This tool computes exhaustive top‑k neighbors for each query and writes the results as a TSV file. It is designed for
-research/benchmarking workflows where you need exact results (ground truth) or a baseline to compare against an ANN
+research/benchmarking workflows where you need exact results (ground truth) to compare against an ANN
 index. It parallelizes across queries using Rayon, which is typically the right granularity for CPU ground‑truth runs.
 
 #### Inputs and formats
