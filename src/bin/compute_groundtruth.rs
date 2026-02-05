@@ -62,7 +62,7 @@ struct Args {
     #[arg(default_value = "plain")]
     encoder: String,
 
-    /// PQ subspace count (multiple of 4). 0 auto-selects from [32,16,8,4] that divide the dimension.
+    /// PQ subspace count (must divide the dataset dimension). 0 auto-selects from {128,96,64,32,16,8,4}.
     #[clap(long, value_parser)]
     #[arg(default_value_t = 0)]
     pq_subspaces: usize,
