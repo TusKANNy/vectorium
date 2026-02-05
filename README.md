@@ -249,7 +249,7 @@ let view = dataset.get_with_range(range);
 assert_eq!(view.values(), &[1.0, 0.0, 2.0]);
 ```
 
-## Design notes (for index authors)
+## Design notes
 
 - **Type safety by construction:** datasets are sealed and are tied to a specific encoder type, so mixing dense/sparse/packed
   representations is prevented at compile time.
