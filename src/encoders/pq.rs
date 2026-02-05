@@ -284,7 +284,7 @@ where
         let code_bytes = vector.values();
         let mut decoded = Vec::with_capacity(self.d());
         for (sub_id, code_byte) in code_bytes.iter().enumerate() {
-            let centroids = &self.centroids[sub_id as usize];
+            let centroids = &self.centroids[sub_id];
             let centroid = centroids.get(*code_byte as crate::VectorId);
             decoded.extend_from_slice(centroid.values());
         }

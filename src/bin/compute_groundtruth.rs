@@ -432,7 +432,7 @@ fn choose_pq_subspaces(dim: usize, requested: usize) -> Result<usize, String> {
                 requested, dim
             ));
         }
-        if dim % requested != 0 {
+        if !dim.is_multiple_of(requested) {
             return Err(format!(
                 "dataset dimension {} is not divisible by pq_subspaces={}",
                 dim, requested
@@ -444,7 +444,7 @@ fn choose_pq_subspaces(dim: usize, requested: usize) -> Result<usize, String> {
     PQ_SUPPORTED_SUBSPACES
         .iter()
         .copied()
-        .find(|&m| m <= dim && dim % m == 0)
+        .find(|&m| m <= dim && dim.is_multiple_of(m))
         .ok_or_else(|| {
             let supported = PQ_SUPPORTED_SUBSPACES
                 .iter()

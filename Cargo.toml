@@ -5,12 +5,14 @@ edition = "2024"
 authors = [
     "Rossano Venturini <rossano.venturini@unipi.it>"]
 readme = "README.md"
+description = "Dense and sparse embedding datasets with compression utilities and brute-force parallel search."
+license = "MIT"
 
 [dependencies]
-indicatif = {version = "0.17.11", features = ["rayon"]}
+indicatif = { version = "0.17.11", features = ["rayon"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 bincode = { version = "2.0", features = ["serde"] }
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"], optional = true }
 rayon = "1.11"
 # TODO: f16 available in nightly, but not supported by crates: https://github.com/rust-num/num-traits/pull/333
 half = { version = "2.6", features = [
@@ -36,6 +38,21 @@ bytemuck = { version = "1.23", features = [
 rusty-perm = "0.2.0"
 rgb = { git = "https://github.com/JMMackenzie/enhanced-graph-bisection.git" } 
 rand = "0.8"
+
+[features]
+default = []
+# Enables the optional command-line utilities under `src/bin/` that depend on clap/indicatif.
+cli = ["dep:clap", "dep:indicatif"]
+
+[[bin]]
+name = "compute_groundtruth"
+path = "src/bin/compute_groundtruth.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "kmeans_bench"
+path = "src/bin/kmeans_bench.rs"
+required-features = ["cli"]
 
 [profile.release]
 opt-level = 3

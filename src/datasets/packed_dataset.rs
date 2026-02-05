@@ -581,7 +581,7 @@ mod tests {
 
         let range = packed.range_from_id(1);
         let view: PackedVectorView<'_, u64> = packed.get_with_range(range);
-        assert!(view.len() > 0);
+        assert!(!view.is_empty());
 
         let iter_values: Vec<_> = packed.iter().collect();
         assert_eq!(iter_values.len(), 2);

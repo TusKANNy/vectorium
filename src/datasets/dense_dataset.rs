@@ -210,7 +210,7 @@ where
         }
 
         assert!(
-            range.start % m == 0,
+            range.start.is_multiple_of(m),
             "Range does not match vector boundaries."
         );
         assert_eq!(

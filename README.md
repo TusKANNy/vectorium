@@ -56,3 +56,20 @@ assert_eq!(v.values(), &[1.0, 2.0]);
 - `Plain*Quantizer` types are concrete implementations of the `VectorEncoder` trait and the relevant `*VectorEncoder` specialization.
 - `DenseData` and `SparseData` are marker traits for dataset categories whose encoders meet richer contracts (`DenseVectorEncoder` and the new `SparseDataEncoder`, respectively). That keeps any helper written for “dense” or “sparse” data honest: it can rely on the layout/query/decoding helpers the encoder exposes rather than guessing at the storage format.
 - `SparseDataEncoder` is the minimal shared sparse-input trait that exposes the input/query sparse views, component/value types, and `decode_vector`, so code that only needs the common sparse behavior can stay agnostic about whether the encoder produces component/value pairs or a packed blob.
+
+## Optional CLI utilities
+
+Some binaries under `src/bin/` depend on optional CLI dependencies and are gated behind the `cli` feature:
+
+```bash
+cargo run --features cli --bin compute_groundtruth -- --help
+```
+
+## Performance build flags
+
+For best performance on your machine, prefer building/running with native CPU tuning and release mode (note: `target-cpu=native` makes the produced binary non-portable across different CPUs):
+
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+RUSTFLAGS="-C target-cpu=native" cargo run --release --features cli --bin compute_groundtruth -- --help
+```

@@ -126,7 +126,6 @@ impl KMeans {
     /// * `assignments`: the latest assignment vector in the dataset - cluster
     ///
     /// returns: the number of splits, a vector storing how many vectors are assigned to each cluster and the new centroids in a Dataset.
-
     fn update_and_split<VIn, VOut, Data>(
         dataset: &DenseDatasetGeneric<
             ScalarDenseQuantizer<VIn, VOut, SquaredEuclideanDistance>,
@@ -134,7 +133,7 @@ impl KMeans {
         >,
         weights: Option<&[f32]>,
         k: usize,
-        assignments: &Vec<(f32, usize)>,
+        assignments: &[(f32, usize)],
         rng: &mut StdRng,
     ) -> (
         usize,
@@ -352,7 +351,7 @@ impl KMeans {
                 let t0 = Instant::now();
 
                 // Assignment: find nearest centroid for each vector
-                let assignments = Self::compute_assignments(&training_dataset, &centroids, 0);
+                let assignments = Self::compute_assignments(training_dataset, &centroids, 0);
 
                 let search_time = t0.elapsed();
                 let t0 = Instant::now();
@@ -360,7 +359,7 @@ impl KMeans {
 
                 // Update: recompute centroids
                 let (n_split, histograms, new_centroids) =
-                    Self::update_and_split(&training_dataset, w, k, &assignments, &mut rng);
+                    Self::update_and_split(training_dataset, w, k, &assignments, &mut rng);
 
                 let imbalance_factor = Self::imbalance_factor(&histograms, k);
                 let split_time = t0.elapsed();

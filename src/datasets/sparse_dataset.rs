@@ -435,10 +435,7 @@ where
     /// Relabels a scalar-quantized growable dataset as plain without re-encoding.
     pub fn relabel_as_plain(
         self,
-    ) -> SparseDatasetGeneric<
-        crate::PlainSparseQuantizer<C, OutValue, D>,
-        GrowableSparseStorage<crate::PlainSparseQuantizer<C, OutValue, D>>,
-    > {
+    ) -> SparseDatasetGrowable<crate::PlainSparseQuantizer<C, OutValue, D>> {
         let dim = self.encoder.output_dim();
         let storage = self
             .storage
@@ -464,10 +461,7 @@ where
     /// Relabels a plain-quantized growable dataset as scalar without re-encoding.
     pub fn relabel_as_scalar<InValue>(
         self,
-    ) -> SparseDatasetGeneric<
-        crate::ScalarSparseQuantizer<C, InValue, OutValue, D>,
-        GrowableSparseStorage<crate::ScalarSparseQuantizer<C, InValue, OutValue, D>>,
-    >
+    ) -> SparseDatasetGrowable<crate::ScalarSparseQuantizer<C, InValue, OutValue, D>>
     where
         InValue: ValueType + Float,
     {
@@ -497,10 +491,7 @@ where
     /// Relabels a scalar-quantized immutable dataset as plain without re-encoding.
     pub fn relabel_as_plain(
         self,
-    ) -> SparseDatasetGeneric<
-        crate::PlainSparseQuantizer<C, OutValue, D>,
-        ImmutableSparseStorage<crate::PlainSparseQuantizer<C, OutValue, D>>,
-    > {
+    ) -> SparseDataset<crate::PlainSparseQuantizer<C, OutValue, D>> {
         let dim = self.encoder.output_dim();
         let storage = self
             .storage
@@ -526,10 +517,7 @@ where
     /// Relabels a plain-quantized immutable dataset as scalar without re-encoding.
     pub fn relabel_as_scalar<InValue>(
         self,
-    ) -> SparseDatasetGeneric<
-        crate::ScalarSparseQuantizer<C, InValue, OutValue, D>,
-        ImmutableSparseStorage<crate::ScalarSparseQuantizer<C, InValue, OutValue, D>>,
-    >
+    ) -> SparseDataset<crate::ScalarSparseQuantizer<C, InValue, OutValue, D>>
     where
         InValue: ValueType + Float,
     {
