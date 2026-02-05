@@ -9,8 +9,7 @@ That is accurate but slow at scale. ANN indexes (HNSW, IVF, Seismic, etc.) trade
 
 Vectorium includes an exhaustive search API (`Dataset::search`) and a binary executable for ground-truth computation on CPU. For state‑of‑the‑art ANN indexing, use these tools: [Seismic](https://github.com/TusKANNy/seismic) and [kANNolo](https://github.com/TusKANNy/kannolo).
 
-## Command-line tools (binaries)
-
+## Command-line tool
 Vectorium ships a binary `compute_groundtruth` (feature `cli`) under `src/bin/` to exhaustive top‑k for a set of queries, writes a TSV file.
 
 ### Build and run
@@ -125,7 +124,7 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release --features cli
   - Supported values are currently `{128, 96, 64, 32, 16, 8, 4}`.
 
 
-## Rust library usage
+## Rust library
 
 The library is organized around two core concepts:
 
