@@ -1,16 +1,13 @@
 // Copied from https://doc.rust-lang.org/src/core/portable-simd/crates/core_simd/src/swizzle_dyn.rs.html, with few modifications (see CHANGE)
 
 use core::mem;
-use std::simd::{LaneCount, Simd, SupportedLaneCount};
+use std::simd::Simd;
 
 /// Swizzle a vector of bytes according to the index vector.
 /// Indices within range select the appropriate byte.
 /// Indices "out of bounds" instead select 0.
 #[inline]
-pub fn swizzle<const N: usize>(bytes: Simd<u8, N>, idxs: Simd<u8, N>) -> Simd<u8, N>
-where
-    LaneCount<N>: SupportedLaneCount,
-{
+pub fn swizzle<const N: usize>(bytes: Simd<u8, N>, idxs: Simd<u8, N>) -> Simd<u8, N> {
     #![allow(unused_imports, unused_unsafe)]
     #[cfg(all(
         any(target_arch = "aarch64", target_arch = "arm64ec"),
@@ -140,6 +137,7 @@ unsafe fn avx2_pshufb(bytes: Simd<u8, 32>, idxs: Simd<u8, 32>) -> Simd<u8, 32> {
     #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64 as x86;
     use std::simd::cmp::SimdPartialOrd;
+    use std::simd::Select;
     use x86::_mm256_permute2x128_si256 as avx2_cross_shuffle;
     use x86::_mm256_shuffle_epi8 as avx2_half_pshufb;
     let mid = Simd::splat(16u8);
@@ -183,10 +181,7 @@ unsafe fn transize<T, const N: usize>(
     f: unsafe fn(T, T) -> T,
     a: Simd<u8, N>,
     b: Simd<u8, N>,
-) -> Simd<u8, N>
-where
-    LaneCount<N>: SupportedLaneCount,
-{
+) -> Simd<u8, N> {
     // SAFETY: Same obligation to use this function as to use mem::transmute_copy.
     unsafe { mem::transmute_copy(&f(mem::transmute_copy(&a), mem::transmute_copy(&b))) }
 }

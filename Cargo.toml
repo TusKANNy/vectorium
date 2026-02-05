@@ -33,7 +33,6 @@ num-traits = "0.2.19"
 itertools = "0.14.0"
 bytemuck = { version = "1.23", features = [
     "min_const_generics",
-    "nightly_portable_simd",
 ] }
 rusty-perm = "0.2.0"
 rgb = { git = "https://github.com/JMMackenzie/enhanced-graph-bisection.git" } 

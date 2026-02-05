@@ -419,6 +419,12 @@ struct DotVbyteFixedu8<'a> {
 }
 
 impl<'a> DotVbyteFixedu8<'a> {
+    #[inline]
+    unsafe fn cast_simd_slice<const LANES: usize>(slice: &'a [u8]) -> &'a [Simd<u8, LANES>] {
+        let len = slice.len() / std::mem::size_of::<Simd<u8, LANES>>();
+        unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const Simd<u8, LANES>, len) }
+    }
+
     unsafe fn from_unchecked_slice(slice: &'a [u64]) -> Self {
         unsafe {
             let slice = try_cast_slice::<u64, u8>(slice).unwrap_unchecked();
@@ -462,8 +468,9 @@ impl<'a> DotVbyteFixedu8<'a> {
                 try_cast_slice(slice.get_unchecked(bytes_start..values_start)).unwrap_unchecked();
 
             let values_end = slice.len();
-            let values =
-                try_cast_slice(slice.get_unchecked(values_start..values_end)).unwrap_unchecked();
+            let values = Self::cast_simd_slice::<N>(
+                slice.get_unchecked(values_start..values_end),
+            );
 
             Self {
                 values,
@@ -673,10 +680,7 @@ const fn generate_mask_u16(i: u8) -> Simd<u8, { N * 2 }> {
     Simd::from_array(mask)
 }
 
-fn simd_prefix_sum<const N: usize>(mut n: Simd<u16, N>) -> Simd<u16, N>
-where
-    std::simd::LaneCount<N>: std::simd::SupportedLaneCount,
-{
+fn simd_prefix_sum<const N: usize>(mut n: Simd<u16, N>) -> Simd<u16, N> {
     // I'd use a for loop, but the const argument prevents doing that...
     // God I wish there was an easier way to do this
     if N > 1 {
@@ -692,10 +696,7 @@ where
     n
 }
 
-fn simd_fixedu8_to_f32<const N: usize>(f: Simd<u8, N>) -> Simd<f32, N>
-where
-    std::simd::LaneCount<N>: std::simd::SupportedLaneCount,
-{
+fn simd_fixedu8_to_f32<const N: usize>(f: Simd<u8, N>) -> Simd<f32, N> {
     let converted_f32 = f.cast();
     // This is *so* hardcoded
     let mult = Simd::splat(1.0 / (1 << crate::FixedU8Q::FRAC_NBITS) as f32);
