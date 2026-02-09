@@ -131,3 +131,5 @@ pub trait IndexSerializer: Sized {
             .0
     }
 }
+
+impl<T> IndexSerializer for T where T: Dataset {}
