@@ -1,5 +1,7 @@
 use std::marker::PhantomData;
 
+use serde::{Deserialize, Serialize};
+
 use crate::PlainDenseDataset;
 use crate::PlainDenseQuantizer;
 use crate::SpaceUsage;
@@ -42,14 +44,16 @@ impl ProductQuantizerDistance for DotProduct {
 /// Number of centroids per subspace (always 256 = 2^8)
 const KSUB: usize = 256;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(bound(serialize = "", deserialize = ""))]
 pub struct ProductQuantizer<const M: usize, D>
 where
     D: ProductQuantizerDistance,
 {
     d: usize,
     dsub: usize,
-    centroids: [PlainDenseDataset<f32, SquaredEuclideanDistance>; M],
+    centroids: Box<[PlainDenseDataset<f32, SquaredEuclideanDistance>]>,
+    #[serde(skip)]
     _distance: PhantomData<D>,
 }
 
@@ -63,7 +67,7 @@ where
         assert_eq!(M % 4, 0, "M ({}) is not divisible by 4", M);
         assert_eq!(d % M, 0, "d ({}) is not divisible by M ({})", d, M);
         let dsub = d / M;
-        let centroids = Self::train_centroids(training_data, dsub);
+        let centroids = Self::train_centroids(training_data, dsub).into();
         Self {
             d,
             dsub,
@@ -75,13 +79,11 @@ where
     fn train_centroids(
         training_data: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
         dsub: usize,
-    ) -> [PlainDenseDataset<f32, SquaredEuclideanDistance>; M] {
+    ) -> Vec<PlainDenseDataset<f32, SquaredEuclideanDistance>> {
         use rayon::prelude::*;
 
         println!("Running K-Means for {} subspaces", M);
 
-        // Use par_iter().map().collect() which preserves order
-        // (unlike reduce() which combines results in arbitrary order)
         let datasets: Vec<PlainDenseDataset<f32, SquaredEuclideanDistance>> = (0..M)
             .into_par_iter()
             .map(|m| {
@@ -106,9 +108,8 @@ where
 
         println!("K-Means finished");
 
+        assert_eq!(datasets.len(), M, "Expected exactly {} datasets", M);
         datasets
-            .try_into()
-            .unwrap_or_else(|_| panic!("Expected exactly {} datasets", M))
     }
 
     fn sample_random_dataset(
@@ -154,12 +155,12 @@ where
     #[inline]
     pub fn from_pretrained(
         d: usize,
-        centroids: [PlainDenseDataset<f32, SquaredEuclideanDistance>; M],
+        centroids: Vec<PlainDenseDataset<f32, SquaredEuclideanDistance>>,
     ) -> Self {
         assert_eq!(M % 4, 0, "M ({}) is not divisible by 4", M);
         assert_eq!(d % M, 0, "d ({}) is not divisible by M ({})", d, M);
+        assert_eq!(centroids.len(), M, "Expected {} subspaces, got {}", M, centroids.len());
         let dsub = d / M;
-        // Verify each dataset has KSUB centroids of dimension dsub
         for (i, dataset) in centroids.iter().enumerate() {
             assert_eq!(
                 dataset.len(),
@@ -181,7 +182,7 @@ where
         Self {
             d,
             dsub,
-            centroids,
+            centroids: centroids.into_boxed_slice(),
             _distance: PhantomData,
         }
     }
