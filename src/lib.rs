@@ -9,6 +9,8 @@
 #![allow(non_snake_case)]
 
 use num_traits::{AsPrimitive, ToPrimitive, Zero};
+use serde::{de::DeserializeOwned, Serialize};
+use std::{fs, io::Error, path::PathBuf};
 
 /// Type aliases for quantized fixed-point types. You can change FRAC in the `fixed` crate to adjust the precision.
 /// The `FixedU8Q` type uses 6 fractional bits, while `FixedU16Q` uses 13 fractional bits.
@@ -105,3 +107,27 @@ impl<T> ValueType for T where T: Copy + Send + Sync + 'static + ToPrimitive + Pa
 /// Marker for types used as components in a dataset.
 pub trait ComponentType: AsPrimitive<usize> + Copy + Send + Sync + 'static + Ord {}
 impl<T> ComponentType for T where T: AsPrimitive<usize> + Copy + Send + Sync + 'static + Ord {}
+
+/// Support trait for index types so they can save and load with a common interface.
+pub trait IndexSerializer: Sized {
+    fn save_index(&self, filename: &str) -> Result<(), Error>
+    where
+        Self: Serialize,
+    {
+        let filepath = PathBuf::from(filename);
+        let serialized =
+            bincode::serde::encode_to_vec(self, bincode::config::standard()).unwrap();
+        fs::write(filepath, serialized)
+    }
+
+    fn load_index(filename: &str) -> Self
+    where
+        Self: DeserializeOwned,
+    {
+        let filepath = PathBuf::from(filename);
+        let serialized: Vec<u8> = fs::read(filepath).unwrap();
+        bincode::serde::decode_from_slice::<Self, _>(&serialized, bincode::config::standard())
+            .unwrap()
+            .0
+    }
+}
