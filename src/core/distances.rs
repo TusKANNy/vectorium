@@ -21,6 +21,24 @@ use std::hint::assert_unchecked;
 pub trait Distance: Ord + Copy + Send + Sync + 'static {
     /// Return the numeric distance value.
     fn distance(&self) -> f32;
+
+    /// Returns true if self satisfies a relaxed threshold comparison.
+    ///
+    /// The relaxation parameter `lambda` (typically 0.0 to 0.5) controls how much
+    /// wider the acceptance window becomes:
+    /// - For minimize metrics (Euclidean, squared distances): `self ≤ threshold × (1 + λ)`
+    /// - For maximize metrics (DotProduct, similarities): `self ≥ threshold - |threshold| × λ`
+    ///
+    /// When `lambda = 0.0`, this is equivalent to the standard `self <= threshold` (for minimize)
+    /// or `self >= threshold` (for maximize) comparison.
+    ///
+    /// # Arguments
+    /// * `threshold` - The base threshold distance to compare against
+    /// * `lambda` - Relaxation factor (must be finite and ≥ 0.0). Common values: 0.0 to 0.5
+    ///
+    /// # Returns
+    /// `true` if self is within the relaxed bound, `false` otherwise
+    fn is_within_relaxation(&self, threshold: &Self, lambda: f32) -> bool;
 }
 
 /// Squared Euclidean distance wrapper around an `f32`.
@@ -30,6 +48,14 @@ pub struct SquaredEuclideanDistance(f32);
 impl Distance for SquaredEuclideanDistance {
     fn distance(&self) -> f32 {
         self.0
+    }
+
+    #[inline]
+    fn is_within_relaxation(&self, threshold: &Self, lambda: f32) -> bool {
+        debug_assert!(lambda.is_finite(), "lambda must be finite");
+        debug_assert!(lambda >= 0.0, "lambda must be non-negative");
+        // Minimize metric: accept if candidate ≤ threshold × (1 + λ)
+        self.0 <= threshold.0 * (1.0 + lambda)
     }
 }
 
@@ -78,6 +104,14 @@ pub struct DotProduct(pub f32);
 impl Distance for DotProduct {
     fn distance(&self) -> f32 {
         self.0
+    }
+
+    #[inline]
+    fn is_within_relaxation(&self, threshold: &Self, lambda: f32) -> bool {
+        debug_assert!(lambda.is_finite(), "lambda must be finite");
+        debug_assert!(lambda >= 0.0, "lambda must be non-negative");
+        // Maximize metric: accept if candidate ≥ threshold - |threshold| × λ
+        self.0 >= threshold.0 - threshold.0.abs() * lambda
     }
 }
 
@@ -589,6 +623,140 @@ mod tests {
         let euclid = SquaredEuclideanDistance::from(16.0);
         assert_eq!(euclid.distance(), 16.0);
         assert_eq!(euclid.sqrt(), 4.0);
+    }
+
+    #[test]
+    fn euclidean_no_relaxation() {
+        let candidate = SquaredEuclideanDistance::from(100.0);
+        let threshold = SquaredEuclideanDistance::from(100.0);
+        assert!(candidate.is_within_relaxation(&threshold, 0.0));
+
+        let candidate2 = SquaredEuclideanDistance::from(101.0);
+        assert!(!candidate2.is_within_relaxation(&threshold, 0.0));
+    }
+
+    #[test]
+    fn euclidean_with_relaxation() {
+        let threshold = SquaredEuclideanDistance::from(100.0);
+
+        let candidate1 = SquaredEuclideanDistance::from(105.0);
+        assert!(candidate1.is_within_relaxation(&threshold, 0.1));
+
+        let candidate2 = SquaredEuclideanDistance::from(110.0);
+        assert!(candidate2.is_within_relaxation(&threshold, 0.1));
+
+        let candidate3 = SquaredEuclideanDistance::from(111.0);
+        assert!(!candidate3.is_within_relaxation(&threshold, 0.1));
+    }
+
+    #[test]
+    fn euclidean_boundary_cases() {
+        let threshold = SquaredEuclideanDistance::from(100.0);
+
+        let candidate = SquaredEuclideanDistance::from(120.0);
+        assert!(candidate.is_within_relaxation(&threshold, 0.2));
+
+        let candidate2 = SquaredEuclideanDistance::from(120.001);
+        assert!(!candidate2.is_within_relaxation(&threshold, 0.2));
+    }
+
+    #[test]
+    fn dotproduct_no_relaxation() {
+        let candidate = DotProduct::from(0.9);
+        let threshold = DotProduct::from(0.9);
+        assert!(candidate.is_within_relaxation(&threshold, 0.0));
+
+        let candidate2 = DotProduct::from(0.89);
+        assert!(!candidate2.is_within_relaxation(&threshold, 0.0));
+    }
+
+    #[test]
+    fn dotproduct_with_relaxation() {
+        let threshold = DotProduct::from(0.9);
+
+        let candidate1 = DotProduct::from(0.85);
+        assert!(candidate1.is_within_relaxation(&threshold, 0.1));
+
+        let candidate2 = DotProduct::from(0.81);
+        assert!(candidate2.is_within_relaxation(&threshold, 0.1));
+
+        let candidate3 = DotProduct::from(0.80);
+        assert!(!candidate3.is_within_relaxation(&threshold, 0.1));
+    }
+
+    #[test]
+    fn dotproduct_boundary_cases() {
+        let threshold = DotProduct::from(1.0);
+
+        let candidate = DotProduct::from(0.8);
+        assert!(candidate.is_within_relaxation(&threshold, 0.2));
+
+        let candidate2 = DotProduct::from(0.799);
+        assert!(!candidate2.is_within_relaxation(&threshold, 0.2));
+    }
+
+    #[test]
+    fn dotproduct_negative_threshold_relaxation() {
+        let threshold = DotProduct::from(-0.5);
+        let candidate = DotProduct::from(-0.55);
+        assert!(candidate.is_within_relaxation(&threshold, 0.2));
+
+        let candidate2 = DotProduct::from(-0.65);
+        assert!(!candidate2.is_within_relaxation(&threshold, 0.2));
+    }
+
+    #[test]
+    fn zero_distance_euclidean() {
+        let candidate = SquaredEuclideanDistance::from(0.0);
+        let threshold = SquaredEuclideanDistance::from(100.0);
+        assert!(candidate.is_within_relaxation(&threshold, 0.0));
+        assert!(candidate.is_within_relaxation(&threshold, 0.5));
+    }
+
+    #[test]
+    fn large_lambda() {
+        let threshold = SquaredEuclideanDistance::from(100.0);
+        let candidate = SquaredEuclideanDistance::from(150.0);
+        assert!(candidate.is_within_relaxation(&threshold, 1.0));
+
+        let candidate2 = SquaredEuclideanDistance::from(200.0);
+        assert!(candidate2.is_within_relaxation(&threshold, 1.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "lambda must be non-negative")]
+    #[cfg(debug_assertions)]
+    fn negative_lambda_euclidean() {
+        let candidate = SquaredEuclideanDistance::from(100.0);
+        let threshold = SquaredEuclideanDistance::from(100.0);
+        candidate.is_within_relaxation(&threshold, -0.1);
+    }
+
+    #[test]
+    #[should_panic(expected = "lambda must be non-negative")]
+    #[cfg(debug_assertions)]
+    fn negative_lambda_dotproduct() {
+        let candidate = DotProduct::from(0.9);
+        let threshold = DotProduct::from(0.9);
+        candidate.is_within_relaxation(&threshold, -0.1);
+    }
+
+    #[test]
+    #[should_panic(expected = "lambda must be finite")]
+    #[cfg(debug_assertions)]
+    fn non_finite_lambda_euclidean() {
+        let candidate = SquaredEuclideanDistance::from(100.0);
+        let threshold = SquaredEuclideanDistance::from(100.0);
+        candidate.is_within_relaxation(&threshold, f32::INFINITY);
+    }
+
+    #[test]
+    #[should_panic(expected = "lambda must be finite")]
+    #[cfg(debug_assertions)]
+    fn non_finite_lambda_dotproduct() {
+        let candidate = DotProduct::from(0.9);
+        let threshold = DotProduct::from(0.9);
+        candidate.is_within_relaxation(&threshold, f32::NAN);
     }
 
     #[test]
