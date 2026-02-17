@@ -48,10 +48,6 @@ name = "compute_groundtruth"
 path = "src/bin/compute_groundtruth.rs"
 required-features = ["cli"]
 
-[[bin]]
-name = "kmeans_bench"
-path = "src/bin/kmeans_bench.rs"
-required-features = ["cli"]
 
 [profile.release]
 opt-level = 3
