@@ -1,5 +1,5 @@
-use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use std::time::Instant;
 
 use vectorium::core::vector::DenseVectorView;
@@ -13,14 +13,10 @@ fn main() {
     let mut rng = StdRng::seed_from_u64(SEED);
 
     // Generate random document vector
-    let doc_data: Vec<f32> = (0..dim)
-        .map(|_| rng.gen_range(-1.0..1.0))
-        .collect();
+    let doc_data: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0..1.0)).collect();
 
     // Generate random query vector
-    let query_data: Vec<f32> = (0..dim)
-        .map(|_| rng.gen_range(-1.0..1.0))
-        .collect();
+    let query_data: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0..1.0)).collect();
 
     let encoder = PlainDenseQuantizerDotProduct::<f32>::new(dim);
 

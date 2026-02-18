@@ -136,8 +136,8 @@ unsafe fn avx2_pshufb(bytes: Simd<u8, 32>, idxs: Simd<u8, 32>) -> Simd<u8, 32> {
     use core::arch::x86;
     #[cfg(target_arch = "x86_64")]
     use core::arch::x86_64 as x86;
-    use std::simd::cmp::SimdPartialOrd;
     use std::simd::Select;
+    use std::simd::cmp::SimdPartialOrd;
     use x86::_mm256_permute2x128_si256 as avx2_cross_shuffle;
     use x86::_mm256_shuffle_epi8 as avx2_half_pshufb;
     let mid = Simd::splat(16u8);

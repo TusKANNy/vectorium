@@ -9,7 +9,9 @@ use std::marker::PhantomData;
 
 use crate::core::distances::{Distance, DotProduct, dot_product_dense_unchecked};
 use crate::core::vector::DenseVectorView;
-use crate::core::vector_encoder::{DenseVectorOwned, QueryEvaluator, VectorEncoder};
+use crate::core::vector_encoder::{
+    DenseVectorOwned, MultiVecEncoder, QueryEvaluator, VectorEncoder,
+};
 use crate::{Float, FromF32, SpaceUsage, ValueType};
 
 /// A MaxSim encoder parameterized by input/output value types.
@@ -50,7 +52,10 @@ pub struct ScalarMultiVecQueryEvaluator<'e, In, Out> {
 
 impl<'e, In, Out> ScalarMultiVecQueryEvaluator<'e, In, Out> {
     #[inline]
-    pub fn new(encoder: &'e ScalarMultiVecQuantizer<In, Out>, query: DenseVectorOwned<f32>) -> Self {
+    pub fn new(
+        encoder: &'e ScalarMultiVecQuantizer<In, Out>,
+        query: DenseVectorOwned<f32>,
+    ) -> Self {
         Self { encoder, query }
     }
 }
@@ -131,6 +136,31 @@ where
 
     fn output_dim(&self) -> usize {
         self.token_dim
+    }
+}
+
+impl<In, Out> MultiVecEncoder for ScalarMultiVecQuantizer<In, Out>
+where
+    In: ValueType + Float,
+    Out: ValueType + Float + FromF32,
+{
+    type InputValueType = In;
+    type OutputValueType = Out;
+
+    #[inline]
+    fn push_encoded<'a, OutputContainer>(
+        &self,
+        input: DenseVectorView<'a, In>,
+        output: &mut OutputContainer,
+    ) where
+        OutputContainer: Extend<Out>,
+    {
+        output.extend(
+            input
+                .values()
+                .iter()
+                .map(|&v| Out::from_f32_saturating(v.to_f32().expect("value to f32"))),
+        );
     }
 }
 

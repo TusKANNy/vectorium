@@ -9,7 +9,7 @@
 #![allow(non_snake_case)]
 
 use num_traits::{AsPrimitive, ToPrimitive, Zero};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
@@ -47,8 +47,8 @@ pub use core::vector::{
 pub use core::distances::{Distance, DotProduct, SquaredEuclideanDistance};
 
 pub use core::vector_encoder::{
-    DenseVectorEncoder, PackedSparseVectorEncoder, QueryEvaluator, SparseVectorEncoder,
-    VectorEncoder,
+    DenseVectorEncoder, MultiVecEncoder, PackedSparseVectorEncoder, QueryEvaluator,
+    SparseVectorEncoder, VectorEncoder,
 };
 
 pub use clustering::{KMeans, KMeansBuilder};
@@ -68,11 +68,14 @@ pub use encoders::sparse_scalar::{
     ScalarSparseQuantizerDotProduct, ScalarSparseQueryEvaluator, ScalarSparseSupportedDistance,
 };
 
-pub use core::dataset::{Dataset, DenseData, DatasetGrowable, SparseData, VectorId};
+pub use core::dataset::{Dataset, DatasetGrowable, DenseData, SparseData, VectorId};
 pub use core::storage::{
     GrowableSparseStorage, ImmutableSparseStorage, SparseStorage, SparseStorageMut,
 };
 pub use datasets::dense_dataset::{DenseDataset, DenseDatasetGeneric, DenseDatasetGrowable};
+pub use datasets::multivec_dataset::{
+    MultiVecData, MultiVectorDataset, MultiVectorDatasetGeneric, MultiVectorDatasetGrowable,
+};
 pub use datasets::packed_dataset::{
     PackedSparseDataset, PackedSparseDatasetGeneric, PackedSparseDatasetGrowable,
 };
@@ -171,10 +174,10 @@ impl<T> IndexSerializer for T where T: Dataset {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encoders::dense_scalar::ScalarDenseQuantizer;
-    use crate::distances::DotProduct;
     use crate::core::vector::DenseVectorView;
     use crate::datasets::dense_dataset::DenseDatasetGrowable;
+    use crate::distances::DotProduct;
+    use crate::encoders::dense_scalar::ScalarDenseQuantizer;
     use crate::{DatasetGrowable, DenseDataset};
     use std::time::{SystemTime, UNIX_EPOCH};
 

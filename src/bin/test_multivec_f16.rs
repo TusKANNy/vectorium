@@ -1,6 +1,6 @@
 use half::f16;
-use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use std::time::Instant;
 
 use vectorium::core::vector::DenseVectorView;

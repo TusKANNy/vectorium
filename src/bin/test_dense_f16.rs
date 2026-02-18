@@ -1,10 +1,10 @@
 use half::f16;
-use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use std::time::Instant;
 
 use vectorium::core::vector::DenseVectorView;
-use vectorium::{DotProduct, ScalarDenseQuantizer, QueryEvaluator, VectorEncoder};
+use vectorium::{DotProduct, QueryEvaluator, ScalarDenseQuantizer, VectorEncoder};
 
 const SEED: u64 = 777;
 
@@ -14,15 +14,11 @@ fn main() {
     let mut rng = StdRng::seed_from_u64(SEED);
 
     // Generate random document vector in f16
-    let doc_data_f32: Vec<f32> = (0..dim)
-        .map(|_| rng.gen_range(-1.0..1.0))
-        .collect();
+    let doc_data_f32: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0..1.0)).collect();
     let doc_data: Vec<f16> = doc_data_f32.iter().map(|&x| f16::from_f32(x)).collect();
 
     // Generate random query vector in f32
-    let query_data: Vec<f32> = (0..dim)
-        .map(|_| rng.gen_range(-1.0..1.0))
-        .collect();
+    let query_data: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0..1.0)).collect();
 
     // Encoder: f32 query -> f16 documents
     let encoder = ScalarDenseQuantizer::<f32, f16, DotProduct>::new(dim);

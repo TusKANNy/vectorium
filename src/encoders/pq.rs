@@ -159,7 +159,13 @@ where
     ) -> Self {
         assert_eq!(M % 4, 0, "M ({}) is not divisible by 4", M);
         assert_eq!(d % M, 0, "d ({}) is not divisible by M ({})", d, M);
-        assert_eq!(centroids.len(), M, "Expected {} subspaces, got {}", M, centroids.len());
+        assert_eq!(
+            centroids.len(),
+            M,
+            "Expected {} subspaces, got {}",
+            M,
+            centroids.len()
+        );
         let dsub = d / M;
         for (i, dataset) in centroids.iter().enumerate() {
             assert_eq!(
@@ -386,7 +392,6 @@ where
     D: ProductQuantizerDistance,
 {
     fn new(encoder: &'a ProductQuantizer<M, D>, query: DenseVectorView<'_, f32>) -> Self {
-
         let table = D::compute_query_distance_table(encoder, query);
         Self {
             encoder,
@@ -461,7 +466,8 @@ where
         let euclidean_dataset: PlainDenseDataset<f32, SquaredEuclideanDistance> =
             dataset.clone().into();
 
-        let sample_size = ProductQuantizer::<M, D>::compute_training_sample_size(euclidean_dataset.len());
+        let sample_size =
+            ProductQuantizer::<M, D>::compute_training_sample_size(euclidean_dataset.len());
 
         let training_dataset = match sample_size {
             Some(size) => {
