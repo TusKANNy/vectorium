@@ -40,8 +40,8 @@ pub use utils::numeric_markers::{Float, FromF32};
 pub use utils::space_usage::SpaceUsage;
 
 pub use core::vector::{
-    DenseVectorOwned, DenseVectorView, PackedVectorOwned, PackedVectorView, SparseVectorOwned,
-    SparseVectorView, VectorView,
+    DenseMultiVectorOwned, DenseMultiVectorView, DenseVectorOwned, DenseVectorView,
+    PackedVectorOwned, PackedVectorView, SparseVectorOwned, SparseVectorView, VectorView,
 };
 
 pub use core::distances::{Distance, DotProduct, SquaredEuclideanDistance};

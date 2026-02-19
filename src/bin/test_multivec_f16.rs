@@ -3,7 +3,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::time::Instant;
 
-use vectorium::core::vector::DenseVectorView;
+use vectorium::core::vector::DenseMultiVectorView;
 use vectorium::{QueryEvaluator, ScalarMultiVecQuantizer, VectorEncoder};
 
 const SEED: u64 = 777;
@@ -15,21 +15,21 @@ fn main() {
 
     let mut rng = StdRng::seed_from_u64(SEED);
 
-    // Generate random document multivector: 200 tokens x 128 dims
+    // Generate random document multivector: 200 tokens x 128 dims (stored as f16)
     let doc_data_f32: Vec<f32> = (0..doc_tokens * token_dim)
         .map(|_| rng.gen_range(-1.0..1.0))
         .collect();
     let doc_data: Vec<f16> = doc_data_f32.iter().map(|&x| f16::from_f32(x)).collect();
 
-    // Generate random query multivector: 32 tokens x 128 dims
+    // Generate random query multivector: 32 tokens x 128 dims (always f32)
     let query_data: Vec<f32> = (0..query_tokens * token_dim)
         .map(|_| rng.gen_range(-1.0..1.0))
         .collect();
 
     let encoder = ScalarMultiVecQuantizer::<f32, f16>::new(token_dim);
 
-    let query = DenseVectorView::new(&query_data);
-    let doc = DenseVectorView::new(&doc_data);
+    let query = DenseMultiVectorView::new(&query_data, token_dim);
+    let doc = DenseMultiVectorView::new(&doc_data, token_dim);
 
     // Warmup
     let evaluator = encoder.query_evaluator(query);

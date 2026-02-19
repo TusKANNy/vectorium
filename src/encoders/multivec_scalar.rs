@@ -1,23 +1,22 @@
 //! MaxSim encoder for multivector late-interaction scoring.
 //!
 //! Each document and query is a variable-length collection of dense token vectors
-//! stored flat as `token_dim * num_tokens` values. The encoder computes the MaxSim
-//! distance: for each query token, find the maximum dot product with any document
-//! token, then sum across all query tokens.
+//! represented as a [`DenseMultiVectorView`] with an explicit `dim` and `num_vecs`.
+//! The encoder computes the MaxSim distance: for each query token, find the maximum
+//! dot product with any document token, then sum across all query tokens.
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
 use crate::core::distances::{Distance, DotProduct, dot_product_dense_unchecked};
-use crate::core::vector::DenseVectorView;
-use crate::core::vector_encoder::{
-    DenseVectorOwned, MultiVecEncoder, QueryEvaluator, VectorEncoder,
-};
+use crate::core::vector::{DenseMultiVectorOwned, DenseMultiVectorView};
+use crate::core::vector_encoder::{MultiVecEncoder, QueryEvaluator, VectorEncoder};
 use crate::{Float, FromF32, SpaceUsage, ValueType};
 
 /// A MaxSim encoder parameterized by input/output value types.
 ///
 /// `token_dim` is the dimensionality of each individual token vector.
-/// Input multivectors are flat `DenseVectorView`s of length `token_dim * num_tokens`.
+/// Input and encoded multivectors are [`DenseMultiVectorView`]s whose `dim` must equal
+/// `token_dim`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScalarMultiVecQuantizer<In, Out> {
     token_dim: usize,
@@ -47,20 +46,20 @@ impl<In, Out> ScalarMultiVecQuantizer<In, Out> {
 #[derive(Debug, Clone)]
 pub struct ScalarMultiVecQueryEvaluator<'e, In, Out> {
     encoder: &'e ScalarMultiVecQuantizer<In, Out>,
-    query: DenseVectorOwned<f32>,
+    query: DenseMultiVectorOwned<f32>,
 }
 
 impl<'e, In, Out> ScalarMultiVecQueryEvaluator<'e, In, Out> {
     #[inline]
     pub fn new(
         encoder: &'e ScalarMultiVecQuantizer<In, Out>,
-        query: DenseVectorOwned<f32>,
+        query: DenseMultiVectorOwned<f32>,
     ) -> Self {
         Self { encoder, query }
     }
 }
 
-impl<'e, 'v, In, Out> QueryEvaluator<DenseVectorView<'v, Out>>
+impl<'e, 'v, In, Out> QueryEvaluator<DenseMultiVectorView<'v, Out>>
     for ScalarMultiVecQueryEvaluator<'e, In, Out>
 where
     In: ValueType,
@@ -70,22 +69,15 @@ where
 
     /// Compute MaxSim: sum over query tokens of max(dot(q_i, d_j) for all doc tokens j).
     #[inline]
-    fn compute_distance(&self, vector: DenseVectorView<'v, Out>) -> DotProduct {
-        let token_dim = self.encoder.token_dim;
-
+    fn compute_distance(&self, vector: DenseMultiVectorView<'v, Out>) -> DotProduct {
+        let _ = self.encoder;
         let total: f32 = self
             .query
-            .values()
-            .chunks_exact(token_dim)
+            .iter_vectors()
             .map(|q_token| {
-                let q_view = DenseVectorView::new(q_token);
                 vector
-                    .values()
-                    .chunks_exact(token_dim)
-                    .map(|d_token| {
-                        let d_view = DenseVectorView::new(d_token);
-                        unsafe { dot_product_dense_unchecked(q_view, d_view) }.distance()
-                    })
+                    .iter_vectors()
+                    .map(|d_token| unsafe { dot_product_dense_unchecked(q_token, d_token) }.distance())
                     .fold(f32::NEG_INFINITY, f32::max)
             })
             .sum();
@@ -100,9 +92,9 @@ where
     Out: ValueType + Float + FromF32,
 {
     type Distance = DotProduct;
-    type InputVector<'a> = DenseVectorView<'a, In>;
-    type QueryVector<'q> = DenseVectorView<'q, f32>;
-    type EncodedVector<'a> = DenseVectorView<'a, Out>;
+    type InputVector<'a> = DenseMultiVectorView<'a, In>;
+    type QueryVector<'q> = DenseMultiVectorView<'q, f32>;
+    type EncodedVector<'a> = DenseMultiVectorView<'a, Out>;
 
     type Evaluator<'e>
         = ScalarMultiVecQueryEvaluator<'e, In, Out>
@@ -111,11 +103,12 @@ where
 
     #[inline]
     fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
-        assert!(
-            query.len() % self.token_dim == 0,
-            "Query length must be a multiple of token_dim ({}), got {}",
+        assert_eq!(
+            query.dim(),
             self.token_dim,
-            query.len()
+            "Query dim ({}) must match token_dim ({})",
+            query.dim(),
+            self.token_dim
         );
         ScalarMultiVecQueryEvaluator::new(self, query.to_owned())
     }
@@ -127,7 +120,7 @@ where
             .iter()
             .map(|&v| v.to_f32().expect("Failed to convert value to f32"))
             .collect();
-        ScalarMultiVecQueryEvaluator::new(self, DenseVectorOwned::new(decoded))
+        ScalarMultiVecQueryEvaluator::new(self, DenseMultiVectorOwned::new(decoded, self.token_dim))
     }
 
     fn input_dim(&self) -> usize {
@@ -150,7 +143,7 @@ where
     #[inline]
     fn push_encoded<'a, OutputContainer>(
         &self,
-        input: DenseVectorView<'a, In>,
+        input: DenseMultiVectorView<'a, In>,
         output: &mut OutputContainer,
     ) where
         OutputContainer: Extend<Out>,
@@ -177,17 +170,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::vector::DenseVectorView;
+    use crate::core::vector::DenseMultiVectorView;
 
     #[test]
     fn maxsim_single_token_equals_dot_product() {
         let encoder = PlainMultiVecQuantizer::<f32>::new(3);
 
-        let query = DenseVectorView::new(&[1.0f32, 2.0, 3.0]);
+        // 1 query token of dim 3
+        let query = DenseMultiVectorView::new(&[1.0f32, 2.0, 3.0], 3);
         let evaluator = encoder.query_evaluator(query);
 
-        let doc = DenseVectorView::new(&[4.0f32, 5.0, 6.0]);
-        // dot = 1*4 + 2*5 + 3*6 = 32
+        // 1 doc token of dim 3: dot = 1*4 + 2*5 + 3*6 = 32
+        let doc = DenseMultiVectorView::new(&[4.0f32, 5.0, 6.0], 3);
         assert_eq!(evaluator.compute_distance(doc), DotProduct::from(32.0));
     }
 
@@ -196,14 +190,13 @@ mod tests {
         let encoder = PlainMultiVecQuantizer::<f32>::new(2);
 
         // 2 query tokens: [1, 0] and [0, 1]
-        let query = DenseVectorView::new(&[1.0f32, 0.0, 0.0, 1.0]);
+        let query = DenseMultiVectorView::new(&[1.0f32, 0.0, 0.0, 1.0], 2);
         let evaluator = encoder.query_evaluator(query);
 
         // 1 doc token: [3, 4]
-        let doc = DenseVectorView::new(&[3.0f32, 4.0]);
         // q0 max = dot([1,0], [3,4]) = 3
-        // q1 max = dot([0,1], [3,4]) = 4
-        // MaxSim = 3 + 4 = 7
+        // q1 max = dot([0,1], [3,4]) = 4  →  MaxSim = 7
+        let doc = DenseMultiVectorView::new(&[3.0f32, 4.0], 2);
         assert_eq!(evaluator.compute_distance(doc), DotProduct::from(7.0));
     }
 
@@ -212,14 +205,12 @@ mod tests {
         let encoder = PlainMultiVecQuantizer::<f32>::new(2);
 
         // 2 query tokens: [1, 0] and [0, 1]
-        let query = DenseVectorView::new(&[1.0f32, 0.0, 0.0, 1.0]);
+        let query = DenseMultiVectorView::new(&[1.0f32, 0.0, 0.0, 1.0], 2);
         let evaluator = encoder.query_evaluator(query);
 
         // 2 doc tokens: [3, 0] and [0, 5]
-        let doc = DenseVectorView::new(&[3.0f32, 0.0, 0.0, 5.0]);
-        // q0: max(dot([1,0],[3,0]), dot([1,0],[0,5])) = max(3, 0) = 3
-        // q1: max(dot([0,1],[3,0]), dot([0,1],[0,5])) = max(0, 5) = 5
-        // MaxSim = 3 + 5 = 8
+        // q0: max(3, 0) = 3 ;  q1: max(0, 5) = 5  →  MaxSim = 8
+        let doc = DenseMultiVectorView::new(&[3.0f32, 0.0, 0.0, 5.0], 2);
         assert_eq!(evaluator.compute_distance(doc), DotProduct::from(8.0));
     }
 
@@ -228,18 +219,26 @@ mod tests {
         let encoder = PlainMultiVecQuantizer::<f32>::new(2);
 
         // Use a stored doc vector as query via vector_evaluator
-        let doc_as_query = DenseVectorView::new(&[1.0f32, 0.0]);
+        let doc_as_query = DenseMultiVectorView::new(&[1.0f32, 0.0], 2);
         let evaluator = encoder.vector_evaluator(doc_as_query);
 
-        let doc = DenseVectorView::new(&[2.0f32, 3.0]);
+        let doc = DenseMultiVectorView::new(&[2.0f32, 3.0], 2);
         assert_eq!(evaluator.compute_distance(doc), DotProduct::from(2.0));
     }
 
     #[test]
-    #[should_panic(expected = "Query length must be a multiple of token_dim")]
-    fn maxsim_panics_on_misaligned_query() {
+    #[should_panic(expected = "Query dim")]
+    fn maxsim_panics_on_mismatched_dim() {
         let encoder = PlainMultiVecQuantizer::<f32>::new(3);
-        let query = DenseVectorView::new(&[1.0f32, 2.0]); // length 2, not divisible by 3
+        // dim=2 doesn't match token_dim=3
+        let query = DenseMultiVectorView::new(&[1.0f32, 2.0], 2);
         encoder.query_evaluator(query);
+    }
+
+    #[test]
+    #[should_panic]
+    fn multivec_view_panics_on_misaligned_slice() {
+        // 5 values is not divisible by dim=3
+        DenseMultiVectorView::<f32>::new(&[1.0, 2.0, 3.0, 4.0, 5.0], 3);
     }
 }

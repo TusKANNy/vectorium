@@ -2,7 +2,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::time::Instant;
 
-use vectorium::core::vector::DenseVectorView;
+use vectorium::core::vector::DenseMultiVectorView;
 use vectorium::{PlainMultiVecQuantizer, QueryEvaluator, VectorEncoder};
 
 const SEED: u64 = 777;
@@ -26,8 +26,8 @@ fn main() {
 
     let encoder = PlainMultiVecQuantizer::<f32>::new(token_dim);
 
-    let query = DenseVectorView::new(&query_data);
-    let doc = DenseVectorView::new(&doc_data);
+    let query = DenseMultiVectorView::new(&query_data, token_dim);
+    let doc = DenseMultiVectorView::new(&doc_data, token_dim);
 
     // Warmup
     let evaluator = encoder.query_evaluator(query);

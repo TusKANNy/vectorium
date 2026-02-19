@@ -2,7 +2,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::time::Instant;
 
-use vectorium::core::vector::DenseVectorView;
+use vectorium::core::vector::DenseMultiVectorView;
 use vectorium::{Dataset, DatasetGrowable, MultiVectorDatasetGrowable, PlainMultiVecQuantizer};
 
 const SEED: u64 = 42;
@@ -48,12 +48,12 @@ fn main() {
     let mut offset = 0;
     for &n_tokens in &doc_lengths {
         let end = offset + n_tokens * TOKEN_DIM;
-        dataset.push(DenseVectorView::new(&flat_data[offset..end]));
+        dataset.push(DenseMultiVectorView::new(&flat_data[offset..end], TOKEN_DIM));
         offset = end;
     }
     let build_elapsed = build_start.elapsed();
 
-    let dataset = dataset; // drop mutability
+    let dataset = dataset;
 
     // --- Generate queries ---
     let query_len = QUERY_TOKENS * TOKEN_DIM;
@@ -67,7 +67,7 @@ fn main() {
 
     // --- Warmup: run each query once ---
     for q in &queries {
-        std::hint::black_box(dataset.search(DenseVectorView::new(q), TOP_K));
+        std::hint::black_box(dataset.search(DenseMultiVectorView::new(q, TOKEN_DIM), TOP_K));
     }
 
     // --- Timed search: 100 iterations per query ---
@@ -76,7 +76,7 @@ fn main() {
     let mut total_query_ns: u64 = 0;
 
     for q in &queries {
-        let query_view = DenseVectorView::new(q.as_slice());
+        let query_view = DenseMultiVectorView::new(q.as_slice(), TOKEN_DIM);
         let start = Instant::now();
         let mut last_results = Vec::new();
         for _ in 0..iterations {
@@ -89,15 +89,8 @@ fn main() {
     let avg_query_us = total_query_ns as f64 / (N_QUERIES as f64 * iterations as f64) / 1_000.0;
 
     // --- Plot: one row per query, columns = top-k ranked results ---
-    //
-    // Each cell shows the document id and raw score. The score from DotProduct
-    // is the raw f32 sum-of-maxsim; higher is better (DotProduct orders by
-    // descending value so rank-1 is the best match).
+    let col_width = 18;
 
-    // Determine column widths for alignment
-    let col_width = 18; // "docXXX (±X.XXXX)" fits in 18 chars
-
-    // Header
     print!("{:<6}", "Query");
     for rank in 1..=TOP_K {
         print!(" | {:<col_width$}", format!("Rank {rank}"), col_width = col_width);

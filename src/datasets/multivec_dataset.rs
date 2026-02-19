@@ -2,12 +2,14 @@
 //!
 //! Documents are stored flat in a single buffer; an offsets array records where
 //! each document starts and ends, analogous to a CSR sparse-matrix row pointer array.
+//! Each slot in the dataset is a [`DenseMultiVectorView`] whose `dim` equals the
+//! encoder's `token_dim` and whose `num_vecs` is derived from the stored flat length.
 
 use serde::{Deserialize, Serialize};
 
 use crate::SpaceUsage;
 use crate::core::sealed;
-use crate::core::vector::DenseVectorView;
+use crate::core::vector::DenseMultiVectorView;
 use crate::core::vector_encoder::MultiVecEncoder;
 use crate::utils::prefetch_read_slice;
 use crate::{Dataset, DatasetGrowable, VectorId};
@@ -86,17 +88,18 @@ where
         self.offsets.as_ref()
     }
 
-    /// Parallel iterator over documents as `EncodedVector` views.
+    /// Parallel iterator over documents as [`DenseMultiVectorView`]s.
     pub fn par_iter(&self) -> impl ParallelIterator<Item = E::EncodedVector<'_>> + '_
     where
         for<'a> E::EncodedVector<'a>: Send,
     {
         let data = self.data.as_ref();
+        let dim = self.encoder.output_dim();
         self.offsets.as_ref().par_windows(2).map(move |window| {
             let &[start, end] = window else {
                 unsafe { std::hint::unreachable_unchecked() }
             };
-            DenseVectorView::new(&data[start..end])
+            DenseMultiVectorView::new(&data[start..end], dim)
         })
     }
 }
@@ -141,11 +144,11 @@ where
 
     fn get(&self, index: VectorId) -> E::EncodedVector<'_> {
         let range = self.range_from_id(index);
-        DenseVectorView::new(&self.data.as_ref()[range])
+        DenseMultiVectorView::new(&self.data.as_ref()[range], self.encoder.output_dim())
     }
 
     fn get_with_range(&self, range: std::ops::Range<usize>) -> E::EncodedVector<'_> {
-        DenseVectorView::new(&self.data.as_ref()[range])
+        DenseMultiVectorView::new(&self.data.as_ref()[range], self.encoder.output_dim())
     }
 
     fn prefetch_with_range(&self, range: std::ops::Range<usize>) {
@@ -154,10 +157,11 @@ where
 
     fn iter(&self) -> impl Iterator<Item = E::EncodedVector<'_>> {
         let data = self.data.as_ref();
+        let dim = self.encoder.output_dim();
         self.offsets
             .as_ref()
             .windows(2)
-            .map(move |w| DenseVectorView::new(&data[w[0]..w[1]]))
+            .map(move |w| DenseMultiVectorView::new(&data[w[0]..w[1]], dim))
     }
 }
 
@@ -184,11 +188,12 @@ where
     }
 
     fn push<'a>(&mut self, vec: E::InputVector<'a>) {
-        assert!(
-            vec.len() % self.encoder.input_dim() == 0,
-            "Input length must be a multiple of token_dim ({}), got {}",
+        assert_eq!(
+            vec.dim(),
             self.encoder.input_dim(),
-            vec.len(),
+            "Input dim ({}) must match encoder token_dim ({})",
+            vec.dim(),
+            self.encoder.input_dim(),
         );
         self.encoder.push_encoded(vec, &mut self.data);
         self.offsets.push(self.data.len());
@@ -257,7 +262,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::vector::DenseVectorView;
+    use crate::core::vector::DenseMultiVectorView;
     use crate::encoders::multivec_scalar::PlainMultiVecQuantizer;
 
     #[test]
@@ -265,13 +270,15 @@ mod tests {
         let encoder = PlainMultiVecQuantizer::<f32>::new(2);
         let mut dataset = MultiVectorDatasetGrowable::new(encoder);
 
-        dataset.push(DenseVectorView::new(&[1.0f32, 2.0, 3.0, 4.0])); // 2 tokens
-        dataset.push(DenseVectorView::new(&[5.0f32, 6.0, 7.0, 8.0, 9.0, 10.0])); // 3 tokens
+        dataset.push(DenseMultiVectorView::new(&[1.0f32, 2.0, 3.0, 4.0], 2)); // 2 tokens
+        dataset.push(DenseMultiVectorView::new(&[5.0f32, 6.0, 7.0, 8.0, 9.0, 10.0], 2)); // 3 tokens
 
         assert_eq!(dataset.len(), 2);
         assert_eq!(dataset.nnz(), 10);
         assert_eq!(dataset.get(0).values(), &[1.0f32, 2.0, 3.0, 4.0]);
+        assert_eq!(dataset.get(0).num_vecs(), 2);
         assert_eq!(dataset.get(1).values(), &[5.0f32, 6.0, 7.0, 8.0, 9.0, 10.0]);
+        assert_eq!(dataset.get(1).num_vecs(), 3);
     }
 
     #[test]
@@ -279,8 +286,8 @@ mod tests {
         let encoder = PlainMultiVecQuantizer::<f32>::new(2);
         let mut dataset = MultiVectorDatasetGrowable::new(encoder);
 
-        dataset.push(DenseVectorView::new(&[1.0f32, 2.0, 3.0, 4.0]));
-        dataset.push(DenseVectorView::new(&[5.0f32, 6.0, 7.0, 8.0]));
+        dataset.push(DenseMultiVectorView::new(&[1.0f32, 2.0, 3.0, 4.0], 2));
+        dataset.push(DenseMultiVectorView::new(&[5.0f32, 6.0, 7.0, 8.0], 2));
 
         assert_eq!(dataset.range_from_id(0), 0..4);
         assert_eq!(dataset.range_from_id(1), 4..8);
@@ -293,8 +300,8 @@ mod tests {
         let encoder = PlainMultiVecQuantizer::<f32>::new(2);
         let mut dataset = MultiVectorDatasetGrowable::new(encoder);
 
-        dataset.push(DenseVectorView::new(&[1.0f32, 2.0, 3.0, 4.0]));
-        dataset.push(DenseVectorView::new(&[5.0f32, 6.0]));
+        dataset.push(DenseMultiVectorView::new(&[1.0f32, 2.0, 3.0, 4.0], 2));
+        dataset.push(DenseMultiVectorView::new(&[5.0f32, 6.0], 2));
 
         let collected: Vec<Vec<f32>> = dataset.iter().map(|v| v.values().to_vec()).collect();
         assert_eq!(
@@ -304,16 +311,27 @@ mod tests {
     }
 
     #[test]
+    fn multivec_dataset_iter_vectors() {
+        let encoder = PlainMultiVecQuantizer::<f32>::new(2);
+        let mut dataset = MultiVectorDatasetGrowable::new(encoder);
+
+        dataset.push(DenseMultiVectorView::new(&[1.0f32, 2.0, 3.0, 4.0], 2));
+
+        let tokens: Vec<Vec<f32>> = dataset.get(0).iter_vectors().map(|v| v.values().to_vec()).collect();
+        assert_eq!(tokens, vec![vec![1.0f32, 2.0], vec![3.0f32, 4.0]]);
+    }
+
+    #[test]
     fn multivec_dataset_search_works() {
         let encoder = PlainMultiVecQuantizer::<f32>::new(2);
         let mut dataset = MultiVectorDatasetGrowable::new(encoder);
 
         // doc0: [[1,0],[0,1]], doc1: [[2,0],[0,2]]
-        dataset.push(DenseVectorView::new(&[1.0f32, 0.0, 0.0, 1.0]));
-        dataset.push(DenseVectorView::new(&[2.0f32, 0.0, 0.0, 2.0]));
+        dataset.push(DenseMultiVectorView::new(&[1.0f32, 0.0, 0.0, 1.0], 2));
+        dataset.push(DenseMultiVectorView::new(&[2.0f32, 0.0, 0.0, 2.0], 2));
 
-        // query: [1,0] — MaxSim with doc0=1, doc1=2, so doc1 wins
-        let query = DenseVectorView::new(&[1.0f32, 0.0]);
+        // query: [[1,0]] — MaxSim with doc0=1, doc1=2, so doc1 wins
+        let query = DenseMultiVectorView::new(&[1.0f32, 0.0], 2);
         let results = dataset.search(query, 2);
 
         assert_eq!(results.len(), 2);
@@ -326,29 +344,32 @@ mod tests {
         let encoder = PlainMultiVecQuantizer::<f32>::new(2);
         let mut growable = MultiVectorDatasetGrowable::new(encoder);
 
-        growable.push(DenseVectorView::new(&[1.0f32, 2.0]));
-        growable.push(DenseVectorView::new(&[3.0f32, 4.0, 5.0, 6.0]));
+        growable.push(DenseMultiVectorView::new(&[1.0f32, 2.0], 2));
+        growable.push(DenseMultiVectorView::new(&[3.0f32, 4.0, 5.0, 6.0], 2));
 
         let frozen: MultiVectorDataset<_> = growable.into();
         assert_eq!(frozen.len(), 2);
         assert_eq!(frozen.nnz(), 6);
         assert_eq!(frozen.get(1).values(), &[3.0f32, 4.0, 5.0, 6.0]);
+        assert_eq!(frozen.get(1).dim(), 2);
+        assert_eq!(frozen.get(1).num_vecs(), 2);
     }
 
     #[test]
-    #[should_panic(expected = "Input length must be a multiple of token_dim")]
-    fn multivec_dataset_panics_on_misaligned_push() {
+    #[should_panic(expected = "Input dim")]
+    fn multivec_dataset_panics_on_mismatched_dim() {
         let encoder = PlainMultiVecQuantizer::<f32>::new(3);
         let mut dataset = MultiVectorDatasetGrowable::new(encoder);
-        dataset.push(DenseVectorView::new(&[1.0f32, 2.0])); // 2 % 3 != 0
+        // dim=2 doesn't match encoder token_dim=3
+        dataset.push(DenseMultiVectorView::new(&[1.0f32, 2.0, 3.0, 4.0], 2));
     }
 
     #[test]
     fn multivec_dataset_frozen_boxes_offsets() {
         let encoder = PlainMultiVecQuantizer::<f32>::new(2);
         let mut growable = MultiVectorDatasetGrowable::new(encoder);
-        growable.push(DenseVectorView::new(&[1.0f32, 0.0]));
-        growable.push(DenseVectorView::new(&[0.0f32, 1.0]));
+        growable.push(DenseMultiVectorView::new(&[1.0f32, 0.0], 2));
+        growable.push(DenseMultiVectorView::new(&[0.0f32, 1.0], 2));
 
         let frozen: MultiVectorDataset<_> = growable.into();
         // offsets is now Box<[usize]>: [0, 2, 4]

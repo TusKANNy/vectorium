@@ -3,7 +3,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::time::Instant;
 
-use vectorium::core::vector::DenseVectorView;
+use vectorium::core::vector::DenseMultiVectorView;
 use vectorium::{Dataset, DatasetGrowable, MultiVectorDatasetGrowable, ScalarMultiVecQuantizer};
 
 const SEED: u64 = 42;
@@ -49,7 +49,7 @@ fn main() {
     let mut offset = 0;
     for &n_tokens in &doc_lengths {
         let end = offset + n_tokens * TOKEN_DIM;
-        dataset.push(DenseVectorView::new(&flat_data[offset..end]));
+        dataset.push(DenseMultiVectorView::new(&flat_data[offset..end], TOKEN_DIM));
         offset = end;
     }
     let build_elapsed = build_start.elapsed();
@@ -68,7 +68,7 @@ fn main() {
 
     // --- Warmup ---
     for q in &queries {
-        std::hint::black_box(dataset.search(DenseVectorView::new(q), TOP_K));
+        std::hint::black_box(dataset.search(DenseMultiVectorView::new(q, TOKEN_DIM), TOP_K));
     }
 
     // --- Timed search: 100 iterations per query ---
@@ -77,7 +77,7 @@ fn main() {
     let mut total_query_ns: u64 = 0;
 
     for q in &queries {
-        let query_view = DenseVectorView::new(q.as_slice());
+        let query_view = DenseMultiVectorView::new(q.as_slice(), TOKEN_DIM);
         let start = Instant::now();
         let mut last_results = Vec::new();
         for _ in 0..iterations {
