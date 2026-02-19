@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
-use crate::core::distances::{Distance, DotProduct, dot_product_dense_unchecked};
+use crate::core::distances::{DotProduct, maxsim};
 use crate::core::vector::{DenseMultiVectorOwned, DenseMultiVectorView};
 use crate::core::vector_encoder::{MultiVecEncoder, QueryEvaluator, VectorEncoder};
 use crate::{Float, FromF32, SpaceUsage, ValueType};
@@ -71,18 +71,9 @@ where
     #[inline]
     fn compute_distance(&self, vector: DenseMultiVectorView<'v, Out>) -> DotProduct {
         let _ = self.encoder;
-        let total: f32 = self
-            .query
-            .iter_vectors()
-            .map(|q_token| {
-                vector
-                    .iter_vectors()
-                    .map(|d_token| unsafe { dot_product_dense_unchecked(q_token, d_token) }.distance())
-                    .fold(f32::NEG_INFINITY, f32::max)
-            })
-            .sum();
-
-        DotProduct::from(total)
+        let mut d_buf = vec![0.0f32; self.query.dim()];
+        let mut max_scores = vec![0.0f32; self.query.num_vecs()];
+        DotProduct::from(maxsim(self.query.as_view(), vector, &mut d_buf, &mut max_scores))
     }
 }
 
