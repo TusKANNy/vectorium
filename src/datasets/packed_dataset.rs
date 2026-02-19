@@ -348,6 +348,89 @@ where
 {
 }
 
+impl<E> PackedSparseDataset<E>
+where
+    E: PackedSparseVectorEncoder,
+{
+    /// Build an immutable dataset by encoding all sparse vectors in parallel.
+    ///
+    /// `flat_components`: all input components concatenated in vector order.
+    /// `flat_values`: all input values concatenated in vector order.
+    /// `vec_nnzs`: number of non-zero elements per vector.
+    ///
+    /// Each vector is encoded independently on a rayon thread pool, then the
+    /// results are assembled into a single flat buffer. This is the preferred
+    /// constructor when all input data is available upfront, as it is
+    /// significantly faster than sequential `push` for any non-trivial encoder.
+    pub fn from_flat_par(
+        encoder: E,
+        flat_components: &[E::InputComponentType],
+        flat_values: &[E::InputValueType],
+        vec_nnzs: &[usize],
+    ) -> Self
+    where
+        E: Sync,
+        E::InputComponentType: Sync,
+        E::InputValueType: Sync,
+        E::PackedDataType: Send,
+    {
+        let n_vecs = vec_nnzs.len();
+
+        assert_eq!(
+            flat_components.len(),
+            flat_values.len(),
+            "flat_components and flat_values must have same length"
+        );
+
+        // Build per-vector ranges into flat_components/flat_values (sequential, O(n_vecs)).
+        let mut input_offsets = Vec::with_capacity(n_vecs + 1);
+        input_offsets.push(0usize);
+        for &nnz in vec_nnzs {
+            input_offsets.push(input_offsets.last().unwrap() + nnz);
+        }
+
+        assert_eq!(
+            *input_offsets.last().unwrap(),
+            flat_components.len(),
+            "sum of vec_nnzs must equal flat_components length"
+        );
+
+        let total_nnz: usize = vec_nnzs.iter().sum();
+
+        // Encode each vector on a rayon thread (encoder is Sync, flat inputs are Sync).
+        let encoded_vecs: Vec<Vec<E::PackedDataType>> = input_offsets
+            .par_windows(2)
+            .map(|w| {
+                let view = crate::SparseVectorView::new(
+                    &flat_components[w[0]..w[1]],
+                    &flat_values[w[0]..w[1]],
+                );
+                let mut buf = Vec::new();
+                encoder.push_encoded(view, &mut buf);
+                buf
+            })
+            .collect();
+
+        // Assemble flat data buffer and offsets (sequential, O(total_encoded_len)).
+        let total_packed_len: usize = encoded_vecs.iter().map(|v| v.len()).sum();
+        let mut data = Vec::with_capacity(total_packed_len);
+        let mut offsets = Vec::with_capacity(n_vecs + 1);
+        offsets.push(0usize);
+
+        for vec in &encoded_vecs {
+            data.extend_from_slice(vec);
+            offsets.push(data.len());
+        }
+
+        Self {
+            offsets: offsets.into_boxed_slice(),
+            data: data.into_boxed_slice(),
+            encoder,
+            nnz: total_nnz,
+        }
+    }
+}
+
 impl<E> From<PackedSparseDatasetGrowable<E>> for PackedSparseDataset<E>
 where
     E: PackedSparseVectorEncoder,

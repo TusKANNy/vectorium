@@ -72,7 +72,7 @@ where
     fn compute_distance(&self, vector: DenseMultiVectorView<'v, Out>) -> DotProduct {
         let _ = self.encoder;
         let mut d_buf = vec![0.0f32; self.query.dim()];
-        let mut max_scores = vec![0.0f32; self.query.num_vecs()];
+        let mut max_scores = vec![f32::NEG_INFINITY; self.query.num_vecs()];
         DotProduct::from(maxsim(self.query.as_view(), vector, &mut d_buf, &mut max_scores))
     }
 }

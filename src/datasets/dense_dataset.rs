@@ -352,6 +352,57 @@ where
     }
 }
 
+impl<E> DenseDataset<E>
+where
+    E: DenseVectorEncoder,
+{
+    /// Build an immutable dataset by encoding all vectors in parallel.
+    ///
+    /// `flat_input`: all input vector values concatenated in order;
+    /// layout `[vec0_v0, ..., vec0_vD, vec1_v0, ...]`.
+    /// `n_vecs`: number of vectors.
+    ///
+    /// Each vector is encoded independently on a rayon thread pool, then the
+    /// results are assembled into a single flat buffer. This is the preferred
+    /// constructor when all input data is available upfront, as it is
+    /// significantly faster than sequential `push` for any non-trivial encoder.
+    pub fn from_flat_par(encoder: E, flat_input: &[E::InputValueType], n_vecs: usize) -> Self
+    where
+        E: Sync,
+        E::InputValueType: Sync,
+        E::OutputValueType: Send,
+    {
+        let input_dim = encoder.input_dim();
+        let output_dim = encoder.output_dim();
+
+        assert_eq!(
+            flat_input.len(),
+            n_vecs * input_dim,
+            "flat_input length must equal n_vecs * input_dim"
+        );
+
+        // Encode each vector on a rayon thread (encoder is Sync, flat_input is Sync).
+        let encoded_vecs: Vec<Vec<E::OutputValueType>> = flat_input
+            .par_chunks_exact(input_dim)
+            .map(|chunk| {
+                let view = DenseVectorView::new(chunk);
+                let mut buf = Vec::with_capacity(output_dim);
+                encoder.push_encoded(view, &mut buf);
+                buf
+            })
+            .collect();
+
+        // Assemble flat data buffer (sequential, O(total_encoded_len)).
+        let total_len = n_vecs * output_dim;
+        let mut data = Vec::with_capacity(total_len);
+        for vec in &encoded_vecs {
+            data.extend_from_slice(vec);
+        }
+
+        Self::from_raw(data.into_boxed_slice(), n_vecs, encoder)
+    }
+}
+
 impl<E> From<DenseDatasetGrowable<E>> for DenseDataset<E>
 where
     E: DenseVectorEncoder,

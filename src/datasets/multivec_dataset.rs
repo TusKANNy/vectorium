@@ -222,6 +222,65 @@ where
     }
 }
 
+impl<E> MultiVectorDataset<E>
+where
+    E: MultiVecEncoder,
+{
+    /// Build an immutable dataset by encoding all documents in parallel.
+    ///
+    /// `flat_input`: all input token values concatenated in document order;
+    /// layout `[doc0_tok0_v0, ..., doc0_tokN_vD, doc1_tok0_v0, ...]`.
+    /// `doc_token_counts`: number of tokens per document.
+    ///
+    /// Each document is encoded independently on a rayon thread pool, then the
+    /// results are assembled into a single flat buffer. This is the preferred
+    /// constructor when all input data is available upfront, as it is
+    /// significantly faster than sequential `push` for any non-trivial encoder.
+    pub fn from_flat_par(
+        encoder: E,
+        flat_input: &[E::InputValueType],
+        doc_token_counts: &[usize],
+    ) -> Self
+    where
+        E: Sync,
+        E::InputValueType: Sync,
+        E::OutputValueType: Send,
+    {
+        let token_dim = encoder.input_dim();
+        let n_docs = doc_token_counts.len();
+
+        // Build per-doc ranges into flat_input (sequential, O(n_docs)).
+        let mut input_offsets = Vec::with_capacity(n_docs + 1);
+        input_offsets.push(0usize);
+        for &count in doc_token_counts {
+            input_offsets.push(input_offsets.last().unwrap() + count * token_dim);
+        }
+
+        // Encode each document on a rayon thread (encoder is Sync, flat_input is Sync).
+        let encoded_docs: Vec<Vec<E::OutputValueType>> = input_offsets
+            .par_windows(2)
+            .map(|w| {
+                let view = DenseMultiVectorView::new(&flat_input[w[0]..w[1]], token_dim);
+                let mut buf = Vec::new();
+                encoder.push_encoded(view, &mut buf);
+                buf
+            })
+            .collect();
+
+        // Assemble flat data buffer and offsets (sequential, O(total_encoded_len)).
+        let total_len: usize = encoded_docs.iter().map(|d| d.len()).sum();
+        let mut data = Vec::with_capacity(total_len);
+        let mut offsets = Vec::with_capacity(n_docs + 1);
+        offsets.push(0usize);
+        for doc in &encoded_docs {
+            data.extend_from_slice(doc);
+            offsets.push(data.len());
+        }
+
+        Self::from_raw(data.into_boxed_slice(), offsets.into_boxed_slice(), encoder)
+    }
+}
+
 impl<E> From<MultiVectorDatasetGrowable<E>> for MultiVectorDataset<E>
 where
     E: MultiVecEncoder,

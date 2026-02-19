@@ -347,6 +347,86 @@ where
 
 // Unfortunately, Rust doesn't yet support specialization, meaning that we can't use From too generically (otherwise it fails due to reimplementing `From<T> for T`)
 
+impl<E> SparseDataset<E>
+where
+    E: SparseVectorEncoder,
+{
+    /// Build an immutable dataset by encoding all sparse vectors in parallel.
+    ///
+    /// `flat_components`: all input components concatenated in vector order.
+    /// `flat_values`: all input values concatenated in vector order.
+    /// `vec_nnzs`: number of non-zero elements per vector.
+    ///
+    /// Each vector is encoded independently on a rayon thread pool, then the
+    /// results are assembled into a single flat buffer. This is the preferred
+    /// constructor when all input data is available upfront, as it is
+    /// significantly faster than sequential `push` for any non-trivial encoder.
+    pub fn from_flat_par(
+        encoder: E,
+        flat_components: &[E::InputComponentType],
+        flat_values: &[E::InputValueType],
+        vec_nnzs: &[usize],
+    ) -> Self
+    where
+        E: Sync,
+        E::InputComponentType: Sync,
+        E::InputValueType: Sync,
+        E::OutputComponentType: Send,
+        E::OutputValueType: Send,
+    {
+        let n_vecs = vec_nnzs.len();
+
+        assert_eq!(
+            flat_components.len(),
+            flat_values.len(),
+            "flat_components and flat_values must have same length"
+        );
+
+        // Build per-vector ranges into flat_components/flat_values (sequential, O(n_vecs)).
+        let mut input_offsets = Vec::with_capacity(n_vecs + 1);
+        input_offsets.push(0usize);
+        for &nnz in vec_nnzs {
+            input_offsets.push(input_offsets.last().unwrap() + nnz);
+        }
+
+        assert_eq!(
+            *input_offsets.last().unwrap(),
+            flat_components.len(),
+            "sum of vec_nnzs must equal flat_components length"
+        );
+
+        // Encode each vector on a rayon thread (encoder is Sync, flat inputs are Sync).
+        let encoded_vecs: Vec<(Vec<E::OutputComponentType>, Vec<E::OutputValueType>)> =
+            input_offsets
+                .par_windows(2)
+                .map(|w| {
+                    let view = SparseVectorView::new(
+                        &flat_components[w[0]..w[1]],
+                        &flat_values[w[0]..w[1]],
+                    );
+                    let mut comp_buf = Vec::new();
+                    let mut val_buf = Vec::new();
+                    encoder.push_encoded(view, &mut comp_buf, &mut val_buf);
+                    (comp_buf, val_buf)
+                })
+                .collect();
+
+        // Assemble flat data buffers and offsets (sequential, O(total_encoded_len)).
+        let total_nnz: usize = encoded_vecs.iter().map(|(c, _)| c.len()).sum();
+        let mut growable_storage = GrowableSparseStorage::<E>::with_capacity(n_vecs, total_nnz);
+
+        for (comp, val) in &encoded_vecs {
+            growable_storage.components.extend_from_slice(comp);
+            growable_storage.values.extend_from_slice(val);
+            growable_storage.offsets.push(growable_storage.components.len());
+        }
+
+        let storage: ImmutableSparseStorage<E> = growable_storage.into();
+
+        Self { storage, encoder }
+    }
+}
+
 impl<E> From<SparseDatasetGrowable<E>> for SparseDataset<E>
 where
     E: SparseVectorEncoder,

@@ -59,6 +59,7 @@ pub use encoders::dense_scalar::{
     ScalarDenseQuantizerSquaredEuclidean, ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
 };
 pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Encoder, DotVByteFixedU8QueryEvaluator};
+pub use encoders::multivec_pq::{MultivecPQQueryEvaluator, MultivecProductQuantizer};
 pub use encoders::multivec_scalar::{
     PlainMultiVecQuantizer, ScalarMultiVecQuantizer, ScalarMultiVecQueryEvaluator,
 };

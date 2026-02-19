@@ -446,7 +446,8 @@ where
 /// * `query` — query multivector with `f32` token values
 /// * `doc` — document multivector with `Out`-typed token values
 /// * `d_buf` — caller-supplied scratch buffer of length `query.dim()` for the decoded doc token
-/// * `max_scores` — caller-supplied accumulator of length `query.num_vecs()`, one slot per query token
+/// * `max_scores` — caller-supplied accumulator of length `query.num_vecs()`, one slot per query token;
+///   **must be pre-initialised to `f32::NEG_INFINITY`** before calling
 ///
 /// # Panics
 /// Panics if `d_buf.len() != query.dim()`, `max_scores.len() != query.num_vecs()`, or
@@ -471,8 +472,6 @@ where
     );
     assert_eq!(query.dim(), doc.dim(), "query and doc must have the same token dimension");
 
-    max_scores.fill(f32::NEG_INFINITY);
-
     for d_token in doc.iter_vectors() {
         // Materialize this doc token to f32 once.
         for (dst, &src) in d_buf.iter_mut().zip(d_token.values()) {
@@ -483,9 +482,7 @@ where
         // Update per-query-token maxima using the decoded f32 slice.
         for (score, q_token) in max_scores.iter_mut().zip(query.iter_vectors()) {
             let dot = unsafe { dot_product_dense_unchecked(d_f32, q_token) }.distance();
-            if dot > *score {
-                *score = dot;
-            }
+            *score = score.max(dot);
         }
     }
 
