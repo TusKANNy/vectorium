@@ -432,6 +432,213 @@ where
     SquaredEuclideanDistance::from(dist)
 }
 
+/// Compute all centroid dot-product contributions for two-level PQ MaxSim scoring.
+///
+/// Computes `out[t * Q + q] = Σ_d centroid_cols[t * D + d] * query_flat_t[d * Q + q]`
+/// for all doc tokens `t` and query tokens `q`.
+///
+/// A local stack accumulator `[f32; Q]` is used for each doc token so the compiler
+/// can register-block the inner loop: `acc[0..Q]` stays in 4 AVX2 `ymm` registers
+/// across all `D` iterations, emitting one VFMADD per element per `d`.
+/// `algebraic_mul`/`algebraic_add` allow full FMA emission.
+///
+/// Memory layout:
+/// - `centroid_cols`: `[doc_n × D]` (row = doc token, col = dimension)
+/// - `query_flat_t`: `[D × Q]` (row = dimension, col = query token; **transposed**)
+/// - `out`: `[doc_n × Q]` (row = doc token, col = query token)
+///
+/// # Safety
+/// - `centroid_cols.len() >= doc_n * token_dim`
+/// - `query_flat_t.len() >= token_dim * Q`
+/// - `out.len() >= doc_n * Q`
+#[cfg_attr(not(test), inline)]
+pub unsafe fn two_level_pq_centroid_gemm<const Q: usize>(
+    centroid_cols: &[f32],
+    query_flat_t: &[f32],
+    out: &mut [f32],
+    doc_n: usize,
+    token_dim: usize,
+) {
+    let cc_ptr = centroid_cols.as_ptr();
+    let qt_ptr = query_flat_t.as_ptr();
+    let out_ptr = out.as_mut_ptr();
+
+    for t in 0..doc_n {
+        // Local stack accumulator: `[f32; Q]` lives in registers.
+        // No aliasing with `qt_d` (different allocation) → compiler register-blocks
+        // this array across all `D` iterations of the inner SAXPY.
+        let mut acc = [0f32; Q];
+        unsafe {
+            let cc_t = cc_ptr.add(t * token_dim);
+            for d in 0..token_dim {
+                let c = *cc_t.add(d);
+                let qt_d = qt_ptr.add(d * Q);
+                for q in 0..Q {
+                    // FMA: acc[q] += qt_d[q] * c
+                    acc[q] = acc[q].algebraic_add((*qt_d.add(q)).algebraic_mul(c));
+                }
+            }
+            // Write accumulated row to output.
+            let out_t = out_ptr.add(t * Q);
+            for q in 0..Q {
+                *out_t.add(q) = acc[q];
+            }
+        }
+    }
+}
+
+/// Compute the two-level PQ MaxSim score for a single encoded document.
+///
+/// For each doc token `t`:
+/// ```text
+/// acc[q] = centroid_scores[t * Q + q]                             (centroid contribution)
+///        + Σ_{m=0}^{M-1} distance_table[m * 256 * Q + code_m * Q + q]   (PQ residuals)
+/// max_scores[q] = max(max_scores[q], acc[q])
+/// ```
+/// Returns `Σ_q max_scores[q]` (MaxSim score).
+///
+/// Both `acc` and `max_scores` are stack `[f32; Q]` arrays; they stay in registers
+/// across all doc-token iterations. PQ SAXPY uses `algebraic_add` for FMA-friendly
+/// accumulation. All remote accesses use raw pointer reads to avoid bounds checks
+/// in the tight inner loops.
+///
+/// Layout requirements for `doc_bytes`:
+/// - stride = `4 + M` bytes per token
+/// - bytes `0..4` = coarse centroid id (u32 LE, not used here — centroid contribution
+///   is already baked into `centroid_scores`)
+/// - bytes `4..4+M` = PQ codes (one `u8` per subspace)
+///
+/// # Safety
+/// - `centroid_scores.len() >= doc_n * Q`
+/// - `distance_table.len() >= M * 256 * Q`
+/// - `doc_bytes.len() >= doc_n * (4 + M)`
+#[cfg_attr(not(test), inline)]
+pub unsafe fn two_level_pq_maxsim<const M: usize, const Q: usize>(
+    centroid_scores: &[f32],
+    distance_table: &[f32],
+    doc_bytes: &[u8],
+    doc_n: usize,
+) -> f32 {
+    const KSUB: usize = 256;
+    const CODE_OFFSET: usize = 4;
+    let stride = CODE_OFFSET + M;
+
+    let cs_ptr = centroid_scores.as_ptr();
+    let dt_ptr = distance_table.as_ptr();
+    let db_ptr = doc_bytes.as_ptr();
+
+    let mut max_scores = [f32::NEG_INFINITY; Q];
+
+    for t in 0..doc_n {
+        // Load centroid scores into local acc (stays in registers).
+        let mut acc = [0f32; Q];
+        unsafe {
+            let cs_t = cs_ptr.add(t * Q);
+            for q in 0..Q {
+                acc[q] = *cs_t.add(q);
+            }
+
+            // PQ residual SAXPY: M passes, each Q-wide.
+            // Inner loop `for q in 0..Q` is fully unrolled (const Q).
+            let codes_t = db_ptr.add(t * stride + CODE_OFFSET);
+            for m in 0..M {
+                let code = *codes_t.add(m) as usize;
+                let tbl = dt_ptr.add(m * KSUB * Q + code * Q);
+                for q in 0..Q {
+                    acc[q] = acc[q].algebraic_add(*tbl.add(q));
+                }
+            }
+        }
+
+        // Update per-query-token maxima.
+        for q in 0..Q {
+            if acc[q] > max_scores[q] {
+                max_scores[q] = acc[q];
+            }
+        }
+    }
+
+    // Sum maxima.
+    let mut total = 0f32;
+    for q in 0..Q {
+        total = total.algebraic_add(max_scores[q]);
+    }
+    total
+}
+
+/// Compute the two-level PQ MaxSim score with **blocked layout** (faster).
+///
+/// Similar to `two_level_pq_maxsim` but expects PQ codes in a contiguous block without
+/// interleaved coarse IDs, providing better cache locality.
+///
+/// For each doc token `t`:
+/// ```text
+/// acc[q] = centroid_scores[t * Q + q]                             (centroid contribution)
+///        + Σ_{m=0}^{M-1} distance_table[m * 256 * Q + code_m * Q + q]   (PQ residuals)
+/// max_scores[q] = max(max_scores[q], acc[q])
+/// ```
+/// Returns `Σ_q max_scores[q]` (MaxSim score).
+///
+/// Layout requirements for `pq_codes_block`:
+/// - All PQ codes in one contiguous block: `pq_codes_block[t * M + m]` = code for token t, subspace m
+/// - No stride, no interleaved data → optimal cache performance
+///
+/// # Safety
+/// - `centroid_scores.len() >= doc_n * Q`
+/// - `distance_table.len() >= M * 256 * Q`
+/// - `pq_codes_block.len() >= doc_n * M`
+#[cfg_attr(not(test), inline)]
+pub unsafe fn two_level_pq_maxsim_blocked<const M: usize, const Q: usize>(
+    centroid_scores: &[f32],
+    distance_table: &[f32],
+    pq_codes_block: &[u8],
+    doc_n: usize,
+) -> f32 {
+    const KSUB: usize = 256;
+
+    let cs_ptr = centroid_scores.as_ptr();
+    let dt_ptr = distance_table.as_ptr();
+    let codes_ptr = pq_codes_block.as_ptr();
+
+    let mut max_scores = [f32::NEG_INFINITY; Q];
+
+    for t in 0..doc_n {
+        // Load centroid scores into local acc (stays in registers).
+        let mut acc = [0f32; Q];
+        unsafe {
+            let cs_t = cs_ptr.add(t * Q);
+            for q in 0..Q {
+                acc[q] = *cs_t.add(q);
+            }
+
+            // PQ residual SAXPY: M passes, each Q-wide.
+            // Codes are at offset t * M (no stride, fully contiguous).
+            let codes_t = codes_ptr.add(t * M);
+            for m in 0..M {
+                let code = *codes_t.add(m) as usize;
+                let tbl = dt_ptr.add(m * KSUB * Q + code * Q);
+                for q in 0..Q {
+                    acc[q] = acc[q].algebraic_add(*tbl.add(q));
+                }
+            }
+        }
+
+        // Update per-query-token maxima.
+        for q in 0..Q {
+            if acc[q] > max_scores[q] {
+                max_scores[q] = acc[q];
+            }
+        }
+    }
+
+    // Sum maxima.
+    let mut total = 0f32;
+    for q in 0..Q {
+        total = total.algebraic_add(max_scores[q]);
+    }
+    total
+}
+
 /// Compute the MaxSim score between a query multivector and a document multivector.
 ///
 /// For each query token, finds the maximum dot product with any document token, then sums

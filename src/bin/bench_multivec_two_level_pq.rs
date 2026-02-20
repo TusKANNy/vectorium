@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use vectorium::{
     Dataset, DatasetGrowable, DenseMultiVectorView, DenseVectorView, MultiVectorDataset,
-    MultiVecProductQuantizer, PlainDenseDatasetGrowable, PlainDenseQuantizer,
+    MultiVecTwoLevelProductQuantizer, PlainDenseDatasetGrowable, PlainDenseQuantizer,
     SquaredEuclideanDistance,
 };
 
@@ -13,7 +13,8 @@ const N_DOCS: usize = 200;
 const MIN_TOKENS: usize = 50;
 const MAX_TOKENS: usize = 90;
 const TOKEN_DIM: usize = 128;
-const M: usize = 16; // PQ subspaces (dsub = TOKEN_DIM / M = 4)
+const M: usize = 16; // PQ subspaces (dsub = TOKEN_DIM / M = 8)
+const NCOARSE: usize = 256; // coarse centroids
 const N_QUERIES: usize = 5;
 const QUERY_TOKENS: usize = 32;
 const TOP_K: usize = 5;
@@ -28,13 +29,14 @@ fn main() {
 
     let total_tokens: usize = doc_lengths.iter().sum();
 
-    println!("Benchmark: multivector PQ dataset (f32)");
+    println!("Benchmark: multivector two-level PQ dataset (f32)");
     println!(
-        "  {} docs, token lengths [{}, {}], token_dim={}, M={} (dsub={}), total tokens={}",
+        "  {} docs, token lengths [{}, {}], token_dim={}, ncoarse={}, M={} (dsub={}), total tokens={}",
         N_DOCS,
         MIN_TOKENS,
         MAX_TOKENS,
         TOKEN_DIM,
+        NCOARSE,
         M,
         TOKEN_DIM / M,
         total_tokens
@@ -60,11 +62,11 @@ fn main() {
     }
     let training_ds = training_ds.into();
 
-    // --- Train MultiVecProductQuantizer ---
-    let encoder = MultiVecProductQuantizer::<M, f32>::train(&training_ds);
+    // --- Train MultiVecTwoLevelProductQuantizer ---
+    let encoder = MultiVecTwoLevelProductQuantizer::<M, f32>::train(&training_ds, NCOARSE);
     let train_elapsed = train_start.elapsed();
 
-    // --- Build PQ-encoded dataset in parallel ---
+    // --- Build encoded dataset in parallel ---
     let build_start = Instant::now();
     let dataset =
         MultiVectorDataset::from_flat_par(encoder, &flat_data, &doc_lengths);

@@ -47,12 +47,12 @@ const KSUB: usize = 256;
 ///
 /// # Search (MaxSim via ADC)
 ///
-/// [`MultivecPQQueryEvaluator`] precomputes a distance table of shape `[M][KSUB][Q]`.
+/// [`MultiVecPQQueryEvaluator`] precomputes a distance table of shape `[M][KSUB][Q]`.
 /// For each doc token with codes `[c0, ..., c_{M-1}]`, the contribution to all `Q`
 /// query tokens is accumulated in a single pass over `M` contiguous Q-element table
 /// slices, then used to update per-query maximums.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct MultivecProductQuantizer<const M: usize, In> {
+pub struct MultiVecProductQuantizer<const M: usize, In> {
     /// Dimension of each individual token vector (= M * dsub).
     token_dim: usize,
     /// Sub-space dimensionality (= token_dim / M).
@@ -62,7 +62,7 @@ pub struct MultivecProductQuantizer<const M: usize, In> {
     _phantom: PhantomData<In>,
 }
 
-impl<const M: usize, In> MultivecProductQuantizer<M, In> {
+impl<const M: usize, In> MultiVecProductQuantizer<M, In> {
     /// Construct from pre-trained per-subspace centroid datasets.
     ///
     /// Panics if `M % 4 != 0`, `token_dim % M != 0`, `centroids.len() != M`,
@@ -134,7 +134,7 @@ impl<const M: usize, In> MultivecProductQuantizer<M, In> {
         let dsub = token_dim / M;
 
         println!(
-            "Training MultivecProductQuantizer: {} tokens × {} dims, M={}, dsub={}, KSUB={}",
+            "Training MultiVecProductQuantizer: {} tokens × {} dims, M={}, dsub={}, KSUB={}",
             token_vectors.len(),
             token_dim,
             M,
@@ -189,7 +189,7 @@ impl<const M: usize, In> MultivecProductQuantizer<M, In> {
     }
 }
 
-impl<const M: usize, In> MultivecProductQuantizer<M, In>
+impl<const M: usize, In> MultiVecProductQuantizer<M, In>
 where
     In: ValueType,
 {
@@ -266,7 +266,7 @@ where
 /// For a doc token with codes `[c0, ..., c_{M-1}]`, the contribution to all `Q` query
 /// tokens simultaneously is the slice `table[m * KSUB * Q + c_m * Q .. + Q]`, enabling
 /// an efficient vectorized accumulation per subspace.
-pub struct MultivecPQQueryEvaluator<'e, const M: usize, In> {
+pub struct MultiVecPQQueryEvaluator<'e, const M: usize, In> {
     /// Distance table: [m * KSUB * Q + k * Q + q]
     distance_table: Vec<f32>,
     /// Number of query tokens (Q).
@@ -274,12 +274,12 @@ pub struct MultivecPQQueryEvaluator<'e, const M: usize, In> {
     _phantom: PhantomData<(&'e (), In)>,
 }
 
-impl<'e, const M: usize, In> MultivecPQQueryEvaluator<'e, M, In>
+impl<'e, const M: usize, In> MultiVecPQQueryEvaluator<'e, M, In>
 where
     In: ValueType,
 {
     fn new(
-        encoder: &'e MultivecProductQuantizer<M, In>,
+        encoder: &'e MultiVecProductQuantizer<M, In>,
         query: DenseMultiVectorView<'_, f32>,
     ) -> Self {
         Self {
@@ -291,7 +291,7 @@ where
 }
 
 impl<'e, 'v, const M: usize, In> QueryEvaluator<DenseMultiVectorView<'v, u8>>
-    for MultivecPQQueryEvaluator<'e, M, In>
+    for MultiVecPQQueryEvaluator<'e, M, In>
 where
     In: ValueType,
 {
@@ -338,7 +338,7 @@ where
     }
 }
 
-impl<const M: usize, In> VectorEncoder for MultivecProductQuantizer<M, In>
+impl<const M: usize, In> VectorEncoder for MultiVecProductQuantizer<M, In>
 where
     In: ValueType + Float,
 {
@@ -348,7 +348,7 @@ where
     type EncodedVector<'a> = DenseMultiVectorView<'a, u8>;
 
     type Evaluator<'e>
-        = MultivecPQQueryEvaluator<'e, M, In>
+        = MultiVecPQQueryEvaluator<'e, M, In>
     where
         Self: 'e;
 
@@ -361,13 +361,13 @@ where
             query.dim(),
             self.token_dim
         );
-        MultivecPQQueryEvaluator::new(self, query)
+        MultiVecPQQueryEvaluator::new(self, query)
     }
 
     #[inline]
     fn vector_evaluator<'e, 'v>(&'e self, vector: Self::EncodedVector<'v>) -> Self::Evaluator<'e> {
         let decoded = self.decode_multivec(vector);
-        MultivecPQQueryEvaluator::new(self, decoded.as_view())
+        MultiVecPQQueryEvaluator::new(self, decoded.as_view())
     }
 
     #[inline]
@@ -381,7 +381,7 @@ where
     }
 }
 
-impl<const M: usize, In> MultiVecEncoder for MultivecProductQuantizer<M, In>
+impl<const M: usize, In> MultiVecEncoder for MultiVecProductQuantizer<M, In>
 where
     In: ValueType + Float,
 {
@@ -428,7 +428,7 @@ where
     }
 }
 
-impl<const M: usize, In> SpaceUsage for MultivecProductQuantizer<M, In>
+impl<const M: usize, In> SpaceUsage for MultiVecProductQuantizer<M, In>
 where
     In: ValueType,
 {
@@ -478,7 +478,7 @@ mod tests {
         // Training: 256 singleton vectors (one per centroid slot).
         let n_train = KSUB * 2;
         let training = make_training_set(token_dim, n_train);
-        let encoder = MultivecProductQuantizer::<M, f32>::train(&training);
+        let encoder = MultiVecProductQuantizer::<M, f32>::train(&training);
 
         assert_eq!(encoder.token_dim(), token_dim);
         assert_eq!(encoder.dsub(), 1);
@@ -491,7 +491,7 @@ mod tests {
         const M: usize = 4;
         let token_dim = 4;
         let training = make_training_set(token_dim, KSUB * 2);
-        let encoder = MultivecProductQuantizer::<M, f32>::train(&training);
+        let encoder = MultiVecProductQuantizer::<M, f32>::train(&training);
 
         // Encode a 2-token query and a 2-token document.
         let query_vals = [1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
@@ -516,7 +516,7 @@ mod tests {
     fn panics_on_mismatched_query_dim() {
         const M: usize = 4;
         let training = make_training_set(4, KSUB * 2);
-        let encoder = MultivecProductQuantizer::<M, f32>::train(&training);
+        let encoder = MultiVecProductQuantizer::<M, f32>::train(&training);
         // dim = 2 doesn't match token_dim = 4
         let query = DenseMultiVectorView::new(&[1.0f32, 0.0], 2);
         encoder.query_evaluator(query);
