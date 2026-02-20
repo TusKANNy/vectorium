@@ -146,7 +146,6 @@ where
 
     #[inline]
     fn compute_distance(&self, vector: DenseVectorView<'v, Out>) -> D {
-        let _ = self.encoder;
         D::compute_dense(self.query.as_view(), vector)
     }
 }

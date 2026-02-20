@@ -38,6 +38,9 @@ rusty-perm = "0.2.0"
 rgb = { git = "https://github.com/JMMackenzie/enhanced-graph-bisection.git" } 
 rand = "0.8"
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
 [features]
 default = []
 # Enables the optional command-line utilities under `src/bin/` that depend on clap/indicatif.
@@ -48,6 +51,14 @@ name = "compute_groundtruth"
 path = "src/bin/compute_groundtruth.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "kmeans_bench"
+path = "src/bin/kmeans_bench.rs"
+required-features = ["cli"]
+
+[[bench]]
+name = "dense_dot_product"
+harness = false
 
 [profile.release]
 opt-level = 3
