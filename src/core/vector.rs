@@ -222,7 +222,11 @@ impl<'a, V: ValueType> DenseMultiVectorView<'a, V> {
             dim
         );
         let num_vecs = values.len() / dim;
-        Self { values, dim, num_vecs }
+        Self {
+            values,
+            dim,
+            num_vecs,
+        }
     }
 
     /// Dimensionality of each individual token vector.
@@ -294,7 +298,11 @@ impl<V: ValueType> DenseMultiVectorOwned<V> {
             dim
         );
         let num_vecs = values.len() / dim;
-        Self { values, dim, num_vecs }
+        Self {
+            values,
+            dim,
+            num_vecs,
+        }
     }
 
     /// Dimensionality of each individual token vector.

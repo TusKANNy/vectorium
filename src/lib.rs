@@ -60,11 +60,12 @@ pub use encoders::dense_scalar::{
 };
 pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Encoder, DotVByteFixedU8QueryEvaluator};
 pub use encoders::multivec_pq::{MultiVecPQQueryEvaluator, MultiVecProductQuantizer};
-pub use encoders::multivec_two_level_pq::{
-    MultiVecTwoLevelPQQueryEvaluator, MultiVecTwoLevelProductQuantizer,
-};
 pub use encoders::multivec_scalar::{
     PlainMultiVecQuantizer, ScalarMultiVecQuantizer, ScalarMultiVecQueryEvaluator,
+};
+pub use encoders::multivec_two_level_pq::{
+    MultiVecTwoLevelPQQueryEvaluator, MultiVecTwoLevelProductQuantizer, print_phase_timings,
+    reset_phase_timings,
 };
 pub use encoders::pq::ProductQuantizer;
 pub use encoders::sparse_scalar::{

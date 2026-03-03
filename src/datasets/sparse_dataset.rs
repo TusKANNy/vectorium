@@ -347,6 +347,9 @@ where
 
 // Unfortunately, Rust doesn't yet support specialization, meaning that we can't use From too generically (otherwise it fails due to reimplementing `From<T> for T`)
 
+/// Type alias for a pair of encoded component and value vectors.
+type EncodedVecPair<C, V> = (Vec<C>, Vec<V>);
+
 impl<E> SparseDataset<E>
 where
     E: SparseVectorEncoder,
@@ -396,7 +399,7 @@ where
         );
 
         // Encode each vector on a rayon thread (encoder is Sync, flat inputs are Sync).
-        let encoded_vecs: Vec<(Vec<E::OutputComponentType>, Vec<E::OutputValueType>)> =
+        let encoded_vecs: Vec<EncodedVecPair<E::OutputComponentType, E::OutputValueType>> =
             input_offsets
                 .par_windows(2)
                 .map(|w| {
@@ -418,7 +421,9 @@ where
         for (comp, val) in &encoded_vecs {
             growable_storage.components.extend_from_slice(comp);
             growable_storage.values.extend_from_slice(val);
-            growable_storage.offsets.push(growable_storage.components.len());
+            growable_storage
+                .offsets
+                .push(growable_storage.components.len());
         }
 
         let storage: ImmutableSparseStorage<E> = growable_storage.into();

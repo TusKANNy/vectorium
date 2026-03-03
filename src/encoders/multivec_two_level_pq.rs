@@ -38,9 +38,76 @@
 //! and mapping to 4 AVX2 `ymm` registers (32 × f32 = 128 bytes).
 
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use matrixmultiply;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Per-phase timing accumulators (in nanoseconds).
+// Enabled only when the `phase_timing` cfg flag is set at compile time so
+// there is zero overhead in production builds.
+// ---------------------------------------------------------------------------
+pub static PHASE_CENTROID_EXTRACT_NS: AtomicU64 = AtomicU64::new(0);
+pub static PHASE_CENTROID_GEMM_NS: AtomicU64 = AtomicU64::new(0);
+pub static PHASE_PQ_MAXSIM_NS: AtomicU64 = AtomicU64::new(0);
+pub static PHASE_CALL_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Time to build the PQ distance table (once per query evaluator, not per document).
+pub static PHASE_TABLE_BUILD_NS: AtomicU64 = AtomicU64::new(0);
+pub static PHASE_EVAL_INIT_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Reset all phase timing accumulators.
+pub fn reset_phase_timings() {
+    PHASE_CENTROID_EXTRACT_NS.store(0, Ordering::Relaxed);
+    PHASE_CENTROID_GEMM_NS.store(0, Ordering::Relaxed);
+    PHASE_PQ_MAXSIM_NS.store(0, Ordering::Relaxed);
+    PHASE_CALL_COUNT.store(0, Ordering::Relaxed);
+    PHASE_TABLE_BUILD_NS.store(0, Ordering::Relaxed);
+    PHASE_EVAL_INIT_COUNT.store(0, Ordering::Relaxed);
+}
+
+/// Print a summary of accumulated per-phase timings.
+pub fn print_phase_timings() {
+    let calls = PHASE_CALL_COUNT.load(Ordering::Relaxed);
+    let eval_inits = PHASE_EVAL_INIT_COUNT.load(Ordering::Relaxed);
+    let extract_ns = PHASE_CENTROID_EXTRACT_NS.load(Ordering::Relaxed);
+    let gemm_ns = PHASE_CENTROID_GEMM_NS.load(Ordering::Relaxed);
+    let maxsim_ns = PHASE_PQ_MAXSIM_NS.load(Ordering::Relaxed);
+    let table_ns = PHASE_TABLE_BUILD_NS.load(Ordering::Relaxed);
+    let total_ns = extract_ns + gemm_ns + maxsim_ns;
+    println!("--- evaluator init ({eval_inits} calls) ---");
+    if eval_inits > 0 {
+        println!(
+            "  PQ table build   : {:>10.2} µs/init",
+            table_ns as f64 / eval_inits as f64 / 1_000.0,
+        );
+    }
+    if calls == 0 {
+        println!("No per-document phase data collected.");
+        return;
+    }
+    println!("--- compute_distance phase breakdown ({calls} calls) ---");
+    println!(
+        "  Centroid extract : {:>10.2} µs/call  ({:.1}%)",
+        extract_ns as f64 / calls as f64 / 1_000.0,
+        100.0 * extract_ns as f64 / total_ns as f64,
+    );
+    println!(
+        "  Centroid GEMM    : {:>10.2} µs/call  ({:.1}%)",
+        gemm_ns as f64 / calls as f64 / 1_000.0,
+        100.0 * gemm_ns as f64 / total_ns as f64,
+    );
+    println!(
+        "  PQ MaxSim        : {:>10.2} µs/call  ({:.1}%)",
+        maxsim_ns as f64 / calls as f64 / 1_000.0,
+        100.0 * maxsim_ns as f64 / total_ns as f64,
+    );
+    println!(
+        "  Total (3 phases) : {:>10.2} µs/call",
+        total_ns as f64 / calls as f64 / 1_000.0,
+    );
+}
 
 use crate::clustering::KMeansBuilder;
 use crate::core::vector::{DenseMultiVectorOwned, DenseMultiVectorView, DenseVectorView};
@@ -190,7 +257,9 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
         // Step 1: Train coarse centroids via k-means.
         println!("  Step 1: training {} coarse centroids...", ncoarse);
         let coarse_centroids: PlainDenseDataset<f32, SquaredEuclideanDistance> =
-            KMeansBuilder::new().build().train(token_vectors, ncoarse, None);
+            KMeansBuilder::new()
+                .build()
+                .train(token_vectors, ncoarse, None);
 
         // Step 2: Compute residuals in parallel.
         println!("  Step 2: computing residuals ({} vectors)...", n);
@@ -233,9 +302,7 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
             .map(|m| {
                 let q = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(dsub);
                 let mut sub_ds =
-                    PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
-                        q, n,
-                    );
+                    PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(q, n);
                 for vec in residuals_ds.iter() {
                     sub_ds.push(DenseVectorView::new(
                         &vec.values()[m * dsub..(m + 1) * dsub],
@@ -286,16 +353,13 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
     /// `coarse_centroid[coarse_id] + Σ_m pq_centroid[m][code_m]`.
     ///
     /// Handles blocked layout: first 4*n bytes are coarse IDs, then n*M bytes are PQ codes.
-    fn decode_multivec(
-        &self,
-        encoded: DenseMultiVectorView<'_, u8>,
-    ) -> DenseMultiVectorOwned<f32> {
+    fn decode_multivec(&self, encoded: DenseMultiVectorView<'_, u8>) -> DenseMultiVectorOwned<f32> {
         let n_tokens = encoded.num_vecs();
         let all_bytes = encoded.values();
         let codes_offset = 4 * n_tokens;
-        
+
         let mut values = Vec::with_capacity(n_tokens * self.token_dim);
-        
+
         for t in 0..n_tokens {
             // Read coarse_id from blocked layout
             let byte_offset = t * 4;
@@ -305,10 +369,10 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
                 all_bytes[byte_offset + 2],
                 all_bytes[byte_offset + 3],
             ]) as VectorId;
-            
+
             let centroid = self.coarse_centroids.get(coarse_id);
             let mut decoded: Vec<f32> = centroid.values().to_vec();
-            
+
             // Read PQ codes from blocked layout
             for m in 0..M {
                 let code = all_bytes[codes_offset + t * M + m] as VectorId;
@@ -322,7 +386,6 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
         }
         DenseMultiVectorOwned::new(values, self.token_dim)
     }
-
 }
 
 /// Query evaluator for [`MultiVecTwoLevelProductQuantizer`].
@@ -381,27 +444,24 @@ where
         }
 
         // Build PQ table [M × KSUB × Q_TOKEN] via SAXPY over centroid dimensions.
-        // For each (m, k), loop over dsub centroid dimensions; for each dimension d_sub,
-        // broadcast the centroid scalar to all Q_TOKEN query slots simultaneously.
-        // Inner loop `for q in 0..Q_TOKEN` is fully unrolled (const Q_TOKEN).
-        // Use unsafe pointer arithmetic for maximum performance in this hot loop.
+        let t_table = std::time::Instant::now();
         let mut distance_table = vec![0f32; M * KSUB * Q_TOKEN];
         unsafe {
             let qt_ptr = query_flat_t.as_ptr();
             let dt_ptr = distance_table.as_mut_ptr();
-            
+
             for m in 0..M {
                 let sub_offset = m * dsub;
                 for k in 0..KSUB {
                     let centroid = encoder.pq_centroids[m].get(k as VectorId);
                     let entry_base = m * KSUB * Q_TOKEN + k * Q_TOKEN;
                     let centroid_vals = centroid.values();
-                    
+
                     for (d_sub, &c) in centroid_vals.iter().enumerate() {
                         let d = sub_offset + d_sub;
                         let qt_base = qt_ptr.add(d * Q_TOKEN);
                         let out_base = dt_ptr.add(entry_base);
-                        
+
                         for q in 0..Q_TOKEN {
                             let qt_val = *qt_base.add(q);
                             let current = *out_base.add(q);
@@ -411,8 +471,14 @@ where
                 }
             }
         }
+        PHASE_TABLE_BUILD_NS.fetch_add(t_table.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        PHASE_EVAL_INIT_COUNT.fetch_add(1, Ordering::Relaxed);
 
-        Self { encoder, query_flat_t, distance_table }
+        Self {
+            encoder,
+            query_flat_t,
+            distance_table,
+        }
     }
 }
 
@@ -438,53 +504,62 @@ where
         let doc_n = vector.num_vecs();
         let token_dim = self.encoder.token_dim;
 
-        let _t0 = std::time::Instant::now();        
         // Phase 1a: extract coarse centroid for each doc token into centroid_cols [doc_n × D].
-        // Use unsafe pointer arithmetic for maximum performance.
+        let t0 = std::time::Instant::now();
         let mut centroid_cols = vec![0f32; doc_n * token_dim];
         let doc_bytes = vector.values();
-        
+
         // SAFETY: Blocked layout guarantees first 4*doc_n bytes are coarse IDs
         unsafe {
             let doc_ptr = doc_bytes.as_ptr();
             let centroids_data = self.encoder.coarse_centroids.values();
             let centroids_ptr = centroids_data.as_ptr();
             let dest_ptr = centroid_cols.as_mut_ptr();
-            
+
             for t in 0..doc_n {
-                // Read coarse ID from blocked layout (first 4*doc_n bytes)
                 let byte_offset = t * 4;
                 let c0 = *doc_ptr.add(byte_offset) as u32;
                 let c1 = *doc_ptr.add(byte_offset + 1) as u32;
                 let c2 = *doc_ptr.add(byte_offset + 2) as u32;
                 let c3 = *doc_ptr.add(byte_offset + 3) as u32;
                 let coarse_id = (c0 | (c1 << 8) | (c2 << 16) | (c3 << 24)) as usize;
-                
-                // Copy centroid values using unchecked pointer operations
+
                 let src = centroids_ptr.add(coarse_id * token_dim);
                 let dst = dest_ptr.add(t * token_dim);
                 std::ptr::copy_nonoverlapping(src, dst, token_dim);
             }
         }
-        let _t1 = std::time::Instant::now();
+        PHASE_CENTROID_EXTRACT_NS.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         // Phase 1b: GEMM centroid contributions → centroid_scores [doc_n × Q_TOKEN].
-        // Use the optimized function with unsafe pointer arithmetic and FMA.
+        // matrixmultiply::sgemm: pure-Rust cache-blocking micro-kernel that correctly
+        // holds accumulator registers across the full k-loop regardless of surrounding
+        // LTO register pressure (which caused LLVM to horizontally reduce our manual
+        // [f32; Q] acc array per (t,q) pair instead of keeping it in 4 YMM regs).
+        let t1 = std::time::Instant::now();
         let mut centroid_scores = vec![0f32; doc_n * Q_TOKEN];
         unsafe {
-            crate::distances::two_level_pq_centroid_gemm::<Q_TOKEN>(
-                &centroid_cols,
-                &self.query_flat_t,
-                &mut centroid_scores,
-                doc_n,
-                token_dim,
+            matrixmultiply::sgemm(
+                doc_n,     // m: one row per doc token
+                token_dim, // k: contract over token dimensions
+                Q_TOKEN,   // n: one column per query token
+                1.0,       // alpha
+                centroid_cols.as_ptr(),
+                token_dim as isize, // rsa: row stride of A (centroid_cols is [doc_n × token_dim])
+                1,                  // csa: col stride of A
+                self.query_flat_t.as_ptr(),
+                Q_TOKEN as isize, // rsb: row stride of B (query_flat_t is [token_dim × Q_TOKEN])
+                1,                // csb: col stride of B
+                0.0,              // beta
+                centroid_scores.as_mut_ptr(),
+                Q_TOKEN as isize, // rsc: row stride of C
+                1,                // csc: col stride of C
             );
         }
-        let _t2 = std::time::Instant::now();
+        PHASE_CENTROID_GEMM_NS.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         // Phase 2: MaxSim with PQ residuals.
-        // Use the blocked-layout optimized function for maximum performance.
-        // PQ codes start after 4*doc_n bytes of coarse IDs (blocked layout)
+        let t2 = std::time::Instant::now();
         let doc_bytes = vector.values();
         let codes_offset = 4 * doc_n;
         let score = unsafe {
@@ -495,14 +570,8 @@ where
                 doc_n,
             )
         };
-        let _t3 = std::time::Instant::now();
-        
-        // Debug timing:
-        eprintln!("extract:{:.1}µs gemm:{:.1}µs maxsim:{:.1}µs doc_n:{}",
-            (_t1 - _t0).as_secs_f64() * 1e6,
-            (_t2 - _t1).as_secs_f64() * 1e6,
-            (_t3 - _t2).as_secs_f64() * 1e6,
-            doc_n);
+        PHASE_PQ_MAXSIM_NS.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        PHASE_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
 
         DotProduct::from(score)
     }
@@ -535,10 +604,7 @@ where
     }
 
     #[inline]
-    fn vector_evaluator<'e, 'v>(
-        &'e self,
-        vector: Self::EncodedVector<'v>,
-    ) -> Self::Evaluator<'e> {
+    fn vector_evaluator<'e, 'v>(&'e self, vector: Self::EncodedVector<'v>) -> Self::Evaluator<'e> {
         let decoded = self.decode_multivec(vector);
         MultiVecTwoLevelPQQueryEvaluator::new(self, decoded.as_view())
     }
@@ -580,7 +646,7 @@ where
         let n_tokens = input.num_vecs();
         let mut token_f32 = vec![0f32; self.token_dim];
         let mut residual = vec![0f32; self.token_dim];
-        
+
         // Temporary buffers for blocked output
         let mut coarse_ids = Vec::with_capacity(n_tokens);
         let mut pq_codes = Vec::with_capacity(n_tokens * M);
@@ -612,8 +678,7 @@ where
 
             // PQ encode each subspace of the residual.
             for m in 0..M {
-                let sub =
-                    DenseVectorView::new(&residual[m * self.dsub..(m + 1) * self.dsub]);
+                let sub = DenseVectorView::new(&residual[m * self.dsub..(m + 1) * self.dsub]);
                 let code = self.pq_centroids[m]
                     .search_nearest(sub)
                     .map(|s| s.vector as u8)
@@ -621,7 +686,7 @@ where
                 pq_codes.push(code);
             }
         }
-        
+
         // Write blocked layout: all coarse IDs first, then all PQ codes
         for &id in &coarse_ids {
             output.extend(id.to_le_bytes());
@@ -656,11 +721,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::vector::{DenseMultiVectorView, DenseVectorView};
     use crate::core::distances::Distance;
+    use crate::core::vector::{DenseMultiVectorView, DenseVectorView};
     use crate::{
-        PlainDenseDataset, PlainDenseDatasetGrowable, PlainDenseQuantizer,
-        SquaredEuclideanDistance,
+        PlainDenseDataset, PlainDenseDatasetGrowable, PlainDenseQuantizer, SquaredEuclideanDistance,
     };
 
     fn make_training_set(
@@ -670,16 +734,14 @@ mod tests {
         use rand::rngs::StdRng;
         use rand::{Rng, SeedableRng};
         let mut rng = StdRng::seed_from_u64(42);
-        let quantizer =
-            PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(token_dim);
-        let mut ds =
-            PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
-                quantizer,
-                n_vecs,
-            );
+        let quantizer = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(token_dim);
+        let mut ds = PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
+            quantizer, n_vecs,
+        );
         for _ in 0..n_vecs {
-            let values: Vec<f32> =
-                (0..token_dim).map(|_| rng.gen_range(-1.0_f32..1.0)).collect();
+            let values: Vec<f32> = (0..token_dim)
+                .map(|_| rng.gen_range(-1.0_f32..1.0))
+                .collect();
             ds.push(DenseVectorView::new(&values));
         }
         ds.into()
@@ -691,8 +753,7 @@ mod tests {
         let token_dim = 8;
         let ncoarse = 4;
         let training = make_training_set(token_dim, 512);
-        let encoder =
-            MultiVecTwoLevelProductQuantizer::<M, f32>::train(&training, ncoarse);
+        let encoder = MultiVecTwoLevelProductQuantizer::<M, f32>::train(&training, ncoarse);
 
         assert_eq!(encoder.token_dim(), token_dim);
         assert_eq!(encoder.dsub(), token_dim / M);
@@ -707,8 +768,7 @@ mod tests {
         const M: usize = 4;
         let token_dim = 8;
         let training = make_training_set(token_dim, 512);
-        let encoder =
-            MultiVecTwoLevelProductQuantizer::<M, f32>::train(&training, 4);
+        let encoder = MultiVecTwoLevelProductQuantizer::<M, f32>::train(&training, 4);
 
         let doc_vals: Vec<f32> = vec![0.5f32; 3 * token_dim]; // 3 tokens
         let doc = DenseMultiVectorView::new(&doc_vals, token_dim);
@@ -724,8 +784,7 @@ mod tests {
         const M: usize = 4;
         let token_dim = 8;
         let training = make_training_set(token_dim, 512);
-        let encoder =
-            MultiVecTwoLevelProductQuantizer::<M, f32>::train(&training, 4);
+        let encoder = MultiVecTwoLevelProductQuantizer::<M, f32>::train(&training, 4);
 
         let query_vals: Vec<f32> = vec![0.5f32; Q_TOKEN * token_dim]; // Q_TOKEN query tokens
         let query = DenseMultiVectorView::new(&query_vals, token_dim);
@@ -736,8 +795,7 @@ mod tests {
         encoder.push_encoded(doc, &mut encoded_doc);
 
         let evaluator = encoder.query_evaluator(query);
-        let encoded_view =
-            DenseMultiVectorView::new(&encoded_doc, COARSE_ID_BYTES + M);
+        let encoded_view = DenseMultiVectorView::new(&encoded_doc, COARSE_ID_BYTES + M);
         let dist = evaluator.compute_distance(encoded_view);
 
         assert!(dist.distance().is_finite());
@@ -748,8 +806,7 @@ mod tests {
         const M: usize = 4;
         let token_dim = 8;
         let training = make_training_set(token_dim, 512);
-        let encoder =
-            MultiVecTwoLevelProductQuantizer::<M, f32>::train(&training, 4);
+        let encoder = MultiVecTwoLevelProductQuantizer::<M, f32>::train(&training, 4);
 
         let doc_vals: Vec<f32> = vec![0.1f32; 2 * token_dim]; // 2 tokens
         let doc = DenseMultiVectorView::new(&doc_vals, token_dim);

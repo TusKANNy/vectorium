@@ -8,7 +8,7 @@ use crate::{Dataset, Float, FromF32, PlainDenseDataset, PlainDenseDatasetGrowabl
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rand::seq::SliceRandom;
+use rand::seq::index::sample as index_sample;
 use rayon::prelude::*;
 use std::time::Instant;
 
@@ -331,12 +331,11 @@ impl KMeans {
             let mut centroids_builder =
                 PlainDenseDatasetGrowable::with_capacity(ScalarDenseQuantizer::new(output_dim), k);
 
-            // Randomly select k vectors for initial centroids
-            let mut indices: Vec<usize> = (0..n).collect();
-            indices.shuffle(&mut rng);
-
-            for i in indices.iter().take(k) {
-                let vector = training_dataset.get(*i as VectorId);
+            // Randomly select k vectors for initial centroids (matches kannolo's sample(k))
+            let mut init_rng = StdRng::seed_from_u64(rng.r#gen::<u64>());
+            let sampled = index_sample(&mut init_rng, n, k);
+            for i in sampled.into_vec() {
+                let vector = training_dataset.get(i as VectorId);
                 centroids_builder.push(vector);
             }
 

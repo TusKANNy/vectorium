@@ -473,15 +473,15 @@ pub unsafe fn two_level_pq_centroid_gemm<const Q: usize>(
             for d in 0..token_dim {
                 let c = *cc_t.add(d);
                 let qt_d = qt_ptr.add(d * Q);
-                for q in 0..Q {
+                for (q, item) in acc.iter_mut().enumerate().take(Q) {
                     // FMA: acc[q] += qt_d[q] * c
-                    acc[q] = acc[q].algebraic_add((*qt_d.add(q)).algebraic_mul(c));
+                    *item = item.algebraic_add((*qt_d.add(q)).algebraic_mul(c));
                 }
             }
             // Write accumulated row to output.
             let out_t = out_ptr.add(t * Q);
-            for q in 0..Q {
-                *out_t.add(q) = acc[q];
+            for (q, item) in acc.iter_mut().enumerate().take(Q) {
+                *out_t.add(q) = *item;
             }
         }
     }
@@ -534,8 +534,8 @@ pub unsafe fn two_level_pq_maxsim<const M: usize, const Q: usize>(
         let mut acc = [0f32; Q];
         unsafe {
             let cs_t = cs_ptr.add(t * Q);
-            for q in 0..Q {
-                acc[q] = *cs_t.add(q);
+            for (q, item) in acc.iter_mut().enumerate().take(Q) {
+                *item = *cs_t.add(q);
             }
 
             // PQ residual SAXPY: M passes, each Q-wide.
@@ -544,24 +544,24 @@ pub unsafe fn two_level_pq_maxsim<const M: usize, const Q: usize>(
             for m in 0..M {
                 let code = *codes_t.add(m) as usize;
                 let tbl = dt_ptr.add(m * KSUB * Q + code * Q);
-                for q in 0..Q {
-                    acc[q] = acc[q].algebraic_add(*tbl.add(q));
+                for (q, item) in acc.iter_mut().enumerate().take(Q) {
+                    *item = item.algebraic_add(*tbl.add(q));
                 }
             }
         }
 
         // Update per-query-token maxima.
-        for q in 0..Q {
-            if acc[q] > max_scores[q] {
-                max_scores[q] = acc[q];
+        for (q, item) in acc.iter_mut().enumerate().take(Q) {
+            if *item > max_scores[q] {
+                max_scores[q] = *item;
             }
         }
     }
 
     // Sum maxima.
     let mut total = 0f32;
-    for q in 0..Q {
-        total = total.algebraic_add(max_scores[q]);
+    for item in max_scores.iter().take(Q) {
+        total = total.algebraic_add(*item);
     }
     total
 }
@@ -596,47 +596,50 @@ pub unsafe fn two_level_pq_maxsim_blocked<const M: usize, const Q: usize>(
 ) -> f32 {
     const KSUB: usize = 256;
 
-    let cs_ptr = centroid_scores.as_ptr();
-    let dt_ptr = distance_table.as_ptr();
-    let codes_ptr = pq_codes_block.as_ptr();
+    // Keep acc and max_scores on the heap (not stack arrays) so the compiler
+    // addresses them via pointer and auto-vectorises the Q-wide SAXPY as a
+    // regular loop — identical to what regular MultivecPQ does.  Declaring
+    // both as [f32; Q] stack arrays inside / next to the hot loop creates
+    // enough register-pressure (8 YMM for data + tbl loads) that LLVM spills
+    // them to stack and serialises the memory accesses, causing ~7× slowdown.
+    let mut acc = vec![0f32; Q];
+    let mut max_scores = vec![f32::NEG_INFINITY; Q];
 
-    let mut max_scores = [f32::NEG_INFINITY; Q];
+    unsafe {
+        let cs_ptr = centroid_scores.as_ptr();
+        let dt_ptr = distance_table.as_ptr();
+        let codes_ptr = pq_codes_block.as_ptr();
 
-    for t in 0..doc_n {
-        // Load centroid scores into local acc (stays in registers).
-        let mut acc = [0f32; Q];
-        unsafe {
+        for t in 0..doc_n {
+            // Reset acc and load centroid scores in one pass.
             let cs_t = cs_ptr.add(t * Q);
             for q in 0..Q {
-                acc[q] = *cs_t.add(q);
+                *acc.get_unchecked_mut(q) = *cs_t.add(q);
             }
 
             // PQ residual SAXPY: M passes, each Q-wide.
-            // Codes are at offset t * M (no stride, fully contiguous).
             let codes_t = codes_ptr.add(t * M);
             for m in 0..M {
                 let code = *codes_t.add(m) as usize;
                 let tbl = dt_ptr.add(m * KSUB * Q + code * Q);
                 for q in 0..Q {
-                    acc[q] = acc[q].algebraic_add(*tbl.add(q));
+                    *acc.get_unchecked_mut(q) += *tbl.add(q);
                 }
             }
-        }
 
-        // Update per-query-token maxima.
-        for q in 0..Q {
-            if acc[q] > max_scores[q] {
-                max_scores[q] = acc[q];
+            // Update per-query-token maxima.
+            for q in 0..Q {
+                let v = *acc.get_unchecked(q);
+                let cur = max_scores.get_unchecked_mut(q);
+                if v > *cur {
+                    *cur = v;
+                }
             }
         }
     }
 
     // Sum maxima.
-    let mut total = 0f32;
-    for q in 0..Q {
-        total = total.algebraic_add(max_scores[q]);
-    }
-    total
+    max_scores.iter().fold(0f32, |s, &x| s + x)
 }
 
 /// Compute the MaxSim score between a query multivector and a document multivector.
@@ -671,13 +674,21 @@ pub fn maxsim<Out>(
 where
     Out: ValueType,
 {
-    assert_eq!(d_buf.len(), query.dim(), "d_buf length must equal query.dim()");
+    assert_eq!(
+        d_buf.len(),
+        query.dim(),
+        "d_buf length must equal query.dim()"
+    );
     assert_eq!(
         max_scores.len(),
         query.num_vecs(),
         "max_scores length must equal query.num_vecs()"
     );
-    assert_eq!(query.dim(), doc.dim(), "query and doc must have the same token dimension");
+    assert_eq!(
+        query.dim(),
+        doc.dim(),
+        "query and doc must have the same token dimension"
+    );
 
     for d_token in doc.iter_vectors() {
         // Materialize this doc token to f32 once.

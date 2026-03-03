@@ -330,7 +330,10 @@ mod tests {
         let mut dataset = MultiVectorDatasetGrowable::new(encoder);
 
         dataset.push(DenseMultiVectorView::new(&[1.0f32, 2.0, 3.0, 4.0], 2)); // 2 tokens
-        dataset.push(DenseMultiVectorView::new(&[5.0f32, 6.0, 7.0, 8.0, 9.0, 10.0], 2)); // 3 tokens
+        dataset.push(DenseMultiVectorView::new(
+            &[5.0f32, 6.0, 7.0, 8.0, 9.0, 10.0],
+            2,
+        )); // 3 tokens
 
         assert_eq!(dataset.len(), 2);
         assert_eq!(dataset.nnz(), 10);
@@ -376,7 +379,11 @@ mod tests {
 
         dataset.push(DenseMultiVectorView::new(&[1.0f32, 2.0, 3.0, 4.0], 2));
 
-        let tokens: Vec<Vec<f32>> = dataset.get(0).iter_vectors().map(|v| v.values().to_vec()).collect();
+        let tokens: Vec<Vec<f32>> = dataset
+            .get(0)
+            .iter_vectors()
+            .map(|v| v.values().to_vec())
+            .collect();
         assert_eq!(tokens, vec![vec![1.0f32, 2.0], vec![3.0f32, 4.0]]);
     }
 

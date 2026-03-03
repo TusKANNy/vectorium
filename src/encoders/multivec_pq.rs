@@ -145,16 +145,14 @@ impl<const M: usize, In> MultiVecProductQuantizer<M, In> {
         let centroids: Vec<PlainDenseDataset<f32, SquaredEuclideanDistance>> = (0..M)
             .into_par_iter()
             .map(|m| {
-                let quantizer =
-                    PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(dsub);
+                let quantizer = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(dsub);
                 let mut sub_dataset =
                     PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
                         quantizer,
                         token_vectors.len(),
                     );
                 for vector in token_vectors.iter() {
-                    let sub =
-                        DenseVectorView::new(&vector.values()[m * dsub..(m + 1) * dsub]);
+                    let sub = DenseVectorView::new(&vector.values()[m * dsub..(m + 1) * dsub]);
                     sub_dataset.push(sub);
                 }
                 let kmeans = KMeansBuilder::new().build();
@@ -198,15 +196,12 @@ where
     /// Each encoded token has `M` u8 codes; each code is looked up in the corresponding
     /// subspace's centroid dataset and the `dsub` centroid values are concatenated to
     /// reconstruct a `token_dim`-dimensional token.
-    fn decode_multivec(
-        &self,
-        encoded: DenseMultiVectorView<'_, u8>,
-    ) -> DenseMultiVectorOwned<f32> {
+    fn decode_multivec(&self, encoded: DenseMultiVectorView<'_, u8>) -> DenseMultiVectorOwned<f32> {
         let mut values = Vec::with_capacity(encoded.num_vecs() * self.token_dim);
         for token in encoded.iter_vectors() {
             let codes = token.values();
-            for m in 0..M {
-                let code = codes[m] as VectorId;
+            for (m, item) in codes.iter().enumerate().take(M) {
+                let code = *item as VectorId;
                 let centroid = self.centroids[m].get(code);
                 values.extend_from_slice(centroid.values());
             }
@@ -245,8 +240,7 @@ where
                     let q_base = qi * token_dim + sub_offset;
                     let q_sub = DenseVectorView::new(&query_flat[q_base..q_base + dsub]);
                     let dot = unsafe {
-                        crate::distances::dot_product_dense_unchecked(q_sub, centroid)
-                            .distance()
+                        crate::distances::dot_product_dense_unchecked(q_sub, centroid).distance()
                     };
                     table[entry_base + qi] = dot;
                 }
@@ -318,11 +312,9 @@ where
                 let base = m * KSUB * q + code * q;
                 // Accumulate Q contiguous table values into acc (SAXPY).
                 // SAFETY: base + q <= M * KSUB * q = distance_table.len().
-                let tbl = unsafe {
-                    self.distance_table.get_unchecked(base..base + q)
-                };
-                for qi in 0..q {
-                    acc[qi] += unsafe { *tbl.get_unchecked(qi) };
+                let tbl = unsafe { self.distance_table.get_unchecked(base..base + q) };
+                for (qi, item) in acc.iter_mut().enumerate().take(q) {
+                    *item += unsafe { *tbl.get_unchecked(qi) };
                 }
             }
 
@@ -408,8 +400,7 @@ where
                 *dst = unsafe { src.to_f32().unwrap_unchecked() };
             }
             for m in 0..M {
-                let sub =
-                    DenseVectorView::new(&token_f32[m * self.dsub..(m + 1) * self.dsub]);
+                let sub = DenseVectorView::new(&token_f32[m * self.dsub..(m + 1) * self.dsub]);
                 let code = self.centroids[m]
                     .search_nearest(sub)
                     .map(|s| s.vector as u8)
@@ -456,11 +447,9 @@ mod tests {
     ) -> PlainDenseDataset<f32, SquaredEuclideanDistance> {
         use crate::{PlainDenseDatasetGrowable, PlainDenseQuantizer};
         let quantizer = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(token_dim);
-        let mut ds =
-            PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
-                quantizer,
-                n_vecs,
-            );
+        let mut ds = PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
+            quantizer, n_vecs,
+        );
         for _ in 0..n_vecs {
             let values = vec![0.0f32; token_dim];
             ds.push(DenseVectorView::new(&values));

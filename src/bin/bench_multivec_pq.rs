@@ -1,11 +1,12 @@
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use std::collections::HashSet;
 use std::time::Instant;
 
 use vectorium::{
-    Dataset, DatasetGrowable, DenseMultiVectorView, DenseVectorView, MultiVectorDataset,
-    MultiVecProductQuantizer, PlainDenseDatasetGrowable, PlainDenseQuantizer,
-    SquaredEuclideanDistance,
+    Dataset, DatasetGrowable, DenseMultiVectorView, DenseVectorView, MultiVecProductQuantizer,
+    MultiVectorDataset, MultiVectorDatasetGrowable, PlainDenseDatasetGrowable, PlainDenseQuantizer,
+    PlainMultiVecQuantizer, SquaredEuclideanDistance,
 };
 
 const SEED: u64 = 42;
@@ -39,7 +40,10 @@ fn main() {
         TOKEN_DIM / M,
         total_tokens
     );
-    println!("  {} queries x {} query tokens, top-{}", N_QUERIES, QUERY_TOKENS, TOP_K);
+    println!(
+        "  {} queries x {} query tokens, top-{}",
+        N_QUERIES, QUERY_TOKENS, TOP_K
+    );
     println!();
 
     // --- Generate flat document data: total_tokens * TOKEN_DIM scalars ---
@@ -47,14 +51,48 @@ fn main() {
         .map(|_| rng.gen_range(-1.0_f32..1.0))
         .collect();
 
+    // --- Generate queries (before any dataset construction so RNG state is consistent) ---
+    let query_len = QUERY_TOKENS * TOKEN_DIM;
+    let queries: Vec<Vec<f32>> = (0..N_QUERIES)
+        .map(|_| {
+            (0..query_len)
+                .map(|_| rng.gen_range(-1.0_f32..1.0))
+                .collect()
+        })
+        .collect();
+
+    // --- Build plain (uncompressed) dataset for groundtruth ---
+    let plain_quantizer = PlainMultiVecQuantizer::<f32>::new(TOKEN_DIM);
+    let mut plain_dataset = MultiVectorDatasetGrowable::new(plain_quantizer);
+    let mut offset = 0;
+    for &n_tokens in &doc_lengths {
+        let end = offset + n_tokens * TOKEN_DIM;
+        plain_dataset.push(DenseMultiVectorView::new(
+            &flat_data[offset..end],
+            TOKEN_DIM,
+        ));
+        offset = end;
+    }
+
+    // --- Compute groundtruth top-k using plain dataset ---
+    let groundtruth: Vec<HashSet<u64>> = queries
+        .iter()
+        .map(|q| {
+            plain_dataset
+                .search(DenseMultiVectorView::new(q, TOKEN_DIM), TOP_K)
+                .into_iter()
+                .map(|s| s.vector)
+                .collect()
+        })
+        .collect();
+
     // --- Build training set from all token vectors ---
     let train_start = Instant::now();
     let quantizer = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(TOKEN_DIM);
-    let mut training_ds =
-        PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
-            quantizer,
-            total_tokens,
-        );
+    let mut training_ds = PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
+        quantizer,
+        total_tokens,
+    );
     for token in flat_data.chunks(TOKEN_DIM) {
         training_ds.push(DenseVectorView::new(token));
     }
@@ -66,15 +104,8 @@ fn main() {
 
     // --- Build PQ-encoded dataset in parallel ---
     let build_start = Instant::now();
-    let dataset =
-        MultiVectorDataset::from_flat_par(encoder, &flat_data, &doc_lengths);
+    let dataset = MultiVectorDataset::from_flat_par(encoder, &flat_data, &doc_lengths);
     let build_elapsed = build_start.elapsed();
-
-    // --- Generate queries ---
-    let query_len = QUERY_TOKENS * TOKEN_DIM;
-    let queries: Vec<Vec<f32>> = (0..N_QUERIES)
-        .map(|_| (0..query_len).map(|_| rng.gen_range(-1.0_f32..1.0)).collect())
-        .collect();
 
     // --- Warmup: one pass through all queries ---
     for q in &queries {
@@ -97,15 +128,29 @@ fn main() {
         all_results.push(last_results);
     }
 
-    let avg_query_us =
-        total_query_ns as f64 / (N_QUERIES as f64 * iterations as f64) / 1_000.0;
+    let avg_query_us = total_query_ns as f64 / (N_QUERIES as f64 * iterations as f64) / 1_000.0;
+
+    // --- Compute accuracy@k ---
+    let accuracy_per_query: Vec<f64> = all_results
+        .iter()
+        .zip(groundtruth.iter())
+        .map(|(pq_results, gt)| {
+            let hits = pq_results.iter().filter(|s| gt.contains(&s.vector)).count();
+            hits as f64 / TOP_K as f64
+        })
+        .collect();
+    let avg_accuracy: f64 = accuracy_per_query.iter().sum::<f64>() / N_QUERIES as f64;
 
     // --- Print results table ---
     let col_width = 18;
 
     print!("{:<6}", "Query");
     for rank in 1..=TOP_K {
-        print!(" | {:<col_width$}", format!("Rank {rank}"), col_width = col_width);
+        print!(
+            " | {:<col_width$}",
+            format!("Rank {rank}"),
+            col_width = col_width
+        );
     }
     println!();
     print!("{}", "-".repeat(6));
@@ -124,10 +169,20 @@ fn main() {
     }
 
     println!();
-    println!("Training time     : {:.2} ms", train_elapsed.as_secs_f64() * 1_000.0);
-    println!("Construction time : {:.2} ms", build_elapsed.as_secs_f64() * 1_000.0);
+    println!(
+        "Training time     : {:.2} ms",
+        train_elapsed.as_secs_f64() * 1_000.0
+    );
+    println!(
+        "Construction time : {:.2} ms",
+        build_elapsed.as_secs_f64() * 1_000.0
+    );
     println!(
         "Avg query time    : {:.2} µs  ({iterations} iterations × {N_QUERIES} queries)",
         avg_query_us
+    );
+    println!(
+        "Accuracy@{TOP_K}        : {:.4}  (avg over {N_QUERIES} queries)",
+        avg_accuracy
     );
 }

@@ -30,10 +30,7 @@ fn main() {
         "  {} docs, token lengths [{}, {}], token_dim={}, total tokens={}",
         N_DOCS, MIN_TOKENS, MAX_TOKENS, TOKEN_DIM, total_tokens
     );
-    println!(
-        "  {} queries x {} query tokens",
-        N_QUERIES, QUERY_TOKENS
-    );
+    println!("  {} queries x {} query tokens", N_QUERIES, QUERY_TOKENS);
     println!();
 
     // --- Generate flat document data as f32 (encoder converts to f16 on push) ---
@@ -49,7 +46,10 @@ fn main() {
     let mut offset = 0;
     for &n_tokens in &doc_lengths {
         let end = offset + n_tokens * TOKEN_DIM;
-        dataset.push(DenseMultiVectorView::new(&flat_data[offset..end], TOKEN_DIM));
+        dataset.push(DenseMultiVectorView::new(
+            &flat_data[offset..end],
+            TOKEN_DIM,
+        ));
         offset = end;
     }
     let build_elapsed = build_start.elapsed();
@@ -94,7 +94,11 @@ fn main() {
 
     print!("{:<6}", "Query");
     for rank in 1..=TOP_K {
-        print!(" | {:<col_width$}", format!("Rank {rank}"), col_width = col_width);
+        print!(
+            " | {:<col_width$}",
+            format!("Rank {rank}"),
+            col_width = col_width
+        );
     }
     println!();
     print!("{}", "-".repeat(6));
@@ -113,6 +117,12 @@ fn main() {
     }
 
     println!();
-    println!("Construction time : {:.2} ms", build_elapsed.as_secs_f64() * 1_000.0);
-    println!("Avg query time    : {:.2} µs  ({iterations} iterations × {N_QUERIES} queries)", avg_query_us);
+    println!(
+        "Construction time : {:.2} ms",
+        build_elapsed.as_secs_f64() * 1_000.0
+    );
+    println!(
+        "Avg query time    : {:.2} µs  ({iterations} iterations × {N_QUERIES} queries)",
+        avg_query_us
+    );
 }
