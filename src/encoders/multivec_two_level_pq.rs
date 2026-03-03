@@ -492,12 +492,12 @@ where
     /// Compute MaxSim between the stored query and a two-level PQ-encoded document multivector.
     ///
     /// **Phase 1 — Centroid GEMM**: extract `centroid_cols[doc_n × D]` (one centroid copy per
-    /// doc token), then compute `centroid_scores[doc_n × Q_TOKEN]` via the optimized
-    /// `two_level_pq_centroid_gemm` function in distances.rs using unsafe pointer arithmetic
-    /// and algebraic FMA operations.
+    /// doc token), then compute `centroid_scores[doc_n × Q_TOKEN]` via `matrixmultiply::sgemm`,
+    /// a pure-Rust cache-blocking micro-kernel that correctly holds accumulator registers across
+    /// the full k-loop regardless of surrounding LTO register pressure.
     ///
-    /// **Phase 2 — MaxSim**: calls the optimized `two_level_pq_maxsim` function from distances.rs
-    /// which uses unsafe pointer arithmetic and algebraic operations for maximum performance.
+    /// **Phase 2 — MaxSim**: calls `two_level_pq_maxsim_blocked` which uses blocked layout
+    /// (all PQ codes contiguous) for optimal cache performance.
     ///
     /// Returns the sum of per-query-token maxima as a [`DotProduct`].
     fn compute_distance(&self, vector: DenseMultiVectorView<'v, u8>) -> DotProduct {
