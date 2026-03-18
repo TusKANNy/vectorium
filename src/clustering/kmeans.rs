@@ -410,7 +410,7 @@ pub struct KMeansBuilder {
 impl Default for KMeansBuilder {
     fn default() -> Self {
         KMeansBuilder {
-            n_iter: 10,
+            n_iter: 25,
             n_redo: 1,
             verbose: false,
             // min_points_per_centroid: 39,

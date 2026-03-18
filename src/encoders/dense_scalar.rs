@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
 use crate::core::distances::{
-    Distance, DotProduct, SquaredEuclideanDistance, dot_product_dense_unchecked,
+    Distance, DotProduct, SquaredEuclideanDistance, dot_product_dense_batch6_unchecked,
+    dot_product_dense_unchecked, squared_euclidean_distance_dense_batch6_unchecked,
     squared_euclidean_distance_dense_unchecked,
 };
 use crate::core::vector::DenseVectorView;
@@ -14,31 +15,59 @@ use crate::core::vector_encoder::{
 use crate::{Float, FromF32, SpaceUsage, ValueType};
 
 /// Marker trait for distance types supported by scalar dense quantizers.
-/// Provides the computation method specific to dense vectors.
+/// Provides computation methods specific to dense vectors.
 pub trait ScalarDenseSupportedDistance: Distance {
-    /// Compute a numeric distance between two dense float views.
-    /// Implementations usually call the same distance kernel the dataset uses.
+    /// Compute the distance between a query and one stored dense vector.
     fn compute_dense<Q: ValueType, V: ValueType>(
         query: DenseVectorView<'_, Q>,
         vector: DenseVectorView<'_, V>,
     ) -> Self;
+
+    /// Compute the distance between a query and six stored dense vectors in a single pass.
+    ///
+    /// Default falls back to six independent `compute_dense` calls. Override for a single-pass
+    /// kernel with 6 independent accumulators (better ILP and cache reuse).
+    fn compute_dense_batch6<Q: ValueType, V: ValueType>(
+        query: DenseVectorView<'_, Q>,
+        vectors: [DenseVectorView<'_, V>; 6],
+    ) -> [Self; 6] {
+        vectors.map(|v| Self::compute_dense(query, v))
+    }
 }
 
 impl ScalarDenseSupportedDistance for SquaredEuclideanDistance {
+    #[inline]
     fn compute_dense<Q: ValueType, V: ValueType>(
         query: DenseVectorView<'_, Q>,
         vector: DenseVectorView<'_, V>,
     ) -> Self {
         unsafe { squared_euclidean_distance_dense_unchecked(query, vector) }
     }
+
+    #[inline]
+    fn compute_dense_batch6<Q: ValueType, V: ValueType>(
+        query: DenseVectorView<'_, Q>,
+        vectors: [DenseVectorView<'_, V>; 6],
+    ) -> [Self; 6] {
+        unsafe { squared_euclidean_distance_dense_batch6_unchecked(query, vectors) }
+    }
 }
 
 impl ScalarDenseSupportedDistance for DotProduct {
+    #[inline]
     fn compute_dense<Q: ValueType, V: ValueType>(
         query: DenseVectorView<'_, Q>,
         vector: DenseVectorView<'_, V>,
     ) -> Self {
         unsafe { dot_product_dense_unchecked(query, vector) }
+    }
+
+    #[inline]
+    fn compute_dense_batch6<Q: ValueType, V: ValueType>(
+        query: DenseVectorView<'_, Q>,
+        vectors: [DenseVectorView<'_, V>; 6],
+    ) -> [Self; 6] {
+        unsafe { dot_product_dense_batch6_unchecked(query, vectors) }
     }
 }
 
@@ -148,6 +177,11 @@ where
     fn compute_distance(&self, vector: DenseVectorView<'v, Out>) -> D {
         D::compute_dense(self.query.as_view(), vector)
     }
+
+    #[inline]
+    fn compute_distances_batch6(&self, vectors: [DenseVectorView<'v, Out>; 6]) -> [D; 6] {
+        D::compute_dense_batch6(self.query.as_view(), vectors)
+    }
 }
 
 impl<In, Out, D> VectorEncoder for ScalarDenseQuantizer<In, Out, D>
@@ -191,6 +225,21 @@ where
     fn output_dim(&self) -> usize {
         self.d
     }
+
+    /// Compute distance between two stored encoded vectors without any allocation or decoding.
+    ///
+    /// For ScalarDenseQuantizer both vectors are already in the stored type `Out` (e.g. f32
+    /// or f16). The distance kernel accepts mixed-type views, so we pass both raw slices
+    /// directly. This eliminates the Vec allocation that the default via `vector_evaluator`
+    /// would incur that may be expensive in hot code paths.
+    #[inline]
+    fn compute_distance_between(
+        &self,
+        v1: Self::EncodedVector<'_>,
+        v2: Self::EncodedVector<'_>,
+    ) -> Self::Distance {
+        D::compute_dense(v1, v2)
+    }
 }
 
 impl<In, Out, D> SpaceUsage for ScalarDenseQuantizer<In, Out, D>
@@ -225,6 +274,80 @@ mod tests {
 
         let decoded = quant.decode_vector(encoded.as_view());
         assert_eq!(decoded.values(), &[0.5f32, 1.5]);
+    }
+
+    #[test]
+    fn compute_distance_between_matches_vector_evaluator_squared_euclidean() {
+        type Quant = ScalarDenseQuantizer<f32, f32, SquaredEuclideanDistance>;
+        let quant = Quant::new(3);
+        let v1 = DenseVectorView::new(&[1.0f32, 2.0, 3.0]);
+        let v2 = DenseVectorView::new(&[4.0f32, 5.0, 6.0]);
+        let via_evaluator = quant.vector_evaluator(v1).compute_distance(v2);
+        let direct = quant.compute_distance_between(v1, v2);
+        assert_eq!(via_evaluator, direct);
+    }
+
+    #[test]
+    fn compute_distance_between_matches_vector_evaluator_dot_product() {
+        type Quant = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        let quant = Quant::new(3);
+        let v1 = DenseVectorView::new(&[1.0f32, 0.0, 0.5]);
+        let v2 = DenseVectorView::new(&[2.0f32, 1.0, 3.0]);
+        let via_evaluator = quant.vector_evaluator(v1).compute_distance(v2);
+        let direct = quant.compute_distance_between(v1, v2);
+        assert_eq!(via_evaluator, direct);
+    }
+
+    #[test]
+    fn compute_distances_batch6_matches_six_compute_distance_calls() {
+        type Quant = ScalarDenseQuantizer<f32, f32, SquaredEuclideanDistance>;
+        let quant = Quant::new(4);
+        let query = DenseVectorView::new(&[1.0f32, 2.0, 3.0, 4.0]);
+        let evaluator = quant.query_evaluator(query);
+
+        let v0 = DenseVectorView::new(&[0.0f32, 0.0, 0.0, 0.0]);
+        let v1 = DenseVectorView::new(&[1.0f32, 1.0, 1.0, 1.0]);
+        let v2 = DenseVectorView::new(&[2.0f32, 2.0, 2.0, 2.0]);
+        let v3 = DenseVectorView::new(&[3.0f32, 3.0, 3.0, 3.0]);
+        let v4 = DenseVectorView::new(&[0.5f32, 1.5, 2.5, 3.5]);
+        let v5 = DenseVectorView::new(&[1.5f32, 1.5, 1.5, 1.5]);
+
+        let batch = evaluator.compute_distances_batch6([v0, v1, v2, v3, v4, v5]);
+        let singles = [
+            evaluator.compute_distance(v0),
+            evaluator.compute_distance(v1),
+            evaluator.compute_distance(v2),
+            evaluator.compute_distance(v3),
+            evaluator.compute_distance(v4),
+            evaluator.compute_distance(v5),
+        ];
+        assert_eq!(batch, singles);
+    }
+
+    #[test]
+    fn compute_distances_batch6_dot_product_matches_singles() {
+        type Quant = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        let quant = Quant::new(2);
+        let query = DenseVectorView::new(&[1.0f32, 2.0]);
+        let evaluator = quant.query_evaluator(query);
+
+        let v0 = DenseVectorView::new(&[3.0f32, 4.0]);
+        let v1 = DenseVectorView::new(&[0.5f32, 0.5]);
+        let v2 = DenseVectorView::new(&[-1.0f32, 1.0]);
+        let v3 = DenseVectorView::new(&[2.0f32, 0.0]);
+        let v4 = DenseVectorView::new(&[1.0f32, 1.0]);
+        let v5 = DenseVectorView::new(&[0.0f32, 3.0]);
+
+        let batch = evaluator.compute_distances_batch6([v0, v1, v2, v3, v4, v5]);
+        let singles = [
+            evaluator.compute_distance(v0),
+            evaluator.compute_distance(v1),
+            evaluator.compute_distance(v2),
+            evaluator.compute_distance(v3),
+            evaluator.compute_distance(v4),
+            evaluator.compute_distance(v5),
+        ];
+        assert_eq!(batch, singles);
     }
 
     #[test]

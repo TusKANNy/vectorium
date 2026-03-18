@@ -52,7 +52,15 @@ where
 {
     d: usize,
     dsub: usize,
-    centroids: Box<[PlainDenseDataset<f32, SquaredEuclideanDistance>]>,
+    /// Flat centroid buffer, SoA layout: [M × dsub × KSUB].
+    /// Subspace m occupies centroids[m*dsub*KSUB .. (m+1)*dsub*KSUB].
+    /// Dimension k of subspace m: centroids[m*dsub*KSUB + k*KSUB .. m*dsub*KSUB + (k+1)*KSUB].
+    /// Centroid i, subspace m, dimension k: centroids[m*dsub*KSUB + k*KSUB + i].
+    ///
+    /// SoA layout makes distance table build trivially auto-vectorizable: for each
+    /// dimension k, the inner loop over KSUB centroid values is a contiguous f32
+    /// slice with no stride.
+    centroids: Box<[f32]>,
     #[serde(skip)]
     _distance: PhantomData<D>,
 }
@@ -67,7 +75,7 @@ where
         assert_eq!(M % 4, 0, "M ({}) is not divisible by 4", M);
         assert_eq!(d % M, 0, "d ({}) is not divisible by M ({})", d, M);
         let dsub = d / M;
-        let centroids = Self::train_centroids(training_data, dsub).into();
+        let centroids = Self::train_centroids(training_data, dsub).into_boxed_slice();
         Self {
             d,
             dsub,
@@ -76,15 +84,20 @@ where
         }
     }
 
+    /// Returns a flat Vec<f32> of length M * dsub * KSUB in SoA layout: [M × dsub × KSUB].
+    /// KMeans output is AoS [KSUB × dsub]; we transpose each subspace to SoA [dsub × KSUB]
+    /// so that the distance table build inner loop is over contiguous KSUB f32 values.
     fn train_centroids(
         training_data: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
         dsub: usize,
-    ) -> Vec<PlainDenseDataset<f32, SquaredEuclideanDistance>> {
+    ) -> Vec<f32> {
         use rayon::prelude::*;
 
         println!("Running K-Means for {} subspaces", M);
 
-        let datasets: Vec<PlainDenseDataset<f32, SquaredEuclideanDistance>> = (0..M)
+        // Each rayon task trains one subspace, gets AoS centroids from KMeans,
+        // and transposes them to SoA before returning.
+        let parts: Vec<Vec<f32>> = (0..M)
             .into_par_iter()
             .map(|m| {
                 let quantizer = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(dsub);
@@ -102,14 +115,27 @@ where
                 }
 
                 let kmeans = KMeansBuilder::new().build();
-                kmeans.train(&sub_dataset, KSUB, None)
+                let trained = kmeans.train(&sub_dataset, KSUB, None);
+                // KMeans returns AoS: [c0_d0, c0_d1, .., c0_{dsub-1}, c1_d0, ..]
+                // Transpose to SoA: [d0_c0, d0_c1, .., d0_{KSUB-1}, d1_c0, ..]
+                let aos = trained.values();
+                let mut soa = vec![0.0_f32; KSUB * dsub];
+                for c in 0..KSUB {
+                    for d in 0..dsub {
+                        soa[d * KSUB + c] = aos[c * dsub + d];
+                    }
+                }
+                soa
             })
             .collect();
 
         println!("K-Means finished");
 
-        assert_eq!(datasets.len(), M, "Expected exactly {} datasets", M);
-        datasets
+        let mut flat = Vec::with_capacity(M * dsub * KSUB);
+        for part in parts {
+            flat.extend_from_slice(&part);
+        }
+        flat
     }
 
     fn sample_random_dataset(
@@ -152,37 +178,41 @@ where
         }
     }
 
+    /// Build a `ProductQuantizer` from pre-trained centroids in natural AoS layout.
+    ///
+    /// `centroids_aos` must have length `M * KSUB * (d / M)` with layout
+    /// `[M × KSUB × dsub]`: centroid `i` of subspace `m` at
+    /// `centroids_aos[m*KSUB*dsub + i*dsub .. m*KSUB*dsub + (i+1)*dsub]`.
+    /// Internally the buffer is transposed to SoA for efficient distance table builds.
     #[inline]
-    pub fn from_pretrained(
-        d: usize,
-        centroids: Vec<PlainDenseDataset<f32, SquaredEuclideanDistance>>,
-    ) -> Self {
+    pub fn from_pretrained(d: usize, centroids_aos: Vec<f32>) -> Self {
         assert_eq!(M % 4, 0, "M ({}) is not divisible by 4", M);
         assert_eq!(d % M, 0, "d ({}) is not divisible by M ({})", d, M);
-        assert_eq!(centroids.len(), M, "Expected {} subspaces, got {}", M, centroids.len());
         let dsub = d / M;
-        for (i, dataset) in centroids.iter().enumerate() {
-            assert_eq!(
-                dataset.len(),
-                KSUB,
-                "Subspace {} has {} centroids, expected {}",
-                i,
-                dataset.len(),
-                KSUB
-            );
-            assert_eq!(
-                dataset.output_dim(),
-                dsub,
-                "Subspace {} has dimension {}, expected {}",
-                i,
-                dataset.output_dim(),
-                dsub
-            );
+        assert_eq!(
+            centroids_aos.len(),
+            M * KSUB * dsub,
+            "centroids length must equal M * KSUB * dsub = {} * {} * {} = {}",
+            M,
+            KSUB,
+            dsub,
+            M * KSUB * dsub
+        );
+        // Transpose each subspace from AoS [KSUB × dsub] to SoA [dsub × KSUB].
+        let mut soa = vec![0.0_f32; M * dsub * KSUB];
+        for m in 0..M {
+            let aos_sub = &centroids_aos[m * KSUB * dsub..];
+            let soa_sub = &mut soa[m * dsub * KSUB..];
+            for c in 0..KSUB {
+                for k in 0..dsub {
+                    soa_sub[k * KSUB + c] = aos_sub[c * dsub + k];
+                }
+            }
         }
         Self {
             d,
             dsub,
-            centroids: centroids.into_boxed_slice(),
+            centroids: soa.into_boxed_slice(),
             _distance: PhantomData,
         }
     }
@@ -218,24 +248,39 @@ where
         M
     }
 
+    /// Returns the SoA centroid slice for subspace `m`: length `dsub * KSUB`.
+    /// Layout within the slice: dimension `k` occupies `[k*KSUB .. (k+1)*KSUB]`.
+    #[inline]
+    fn subspace_centroids(&self, m: usize) -> &[f32] {
+        let start = m * self.dsub * KSUB;
+        &self.centroids[start..start + self.dsub * KSUB]
+    }
+
     fn compute_euclidean_distance_table(&self, query: DenseVectorView<'_, f32>) -> Vec<f32> {
         assert_eq!(query.len(), self.d());
+        let dsub = self.dsub;
         let mut table = vec![0.0_f32; KSUB * M];
 
-        for (sub_id, (sub_distance_table, query_sub)) in table
+        // Tiled loop: process 8 centroids at a time.
+        // The 8 partial accumulators `acc` are kept in registers across all dsub
+        // dimension passes, so table_sub is written exactly once per element —
+        // no read-modify-write.
+        for (m, (table_sub, query_sub)) in table
             .chunks_mut(KSUB)
-            .zip(query.values().chunks(self.dsub))
+            .zip(query.values().chunks(dsub))
             .enumerate()
         {
-            let centroids = &self.centroids[sub_id];
-
-            let query = DenseVectorView::new(query_sub);
-            for (i, slot) in sub_distance_table.iter_mut().enumerate() {
-                let centroid = centroids.get(i as crate::VectorId);
-                *slot = unsafe {
-                    crate::distances::squared_euclidean_distance_dense_unchecked(query, centroid)
+            let centroids = self.subspace_centroids(m);
+            for i in (0..KSUB).step_by(8) {
+                let mut acc = [0.0_f32; 8];
+                for (k, &q_k) in query_sub.iter().enumerate() {
+                    let col8 = &centroids[k * KSUB + i..k * KSUB + i + 8];
+                    for (a, &c) in acc.iter_mut().zip(col8) {
+                        let d = q_k - c;
+                        *a += d * d;
+                    }
                 }
-                .distance();
+                table_sub[i..i + 8].copy_from_slice(&acc);
             }
         }
         table
@@ -243,24 +288,26 @@ where
 
     fn compute_dot_product_table(&self, query: DenseVectorView<'_, f32>) -> Vec<f32> {
         assert_eq!(query.len(), self.d());
+        let dsub = self.dsub;
         let mut table = vec![0.0_f32; KSUB * M];
 
-        for (sub_id, (sub_distance_table, query_sub)) in table
+        // Same tiling strategy as the euclidean table: 8-wide accumulators in
+        // registers across all dsub passes → single write per table element.
+        for (m, (table_sub, query_sub)) in table
             .chunks_mut(KSUB)
-            .zip(query.values().chunks(self.dsub))
+            .zip(query.values().chunks(dsub))
             .enumerate()
         {
-            let centroids = &self.centroids[sub_id];
-            let query = DenseVectorView::new(query_sub);
-
-            // For dot product, we need to compute q · c for each centroid
-            // We use the raw dot product computation since the centroids dataset
-            // is stored with SquaredEuclideanDistance but we need dot products
-            for (i, slot) in sub_distance_table.iter_mut().enumerate() {
-                let centroid = centroids.get(i as crate::VectorId);
-                *slot = unsafe {
-                    crate::distances::dot_product_dense_unchecked(query, centroid).distance()
-                };
+            let centroids = self.subspace_centroids(m);
+            for i in (0..KSUB).step_by(8) {
+                let mut acc = [0.0_f32; 8];
+                for (k, &q_k) in query_sub.iter().enumerate() {
+                    let col8 = &centroids[k * KSUB + i..k * KSUB + i + 8];
+                    for (a, &c) in acc.iter_mut().zip(col8) {
+                        *a += q_k * c;
+                    }
+                }
+                table_sub[i..i + 8].copy_from_slice(&acc);
             }
         }
         table
@@ -268,26 +315,34 @@ where
 
     fn compute_distance(&self, distance_table: &[f32], code: DenseVectorView<'_, u8>) -> f32 {
         assert_eq!(code.len(), M);
+        // 4 independent accumulators break the sequential dependency chain,
+        // giving the CPU 4-way ILP on the table lookups.
+        // M is always divisible by 4 (asserted at train/from_pretrained time).
         let code_bytes = code.values();
-        let mut total = 0.0_f32;
-        for (sub_id, code_byte) in code_bytes.iter().enumerate() {
+        let mut acc = [0.0_f32; 4];
+        let mut ptr = 0_usize;
+        for subcode in code_bytes.chunks_exact(4) {
             unsafe {
-                total = total.algebraic_add(
-                    *distance_table.get_unchecked(sub_id * KSUB + *code_byte as usize),
-                );
+                acc[0] += *distance_table.get_unchecked(ptr + subcode[0] as usize);
+                acc[1] += *distance_table.get_unchecked(ptr + KSUB + subcode[1] as usize);
+                acc[2] += *distance_table.get_unchecked(ptr + 2 * KSUB + subcode[2] as usize);
+                acc[3] += *distance_table.get_unchecked(ptr + 3 * KSUB + subcode[3] as usize);
             }
+            ptr += 4 * KSUB;
         }
-        total
+        acc[0] + acc[1] + acc[2] + acc[3]
     }
 
     fn decode_vector(&self, vector: DenseVectorView<'_, u8>) -> DenseVectorOwned<f32> {
         assert_eq!(vector.len(), M);
-        let code_bytes = vector.values();
         let mut decoded = Vec::with_capacity(self.d());
-        for (sub_id, code_byte) in code_bytes.iter().enumerate() {
-            let centroids = &self.centroids[sub_id];
-            let centroid = centroids.get(*code_byte as crate::VectorId);
-            decoded.extend_from_slice(centroid.values());
+        for (sub_id, &code_byte) in vector.values().iter().enumerate() {
+            // SoA: centroid i, dim k → centroids[k * KSUB + i]
+            let centroids = self.subspace_centroids(sub_id);
+            let i = code_byte as usize;
+            for k in 0..self.dsub {
+                decoded.push(centroids[k * KSUB + i]);
+            }
         }
         DenseVectorOwned::new(decoded)
     }
@@ -298,12 +353,7 @@ where
     D: ProductQuantizerDistance,
 {
     fn space_usage_bytes(&self) -> usize {
-        2 * std::mem::size_of::<usize>()
-            + self
-                .centroids
-                .iter()
-                .map(|ds| ds.space_usage_bytes())
-                .sum::<usize>()
+        2 * std::mem::size_of::<usize>() + self.centroids.len() * std::mem::size_of::<f32>()
     }
 }
 
@@ -330,13 +380,31 @@ where
         OutputContainer: Extend<Self::OutputValueType>,
     {
         assert_eq!(input.len(), self.d());
-        let values = input.values();
-        for (sub_id, query_sub) in values.chunks(self.dsub).enumerate() {
-            let centroid_idx = self.centroids[sub_id]
-                .search_nearest(DenseVectorView::new(query_sub))
-                .map(|scored| scored.vector as u8)
+        for (sub_id, query_sub) in input.values().chunks(self.dsub).enumerate() {
+            let centroids = self.subspace_centroids(sub_id);
+            // Accumulate per-centroid squared distances dimension by dimension.
+            // KSUB=256 is a compile-time constant so `dists` lives on the stack.
+            let mut dists = [0.0_f32; KSUB];
+            let q0 = query_sub[0];
+            let col0 = &centroids[0..KSUB];
+            for (acc, &c_val) in dists.iter_mut().zip(col0) {
+                let diff = q0 - c_val;
+                *acc = diff * diff;
+            }
+            for (k, &q_k) in query_sub.iter().enumerate().skip(1) {
+                let col = &centroids[k * KSUB..(k + 1) * KSUB];
+                for (acc, &c_val) in dists.iter_mut().zip(col) {
+                    let diff = q_k - c_val;
+                    *acc += diff * diff;
+                }
+            }
+            let best_idx = dists
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(i, _)| i as u8)
                 .unwrap_or(0);
-            output.extend(std::iter::once(centroid_idx));
+            output.extend(std::iter::once(best_idx));
         }
     }
 }
@@ -386,7 +454,6 @@ where
     D: ProductQuantizerDistance,
 {
     fn new(encoder: &'a ProductQuantizer<M, D>, query: DenseVectorView<'_, f32>) -> Self {
-
         let table = D::compute_query_distance_table(encoder, query);
         Self {
             encoder,
@@ -433,18 +500,10 @@ where
         };
 
         let pq_encoder = ProductQuantizer::<M, D>::train(&training_dataset);
-        let encoded_vector_len = pq_encoder.output_dim();
-        let mut encoded_data = Vec::with_capacity(dataset.len() * encoded_vector_len);
-
-        for vector in dataset.iter() {
-            pq_encoder.push_encoded(vector, &mut encoded_data);
-        }
-
-        let encoded_data = encoded_data.into_boxed_slice();
-        crate::DenseDataset::<ProductQuantizer<M, D>>::from_raw(
-            encoded_data,
-            dataset.len(),
+        crate::DenseDataset::<ProductQuantizer<M, D>>::from_flat_par(
             pq_encoder,
+            dataset.values(),
+            dataset.len(),
         )
     }
 }
@@ -461,7 +520,8 @@ where
         let euclidean_dataset: PlainDenseDataset<f32, SquaredEuclideanDistance> =
             dataset.clone().into();
 
-        let sample_size = ProductQuantizer::<M, D>::compute_training_sample_size(euclidean_dataset.len());
+        let sample_size =
+            ProductQuantizer::<M, D>::compute_training_sample_size(euclidean_dataset.len());
 
         let training_dataset = match sample_size {
             Some(size) => {
@@ -476,18 +536,100 @@ where
         };
 
         let pq_encoder = ProductQuantizer::<M, D>::train(&training_dataset);
-        let encoded_vector_len = pq_encoder.output_dim();
-        let mut encoded_data = Vec::with_capacity(dataset.len() * encoded_vector_len);
-
-        for vector in dataset.iter() {
-            pq_encoder.push_encoded(vector, &mut encoded_data);
-        }
-
-        let encoded_data = encoded_data.into_boxed_slice();
-        crate::DenseDataset::<ProductQuantizer<M, D>>::from_raw(
-            encoded_data,
-            dataset.len(),
+        crate::DenseDataset::<ProductQuantizer<M, D>>::from_flat_par(
             pq_encoder,
+            dataset.values(),
+            dataset.len(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const M_TEST: usize = 4;
+    const D_TEST: usize = 8; // dsub = 2
+
+    fn make_pq_and_data() -> (
+        ProductQuantizer<M_TEST, SquaredEuclideanDistance>,
+        Vec<Vec<f32>>,
+    ) {
+        // Build 300 random-ish training vectors dimension 8.
+        let seed_vecs: Vec<Vec<f32>> = (0u32..300)
+            .map(|i| {
+                (0..D_TEST)
+                    .map(|j| ((i * 17 + j as u32 * 31) % 100) as f32 / 100.0)
+                    .collect()
+            })
+            .collect();
+
+        let quantizer = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(D_TEST);
+        let mut training_data =
+            PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
+                quantizer,
+                seed_vecs.len(),
+            );
+        for v in &seed_vecs {
+            training_data.push(DenseVectorView::new(v));
+        }
+        let training_data: PlainDenseDataset<f32, SquaredEuclideanDistance> = training_data.into();
+
+        let pq = ProductQuantizer::<M_TEST, SquaredEuclideanDistance>::train(&training_data);
+        (pq, seed_vecs)
+    }
+
+    /// Encoding a vector then decoding it should reconstruct something close to
+    /// the original (exact when query == a centroid, approximate otherwise).
+    #[test]
+    fn train_encode_decode_roundtrip() {
+        let (pq, vecs) = make_pq_and_data();
+        // Encode the first vector.
+        let query = DenseVectorView::new(&vecs[0]);
+        let mut codes: Vec<u8> = Vec::with_capacity(M_TEST);
+        pq.push_encoded(query, &mut codes);
+        assert_eq!(codes.len(), M_TEST);
+
+        // Decode it back.
+        let decoded = pq.decode_vector(DenseVectorView::new(&codes));
+        assert_eq!(decoded.values().len(), D_TEST);
+
+        // The decoded vector should be the nearest centroid per subspace, so its
+        // distance from the original query should be <= max possible centroid gap.
+        // Just check all values are finite.
+        for v in decoded.values() {
+            assert!(v.is_finite(), "decoded value is not finite");
+        }
+    }
+
+    /// For each subspace the table slot chosen by push_encoded must equal
+    /// argmin over that subspace's centroids of the Euclidean distance.
+    #[test]
+    fn table_lookup_matches_encode() {
+        let (pq, vecs) = make_pq_and_data();
+        let query_vals = &vecs[1];
+        let query = DenseVectorView::new(query_vals);
+
+        // Get codes from push_encoded.
+        let mut codes: Vec<u8> = Vec::with_capacity(M_TEST);
+        pq.push_encoded(query, &mut codes);
+
+        // Build the distance table independently and verify each code matches
+        // the argmin of the corresponding KSUB entries.
+        let table = pq.compute_euclidean_distance_table(query);
+        for m in 0..M_TEST {
+            let sub_table = &table[m * KSUB..(m + 1) * KSUB];
+            let best = sub_table
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                .map(|(i, _)| i as u8)
+                .unwrap();
+            assert_eq!(
+                codes[m], best,
+                "subspace {m}: push_encoded gave code {} but table argmin is {}",
+                codes[m], best
+            );
+        }
     }
 }
