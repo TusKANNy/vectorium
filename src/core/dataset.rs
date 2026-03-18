@@ -10,10 +10,27 @@ use itertools::Itertools;
 pub type VectorId = u64;
 
 /// Holds a vector identifier together with the distance reported by a search evaluator.
-#[derive(Debug, PartialOrd, Eq, Ord, PartialEq, Copy, Clone)]
+///
+/// Ordering is based solely on `distance`; the `vector` field is not considered.
+/// This avoids the extra integer comparison on every heap operation.
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct ScoredItemGeneric<D, T> {
     pub distance: D,
     pub vector: T,
+}
+
+impl<D: PartialOrd, T: PartialEq> PartialOrd for ScoredItemGeneric<D, T> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.distance.partial_cmp(&other.distance)
+    }
+}
+
+impl<D: Ord, T: Eq> Ord for ScoredItemGeneric<D, T> {
+    #[inline]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.distance.cmp(&other.distance)
+    }
 }
 
 /// Helper type that maintains the ordering guarantees expected by callers of range-based APIs.

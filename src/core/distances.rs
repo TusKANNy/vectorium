@@ -3,13 +3,14 @@
 //! Provides the `Distance` trait (a small wrapper around an `f32` value)
 //! and concrete distance types that implement comparison.
 //!
-//! NaN (Not a Number) is NOT permitted for distance values. These types
-//! implement `Ord` using a total ordering and will panic if a NaN is
-//! encountered. `PartialEq` and `PartialOrd` are provided for convenience,
-//! but the crate's contract forbids NaN.
+//! NaN is NOT permitted for distance values; passing one is undefined behaviour.
+//! This is enforced via `debug_assert!` in `From<f32>` so the check is active in
+//! debug/test builds but compiled away in release builds.
 //!
-//! `DotProduct` implements reversed ordering: larger values are considered
-//! better.
+//! `Ord` is implemented via `partial_cmp(...).unwrap_or(Equal)` — NaN-free inputs
+//! are assumed, so the `unwrap_or` branch is unreachable in practice.
+//!
+//! `DotProduct` implements reversed ordering: larger values are considered better.
 
 use crate::core::vector::{DenseVectorView, SparseVectorView};
 use crate::utils::is_strictly_sorted;
@@ -69,7 +70,7 @@ impl SquaredEuclideanDistance {
 
 impl From<f32> for SquaredEuclideanDistance {
     fn from(v: f32) -> Self {
-        assert!(
+        debug_assert!(
             !v.is_nan(),
             "NaN is not allowed for SquaredEuclideanDistance"
         );
@@ -92,8 +93,11 @@ impl PartialOrd for SquaredEuclideanDistance {
 impl Eq for SquaredEuclideanDistance {}
 
 impl Ord for SquaredEuclideanDistance {
+    #[inline]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.total_cmp(&other.0)
+        self.0
+            .partial_cmp(&other.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
     }
 }
 
@@ -117,7 +121,7 @@ impl Distance for DotProduct {
 
 impl From<f32> for DotProduct {
     fn from(v: f32) -> Self {
-        assert!(!v.is_nan(), "NaN is not allowed for DotProduct");
+        debug_assert!(!v.is_nan(), "NaN is not allowed for DotProduct");
         DotProduct(v)
     }
 }
@@ -137,8 +141,12 @@ impl PartialOrd for DotProduct {
 impl Eq for DotProduct {}
 
 impl Ord for DotProduct {
+    #[inline]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other.0.total_cmp(&self.0)
+        other
+            .0
+            .partial_cmp(&self.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
     }
 }
 
@@ -195,6 +203,83 @@ where
         })
         .fold(0.0, |acc: f32, x| acc.algebraic_add(x))
         .into()
+}
+
+/// Computes the dot product between a dense query vector and 6 sparse vectors without bounds checking.
+///
+/// # Safety
+///
+/// The caller must ensure that all component indices in the sparse vectors are valid indices
+/// into the query vector's values array. Using invalid indices will result in undefined behavior.
+pub unsafe fn dot_product_dense_sparse_batch6_unchecked<C, Q, V>(
+    query: DenseVectorView<'_, Q>,
+    vectors: [SparseVectorView<'_, C, V>; 6],
+) -> [DotProduct; 6]
+where
+    C: ComponentType,
+    Q: ValueType,
+    V: ValueType,
+{
+    let q = query.values();
+
+    let mut accs = [0.0f32; 6];
+    let mut lens = [0usize; 6];
+    let comps = [
+        vectors[0].components(),
+        vectors[1].components(),
+        vectors[2].components(),
+        vectors[3].components(),
+        vectors[4].components(),
+        vectors[5].components(),
+    ];
+    let vals = [
+        vectors[0].values(),
+        vectors[1].values(),
+        vectors[2].values(),
+        vectors[3].values(),
+        vectors[4].values(),
+        vectors[5].values(),
+    ];
+
+    for i in 0..6 {
+        lens[i] = comps[i].len();
+    }
+
+    let min_len = lens.iter().copied().min().unwrap_or(0);
+
+    let mut i = 0;
+    while i < min_len {
+        for j in 0..6 {
+            let q_val = unsafe { *q.get_unchecked((*comps[j].get_unchecked(i)).as_()) }
+                .to_f32()
+                .unwrap();
+            let v_val = unsafe { (*vals[j].get_unchecked(i)).to_f32().unwrap() };
+            accs[j] = accs[j].algebraic_add(q_val.algebraic_mul(v_val));
+        }
+        i += 1;
+    }
+
+    // Handle remaining elements for each vector
+    for j in 0..6 {
+        let mut ij = min_len;
+        while ij < lens[j] {
+            let q_val = unsafe { *q.get_unchecked((*comps[j].get_unchecked(ij)).as_()) }
+                .to_f32()
+                .unwrap();
+            let v_val = unsafe { (*vals[j].get_unchecked(ij)).to_f32().unwrap() };
+            accs[j] = accs[j].algebraic_add(q_val.algebraic_mul(v_val));
+            ij += 1;
+        }
+    }
+
+    [
+        DotProduct::from(accs[0]),
+        DotProduct::from(accs[1]),
+        DotProduct::from(accs[2]),
+        DotProduct::from(accs[3]),
+        DotProduct::from(accs[4]),
+        DotProduct::from(accs[5]),
+    ]
 }
 
 /// Computes the dot product between two sparse vectors using merge style.
@@ -314,6 +399,60 @@ where
         .into()
 }
 
+/// Computes the dot product between a dense query and six dense vectors in a single pass.
+///
+/// Uses 6 independent partial-sum accumulators so the CPU can execute multiple multiply-add chains
+/// simultaneously (better ILP) and reuse the query data before eviction (better cache behaviour).
+///
+/// # Safety
+/// Caller must ensure `query.len() == vi.len()` for all six vectors.
+#[inline]
+#[must_use]
+pub unsafe fn dot_product_dense_batch6_unchecked<Q, V>(
+    query: DenseVectorView<'_, Q>,
+    [v0, v1, v2, v3, v4, v5]: [DenseVectorView<'_, V>; 6],
+) -> [DotProduct; 6]
+where
+    Q: ValueType,
+    V: ValueType,
+{
+    let d = query.len();
+    let q = query.values();
+    let a0 = v0.values();
+    let a1 = v1.values();
+    let a2 = v2.values();
+    let a3 = v3.values();
+    let a4 = v4.values();
+    let a5 = v5.values();
+
+    let mut r0 = 0.0f32;
+    let mut r1 = 0.0f32;
+    let mut r2 = 0.0f32;
+    let mut r3 = 0.0f32;
+    let mut r4 = 0.0f32;
+    let mut r5 = 0.0f32;
+
+    for i in 0..d {
+        unsafe {
+            let qi = q.get_unchecked(i).to_f32().unwrap();
+            r0 = r0.algebraic_add(qi.algebraic_mul(a0.get_unchecked(i).to_f32().unwrap()));
+            r1 = r1.algebraic_add(qi.algebraic_mul(a1.get_unchecked(i).to_f32().unwrap()));
+            r2 = r2.algebraic_add(qi.algebraic_mul(a2.get_unchecked(i).to_f32().unwrap()));
+            r3 = r3.algebraic_add(qi.algebraic_mul(a3.get_unchecked(i).to_f32().unwrap()));
+            r4 = r4.algebraic_add(qi.algebraic_mul(a4.get_unchecked(i).to_f32().unwrap()));
+            r5 = r5.algebraic_add(qi.algebraic_mul(a5.get_unchecked(i).to_f32().unwrap()));
+        }
+    }
+    [
+        r0.into(),
+        r1.into(),
+        r2.into(),
+        r3.into(),
+        r4.into(),
+        r5.into(),
+    ]
+}
+
 /// Computes the squared Euclidean distance between two dense vectors.
 #[cfg_attr(test, inline(never))]
 #[cfg_attr(not(test), inline)]
@@ -365,6 +504,66 @@ where
     dist.into()
 }
 
+/// Computes the squared Euclidean distance between one query and six dense vectors in a single pass.
+///
+/// Uses 6 independent partial-sum accumulators so the CPU can execute multiple multiply-add chains
+/// simultaneously (better ILP) and reuse the query data before eviction (better cache behaviour).
+///
+/// # Safety
+/// Caller must ensure `query.len() == vi.len()` for all six vectors.
+#[inline]
+#[must_use]
+pub unsafe fn squared_euclidean_distance_dense_batch6_unchecked<Q, V>(
+    query: DenseVectorView<'_, Q>,
+    [v0, v1, v2, v3, v4, v5]: [DenseVectorView<'_, V>; 6],
+) -> [SquaredEuclideanDistance; 6]
+where
+    Q: ValueType,
+    V: ValueType,
+{
+    let d = query.len();
+    let q = query.values();
+    let a0 = v0.values();
+    let a1 = v1.values();
+    let a2 = v2.values();
+    let a3 = v3.values();
+    let a4 = v4.values();
+    let a5 = v5.values();
+
+    let mut r0 = 0.0f32;
+    let mut r1 = 0.0f32;
+    let mut r2 = 0.0f32;
+    let mut r3 = 0.0f32;
+    let mut r4 = 0.0f32;
+    let mut r5 = 0.0f32;
+
+    for i in 0..d {
+        unsafe {
+            let qi = q.get_unchecked(i).to_f32().unwrap();
+            let d0 = qi.algebraic_sub(a0.get_unchecked(i).to_f32().unwrap());
+            let d1 = qi.algebraic_sub(a1.get_unchecked(i).to_f32().unwrap());
+            let d2 = qi.algebraic_sub(a2.get_unchecked(i).to_f32().unwrap());
+            let d3 = qi.algebraic_sub(a3.get_unchecked(i).to_f32().unwrap());
+            let d4 = qi.algebraic_sub(a4.get_unchecked(i).to_f32().unwrap());
+            let d5 = qi.algebraic_sub(a5.get_unchecked(i).to_f32().unwrap());
+            r0 = r0.algebraic_add(d0.algebraic_mul(d0));
+            r1 = r1.algebraic_add(d1.algebraic_mul(d1));
+            r2 = r2.algebraic_add(d2.algebraic_mul(d2));
+            r3 = r3.algebraic_add(d3.algebraic_mul(d3));
+            r4 = r4.algebraic_add(d4.algebraic_mul(d4));
+            r5 = r5.algebraic_add(d5.algebraic_mul(d5));
+        }
+    }
+    [
+        r0.into(),
+        r1.into(),
+        r2.into(),
+        r3.into(),
+        r4.into(),
+        r5.into(),
+    ]
+}
+
 fn sparse_squared_norm<C, V>(vector: SparseVectorView<'_, C, V>) -> f32
 where
     C: ComponentType,
@@ -404,6 +603,73 @@ where
         .algebraic_sub(2.0f32.algebraic_mul(dot_query_b));
 
     SquaredEuclideanDistance::from(dist)
+}
+
+pub fn squared_euclidean_distance_sparse_with_dense_query_batch6<C, Q, V>(
+    dot_query: f32,
+    query: DenseVectorView<'_, Q>,
+    vectors: [SparseVectorView<'_, C, V>; 6],
+) -> [SquaredEuclideanDistance; 6]
+where
+    C: ComponentType,
+    Q: ValueType,
+    V: ValueType,
+{
+    let query_len = query.len();
+    for vec in &vectors {
+        for &c in vec.components() {
+            assert!(
+                c.as_() < query_len,
+                "sparse vector component {} is out of bounds for query of length {}",
+                c.as_(),
+                query_len
+            );
+        }
+    }
+
+    let dots = unsafe { dot_product_dense_sparse_batch6_unchecked(query, vectors) };
+
+    let dbs = [
+        sparse_squared_norm(vectors[0]),
+        sparse_squared_norm(vectors[1]),
+        sparse_squared_norm(vectors[2]),
+        sparse_squared_norm(vectors[3]),
+        sparse_squared_norm(vectors[4]),
+        sparse_squared_norm(vectors[5]),
+    ];
+
+    [
+        SquaredEuclideanDistance::from(
+            dot_query
+                .algebraic_add(dbs[0])
+                .algebraic_sub(2.0f32.algebraic_mul(dots[0].distance())),
+        ),
+        SquaredEuclideanDistance::from(
+            dot_query
+                .algebraic_add(dbs[1])
+                .algebraic_sub(2.0f32.algebraic_mul(dots[1].distance())),
+        ),
+        SquaredEuclideanDistance::from(
+            dot_query
+                .algebraic_add(dbs[2])
+                .algebraic_sub(2.0f32.algebraic_mul(dots[2].distance())),
+        ),
+        SquaredEuclideanDistance::from(
+            dot_query
+                .algebraic_add(dbs[3])
+                .algebraic_sub(2.0f32.algebraic_mul(dots[3].distance())),
+        ),
+        SquaredEuclideanDistance::from(
+            dot_query
+                .algebraic_add(dbs[4])
+                .algebraic_sub(2.0f32.algebraic_mul(dots[4].distance())),
+        ),
+        SquaredEuclideanDistance::from(
+            dot_query
+                .algebraic_add(dbs[5])
+                .algebraic_sub(2.0f32.algebraic_mul(dots[5].distance())),
+        ),
+    ]
 }
 
 /// Computes the squared Euclidean distance between two sparse vectors.
@@ -769,6 +1035,88 @@ mod tests {
     #[should_panic(expected = "NaN is not allowed for SquaredEuclideanDistance")]
     fn squared_euclidean_from_nan_panics() {
         let _ = SquaredEuclideanDistance::from(f32::NAN);
+    }
+
+    #[test]
+    fn squared_euclidean_batch6_matches_six_singles() {
+        let q = &[1.0f32, 2.0, 3.0, 4.0];
+        let a0 = &[0.0f32, 0.0, 0.0, 0.0];
+        let a1 = &[1.0f32, 1.0, 1.0, 1.0];
+        let a2 = &[2.0f32, 2.0, 2.0, 2.0];
+        let a3 = &[3.0f32, 4.0, 5.0, 6.0];
+        let a4 = &[4.0f32, 3.0, 2.0, 1.0];
+        let a5 = &[0.5f32, 1.5, 2.5, 3.5];
+        let query = DenseVectorView::new(q);
+        let vs = [
+            DenseVectorView::new(a0),
+            DenseVectorView::new(a1),
+            DenseVectorView::new(a2),
+            DenseVectorView::new(a3),
+            DenseVectorView::new(a4),
+            DenseVectorView::new(a5),
+        ];
+        let batch = unsafe { squared_euclidean_distance_dense_batch6_unchecked(query, vs) };
+        let singles = vs.map(|v| unsafe { squared_euclidean_distance_dense_unchecked(query, v) });
+        assert_eq!(batch, singles);
+    }
+
+    #[test]
+    fn dot_product_batch6_matches_six_singles() {
+        let q = &[1.0f32, 0.5, 2.0];
+        let a0 = &[3.0f32, 1.0, 0.0];
+        let a1 = &[0.0f32, 0.0, 0.0];
+        let a2 = &[-1.0f32, 2.0, 1.0];
+        let a3 = &[1.0f32, 1.0, 1.0];
+        let a4 = &[2.0f32, 0.0, 1.0];
+        let a5 = &[0.5f32, 1.5, 0.5];
+        let query = DenseVectorView::new(q);
+        let vs = [
+            DenseVectorView::new(a0),
+            DenseVectorView::new(a1),
+            DenseVectorView::new(a2),
+            DenseVectorView::new(a3),
+            DenseVectorView::new(a4),
+            DenseVectorView::new(a5),
+        ];
+        let batch = unsafe { dot_product_dense_batch6_unchecked(query, vs) };
+        let singles = vs.map(|v| unsafe { dot_product_dense_unchecked(query, v) });
+        assert_eq!(batch, singles);
+    }
+
+    #[test]
+    fn squared_euclidean_batch6_dim1_edge_case() {
+        let query = DenseVectorView::new(&[5.0f32]);
+        let vs = [
+            DenseVectorView::new(&[5.0f32]),
+            DenseVectorView::new(&[4.0f32]),
+            DenseVectorView::new(&[3.0f32]),
+            DenseVectorView::new(&[0.0f32]),
+            DenseVectorView::new(&[6.0f32]),
+            DenseVectorView::new(&[2.0f32]),
+        ];
+        let batch = unsafe { squared_euclidean_distance_dense_batch6_unchecked(query, vs) };
+        assert_eq!(batch[0], SquaredEuclideanDistance::from(0.0));
+        assert_eq!(batch[1], SquaredEuclideanDistance::from(1.0));
+        assert_eq!(batch[2], SquaredEuclideanDistance::from(4.0));
+        assert_eq!(batch[3], SquaredEuclideanDistance::from(25.0));
+        assert_eq!(batch[4], SquaredEuclideanDistance::from(1.0));
+        assert_eq!(batch[5], SquaredEuclideanDistance::from(9.0));
+    }
+
+    #[test]
+    fn squared_euclidean_batch6_all_zero_query_and_vectors() {
+        let zero_data = &[0.0f32, 0.0, 0.0];
+        let query = DenseVectorView::new(zero_data);
+        let zero = DenseVectorView::new(zero_data);
+        let batch = unsafe {
+            squared_euclidean_distance_dense_batch6_unchecked(
+                query,
+                [zero, zero, zero, zero, zero, zero],
+            )
+        };
+        for d in batch {
+            assert_eq!(d, SquaredEuclideanDistance::from(0.0));
+        }
     }
 
     #[test]

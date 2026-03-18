@@ -15,6 +15,16 @@ pub trait QueryEvaluator<V: VectorView> {
     ///
     /// Implementations must be fast and should not mutate `vector`.
     fn compute_distance(&self, vector: V) -> Self::Distance;
+
+    /// Calculates distances between the evaluator's query and six vectors in one call.
+    ///
+    /// The default dispatches to six independent `compute_distance` calls. Encoders that can
+    /// compute all six distances in a single-pass kernel should override this to improve ILP
+    /// and cache reuse.
+    #[inline]
+    fn compute_distances_batch6(&self, vectors: [V; 6]) -> [Self::Distance; 6] {
+        vectors.map(|v| self.compute_distance(v))
+    }
 }
 
 /// The encoder abstraction used by datasets.
@@ -57,6 +67,20 @@ pub trait VectorEncoder: Send + Sync + SpaceUsage {
 
     fn input_dim(&self) -> usize;
     fn output_dim(&self) -> usize;
+
+    /// Compute the distance between two encoded dataset vectors without building an evaluator.
+    ///
+    /// The default implementation builds a temporary evaluator (one allocation). Encoders
+    /// that can compute distances directly on their stored representation (e.g. plain dense
+    /// f32/f16 quantizers) should override this to avoid any allocation in hot code paths.
+    #[inline]
+    fn compute_distance_between(
+        &self,
+        v1: Self::EncodedVector<'_>,
+        v2: Self::EncodedVector<'_>,
+    ) -> Self::Distance {
+        self.vector_evaluator(v1).compute_distance(v2)
+    }
 }
 
 /// Encoder contract for dense vectors.

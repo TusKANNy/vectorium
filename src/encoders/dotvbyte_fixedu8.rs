@@ -468,9 +468,7 @@ impl<'a> DotVbyteFixedu8<'a> {
                 try_cast_slice(slice.get_unchecked(bytes_start..values_start)).unwrap_unchecked();
 
             let values_end = slice.len();
-            let values = Self::cast_simd_slice::<N>(
-                slice.get_unchecked(values_start..values_end),
-            );
+            let values = Self::cast_simd_slice::<N>(slice.get_unchecked(values_start..values_end));
 
             Self {
                 values,

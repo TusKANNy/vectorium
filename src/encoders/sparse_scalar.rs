@@ -7,8 +7,10 @@ use crate::core::vector_encoder::{
     VectorEncoder,
 };
 use crate::distances::{
-    Distance, DotProduct, SquaredEuclideanDistance, dot_product_dense_sparse_unchecked,
+    Distance, DotProduct, SquaredEuclideanDistance, dot_product_dense_sparse_batch6_unchecked,
+    dot_product_dense_sparse_unchecked, dot_product_sparse_with_merge,
     dot_product_sparse_with_merge_unchecked, squared_euclidean_distance_sparse_with_dense_query,
+    squared_euclidean_distance_sparse_with_dense_query_batch6,
     squared_euclidean_distance_sparse_with_merge,
 };
 use crate::utils::is_strictly_sorted;
@@ -27,6 +29,35 @@ pub trait ScalarSparseSupportedDistance: Distance {
         query: &Option<SparseVectorOwned<C, Q>>,
         vector_sparse: SparseVectorView<'_, C, V>,
         dot_query: Option<f32>,
+    ) -> Self;
+
+    #[inline]
+    fn compute_sparse_batch6<C: ComponentType, Q: ValueType, V: ValueType + Float>(
+        dense_query: &Option<DenseVectorOwned<Q>>,
+        query: &Option<SparseVectorOwned<C, Q>>,
+        vectors: [SparseVectorView<'_, C, V>; 6],
+        dot_query: Option<f32>,
+    ) -> [Self; 6]
+    where
+        Self: Sized,
+    {
+        [
+            Self::compute_sparse(dense_query, query, vectors[0], dot_query),
+            Self::compute_sparse(dense_query, query, vectors[1], dot_query),
+            Self::compute_sparse(dense_query, query, vectors[2], dot_query),
+            Self::compute_sparse(dense_query, query, vectors[3], dot_query),
+            Self::compute_sparse(dense_query, query, vectors[4], dot_query),
+            Self::compute_sparse(dense_query, query, vectors[5], dot_query),
+        ]
+    }
+
+    /// Compute distance directly between two stored sparse encoded vectors.
+    ///
+    /// Bypasses evaluator creation entirely — zero allocation, zero decoding.
+    /// Used in the pruning hot-path (reverse-link updates, shrink heuristic).
+    fn compute_sparse_between<C: ComponentType, V: ValueType + Float>(
+        v1: SparseVectorView<'_, C, V>,
+        v2: SparseVectorView<'_, C, V>,
     ) -> Self;
 }
 
@@ -61,6 +92,37 @@ impl ScalarSparseSupportedDistance for DotProduct {
             }
         }
     }
+
+    #[inline]
+    fn compute_sparse_batch6<C: ComponentType, Q: ValueType, V: ValueType + Float>(
+        dense_query: &Option<DenseVectorOwned<Q>>,
+        query: &Option<SparseVectorOwned<C, Q>>,
+        vectors: [SparseVectorView<'_, C, V>; 6],
+        _dot_query: Option<f32>,
+    ) -> [Self; 6] {
+        if let Some(dense_q) = dense_query {
+            let dense_view = dense_q.as_view();
+            unsafe { dot_product_dense_sparse_batch6_unchecked(dense_view, vectors) }
+        } else {
+            let sparse_view = query.as_ref().unwrap().as_view();
+            [
+                unsafe { dot_product_sparse_with_merge_unchecked(sparse_view, vectors[0]) },
+                unsafe { dot_product_sparse_with_merge_unchecked(sparse_view, vectors[1]) },
+                unsafe { dot_product_sparse_with_merge_unchecked(sparse_view, vectors[2]) },
+                unsafe { dot_product_sparse_with_merge_unchecked(sparse_view, vectors[3]) },
+                unsafe { dot_product_sparse_with_merge_unchecked(sparse_view, vectors[4]) },
+                unsafe { dot_product_sparse_with_merge_unchecked(sparse_view, vectors[5]) },
+            ]
+        }
+    }
+
+    #[inline]
+    fn compute_sparse_between<C: ComponentType, V: ValueType + Float>(
+        v1: SparseVectorView<'_, C, V>,
+        v2: SparseVectorView<'_, C, V>,
+    ) -> Self {
+        unsafe { dot_product_sparse_with_merge_unchecked(v1, v2) }
+    }
 }
 
 impl ScalarSparseSupportedDistance for SquaredEuclideanDistance {
@@ -86,6 +148,45 @@ impl ScalarSparseSupportedDistance for SquaredEuclideanDistance {
             let sparse_view = query.as_ref().unwrap().as_view();
             squared_euclidean_distance_sparse_with_merge(dot_query, sparse_view, vector_sparse)
         }
+    }
+
+    #[inline]
+    fn compute_sparse_batch6<C: ComponentType, Q: ValueType, V: ValueType + Float>(
+        dense_query: &Option<DenseVectorOwned<Q>>,
+        query: &Option<SparseVectorOwned<C, Q>>,
+        vectors: [SparseVectorView<'_, C, V>; 6],
+        dot_query: Option<f32>,
+    ) -> [Self; 6] {
+        let dot_query = dot_query
+            .expect("SquaredEuclideanDistance requires a precomputed query dot product value");
+
+        if let Some(dense_q) = dense_query {
+            let dense_view = dense_q.as_view();
+            squared_euclidean_distance_sparse_with_dense_query_batch6(
+                dot_query, dense_view, vectors,
+            )
+        } else {
+            let sparse_view = query.as_ref().unwrap().as_view();
+            [
+                squared_euclidean_distance_sparse_with_merge(dot_query, sparse_view, vectors[0]),
+                squared_euclidean_distance_sparse_with_merge(dot_query, sparse_view, vectors[1]),
+                squared_euclidean_distance_sparse_with_merge(dot_query, sparse_view, vectors[2]),
+                squared_euclidean_distance_sparse_with_merge(dot_query, sparse_view, vectors[3]),
+                squared_euclidean_distance_sparse_with_merge(dot_query, sparse_view, vectors[4]),
+                squared_euclidean_distance_sparse_with_merge(dot_query, sparse_view, vectors[5]),
+            ]
+        }
+    }
+
+    #[inline]
+    fn compute_sparse_between<C: ComponentType, V: ValueType + Float>(
+        v1: SparseVectorView<'_, C, V>,
+        v2: SparseVectorView<'_, C, V>,
+    ) -> Self {
+        // ||v1 - v2||² = dot(v1,v1) - 2*dot(v1,v2) + dot(v2,v2)
+        // We use the existing kernel which takes dot(v1,v1) as the precomputed norm.
+        let dot_v1_v1 = dot_product_sparse_with_merge(v1, v1).distance();
+        squared_euclidean_distance_sparse_with_merge(dot_v1_v1, v1, v2)
     }
 }
 
@@ -198,11 +299,23 @@ where
         ScalarSparseQueryEvaluator::new(query, self)
     }
 
-    fn vector_evaluator<'e, 'v>(&'e self, vector: Self::EncodedVector<'v>) -> Self::Evaluator<'e> {
+    fn vector_evaluator<'e>(&'e self, vector: Self::EncodedVector<'e>) -> Self::Evaluator<'e> {
         let decoded = <Self as SparseDataEncoder>::decode_vector(self, vector);
         ScalarSparseQueryEvaluator::new_from_owned_query(decoded, self)
     }
 
+    /// Compute distance between two stored sparse encoded vectors without building an evaluator.
+    ///
+    /// Calls the sparse distance kernel directly on the two raw sparse views,
+    /// zero allocation, zero decoding.
+    #[inline]
+    fn compute_distance_between(
+        &self,
+        v1: Self::EncodedVector<'_>,
+        v2: Self::EncodedVector<'_>,
+    ) -> Self::Distance {
+        D::compute_sparse_between(v1, v2)
+    }
     #[inline]
     fn output_dim(&self) -> usize {
         self.dim
@@ -377,6 +490,18 @@ where
             self.dot_query,
         )
     }
+
+    #[inline]
+    fn compute_distances_batch6(&self, vectors: [SparseVectorView<'v, C, OutValue>; 6]) -> [D; 6] {
+        debug_assert!(self.dense_query.is_some() || self.sparse_query.is_some());
+
+        D::compute_sparse_batch6(
+            &self.dense_query,
+            &self.sparse_query,
+            vectors,
+            self.dot_query,
+        )
+    }
 }
 
 impl<C, InValue, OutValue, D> SpaceUsage for ScalarSparseQuantizer<C, InValue, OutValue, D>
@@ -405,5 +530,28 @@ mod tests {
         let encoded = quant.encode_vector(input);
         assert_eq!(encoded.components(), &[0_u16, 2]);
         assert_eq!(encoded.values(), &[1.0_f32, 2.5]);
+    }
+
+    #[test]
+    fn compute_distance_between_matches_vector_evaluator() {
+        type Quant = PlainSparseQuantizer<u16, f32, DotProduct>;
+        let quant = Quant::new(4, 4);
+        let v1 = SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 3.0]);
+        let v2 = SparseVectorView::new(&[0_u16, 2], &[2.0_f32, 1.0]);
+        // Default path: vector_evaluator decodes v1 into a dense f32 query.
+        let via_evaluator = quant.vector_evaluator(v1).compute_distance(v2);
+        // Override path: calls D::compute_sparse_between directly, zero allocation.
+        let direct = quant.compute_distance_between(v1, v2);
+        assert_eq!(via_evaluator, direct);
+    }
+
+    #[test]
+    fn compute_distance_between_disjoint_components_is_zero() {
+        type Quant = PlainSparseQuantizer<u16, f32, DotProduct>;
+        let quant = Quant::new(4, 4);
+        let v1 = SparseVectorView::new(&[0_u16], &[5.0_f32]);
+        let v2 = SparseVectorView::new(&[3_u16], &[7.0_f32]);
+        let result = quant.compute_distance_between(v1, v2);
+        assert_eq!(result, DotProduct::from(0.0));
     }
 }

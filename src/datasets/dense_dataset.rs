@@ -352,6 +352,55 @@ where
     }
 }
 
+impl<E> DenseDataset<E>
+where
+    E: DenseVectorEncoder,
+{
+    /// Build an immutable dataset by encoding all vectors in parallel.
+    ///
+    /// `flat_input`: all input vector values concatenated in row-major order;
+    /// layout `[vec0_v0, ..., vec0_vD, vec1_v0, ...]`.
+    ///
+    /// Each vector is encoded independently on a rayon thread pool, then
+    /// results are assembled into a single flat buffer. Significantly faster
+    /// than sequential `push` for any non-trivial encoder (e.g. PQ).
+    pub fn from_flat_par(encoder: E, flat_input: &[E::InputValueType], n_vecs: usize) -> Self
+    where
+        E: Sync,
+        E::InputValueType: Sync,
+        E::OutputValueType: Send,
+    {
+        let input_dim = encoder.input_dim();
+        let output_dim = encoder.output_dim();
+
+        assert_eq!(
+            flat_input.len(),
+            n_vecs * input_dim,
+            "flat_input length must equal n_vecs * input_dim"
+        );
+
+        // Each thread encodes one vector into a small local Vec.
+        let encoded_vecs: Vec<Vec<E::OutputValueType>> = flat_input
+            .par_chunks_exact(input_dim)
+            .map(|chunk| {
+                let view = DenseVectorView::new(chunk);
+                let mut buf = Vec::with_capacity(output_dim);
+                encoder.push_encoded(view, &mut buf);
+                buf
+            })
+            .collect();
+
+        // Assemble flat buffer (sequential, O(N * output_dim)).
+        let total_len = n_vecs * output_dim;
+        let mut data = Vec::with_capacity(total_len);
+        for vec in &encoded_vecs {
+            data.extend_from_slice(vec);
+        }
+
+        Self::from_raw(data.into_boxed_slice(), n_vecs, encoder)
+    }
+}
+
 impl<E> From<DenseDatasetGrowable<E>> for DenseDataset<E>
 where
     E: DenseVectorEncoder,
@@ -574,6 +623,31 @@ mod tests {
         );
         assert_eq!(with_capacity.encoder.output_dim(), 3);
         // Capacity is always >= 0 for unsigned types, so no need to assert
+    }
+
+    #[test]
+    fn from_flat_par_produces_identical_output_to_sequential_push() {
+        // Verify that from_flat_par is byte-for-byte identical to the sequential
+        // push path. Uses ScalarDenseQuantizer<f32, f32> so the encoding is a
+        // trivial identity cast — any divergence in assembly order would surface here.
+        type Encoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+        let n = 8;
+        let dim = 3;
+        let flat: Vec<f32> = (0..n * dim).map(|i| i as f32).collect();
+
+        // Sequential path.
+        let encoder = Encoder::new(dim);
+        let mut sequential = DenseDatasetGrowable::new(encoder.clone());
+        for chunk in flat.chunks_exact(dim) {
+            sequential.push(DenseVectorView::new(chunk));
+        }
+        let sequential: DenseDataset<Encoder> = sequential.into();
+
+        // Parallel path.
+        let parallel = DenseDataset::from_flat_par(encoder, &flat, n);
+
+        assert_eq!(sequential.values(), parallel.values());
+        assert_eq!(sequential.len(), parallel.len());
     }
 
     #[test]

@@ -15,9 +15,10 @@ pub fn prefetch_read_slice<T>(data: &[T]) {
     let len = core::mem::size_of_val(data);
 
     // Looping with pointer arithmetic improves unrolling and avoids bounds checks.
-    // Prefetching the first two cache lines only is faster in modern CPUs. TODO: experiment this more.
+    // Prefetching only 256 bytes per vector is enough and prevents cache pollution.
+    let len_to_prefetch = len.min(256);
     let mut i = 0;
-    while i < len {
+    while i < len_to_prefetch {
         unsafe {
             // locality = 1: data will be used soon, but is not extremely hot.
             core::intrinsics::prefetch_read_data::<u8, 1>(ptr.add(i));

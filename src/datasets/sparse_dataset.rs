@@ -489,9 +489,7 @@ where
     D: crate::ScalarSparseSupportedDistance,
 {
     /// Relabels a scalar-quantized immutable dataset as plain without re-encoding.
-    pub fn relabel_as_plain(
-        self,
-    ) -> SparseDataset<crate::PlainSparseQuantizer<C, OutValue, D>> {
+    pub fn relabel_as_plain(self) -> SparseDataset<crate::PlainSparseQuantizer<C, OutValue, D>> {
         let dim = self.encoder.output_dim();
         let storage = self
             .storage

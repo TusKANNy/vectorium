@@ -9,7 +9,7 @@
 #![allow(non_snake_case)]
 
 use num_traits::{AsPrimitive, ToPrimitive, Zero};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
@@ -65,7 +65,7 @@ pub use encoders::sparse_scalar::{
     ScalarSparseQuantizerDotProduct, ScalarSparseQueryEvaluator, ScalarSparseSupportedDistance,
 };
 
-pub use core::dataset::{Dataset, DenseData, DatasetGrowable, SparseData, VectorId};
+pub use core::dataset::{Dataset, DatasetGrowable, DenseData, SparseData, VectorId};
 pub use core::storage::{
     GrowableSparseStorage, ImmutableSparseStorage, SparseStorage, SparseStorageMut,
 };
@@ -168,10 +168,10 @@ impl<T> IndexSerializer for T where T: Dataset {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encoders::dense_scalar::ScalarDenseQuantizer;
-    use crate::distances::DotProduct;
     use crate::core::vector::DenseVectorView;
     use crate::datasets::dense_dataset::DenseDatasetGrowable;
+    use crate::distances::DotProduct;
+    use crate::encoders::dense_scalar::ScalarDenseQuantizer;
     use crate::{DatasetGrowable, DenseDataset};
     use std::time::{SystemTime, UNIX_EPOCH};
 
