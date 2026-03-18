@@ -72,6 +72,14 @@ pub use encoders::sparse_scalar::{
     PlainSparseQuantizer, PlainSparseQuantizerDotProduct, ScalarSparseQuantizer,
     ScalarSparseQuantizerDotProduct, ScalarSparseQueryEvaluator, ScalarSparseSupportedDistance,
 };
+pub use encoders::reverse_exp_quantization_sparse_scalar::{
+    ReverseExpSparseQuantizer, ReverseExpQuantizedSparseSupportedDistance,
+};
+pub use encoders::uniform_quantization_sparse_scalar::{
+    UniformSparseQuantizer, UniformQuantizedSparseSupportedDistance,
+};
+
+
 
 pub use core::dataset::{Dataset, DatasetGrowable, DenseData, SparseData, VectorId};
 pub use core::storage::{
@@ -101,6 +109,12 @@ pub type ScalarSparseDatasetGrowable<C, W, V, D> =
 
 pub type PlainSparseDataset<C, V, D> = SparseDataset<PlainSparseQuantizer<C, V, D>>;
 pub type PlainSparseDatasetGrowable<C, V, D> = SparseDatasetGrowable<PlainSparseQuantizer<C, V, D>>;
+
+pub type UniformSparseDataset<C, D> = SparseDataset<UniformSparseQuantizer<C, D>>;
+pub type UniformSparseDatasetGrowable<C, D> = SparseDatasetGrowable<UniformSparseQuantizer<C, D>>;
+
+pub type ReverseExpSparseDataset<C, D> = SparseDataset<ReverseExpSparseQuantizer<C, D>>;
+pub type ReverseExpSparseDatasetGrowable<C, D> = SparseDatasetGrowable<ReverseExpSparseQuantizer<C, D>>;
 
 pub use core::dataset::{ScoredRange, ScoredVector};
 

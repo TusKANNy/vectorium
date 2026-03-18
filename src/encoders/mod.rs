@@ -4,4 +4,6 @@ pub mod multivec_pq;
 pub mod multivec_scalar;
 pub mod multivec_two_level_pq;
 pub mod pq;
+pub mod reverse_exp_quantization_sparse_scalar;
 pub mod sparse_scalar;
+pub mod uniform_quantization_sparse_scalar;

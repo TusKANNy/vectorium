@@ -49,6 +49,16 @@ name = "compute_groundtruth"
 path = "src/bin/compute_groundtruth.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "bench_quantization"
+path = "src/bin/bench_quantization.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "dump_component_values"
+path = "src/bin/dump_component_values.rs"
+required-features = ["cli"]
+
 [profile.release]
 opt-level = 3
 debug = true
