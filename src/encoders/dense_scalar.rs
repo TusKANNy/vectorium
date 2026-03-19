@@ -145,7 +145,7 @@ where
     Out: ValueType + FromF32,
     D: ScalarDenseSupportedDistance,
 {
-    encoder: &'e ScalarDenseQuantizer<In, Out, D>,
+    _encoder: std::marker::PhantomData<&'e ScalarDenseQuantizer<In, Out, D>>,
     query: DenseVectorOwned<f32>,
 }
 
@@ -157,10 +157,13 @@ where
 {
     #[inline]
     pub fn new(
-        encoder: &'e ScalarDenseQuantizer<In, Out, D>,
+        _encoder: &'e ScalarDenseQuantizer<In, Out, D>,
         query: DenseVectorOwned<f32>,
     ) -> Self {
-        Self { encoder, query }
+        Self {
+            _encoder: std::marker::PhantomData,
+            query,
+        }
     }
 }
 

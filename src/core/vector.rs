@@ -198,6 +198,164 @@ impl<'a, V: ValueType> From<&'a DenseVectorOwned<V>> for DenseVectorView<'a, V> 
     }
 }
 
+/// A view over a multivector: a contiguous flat buffer of `dim * num_vecs` values
+/// representing `num_vecs` dense token vectors each of dimensionality `dim`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DenseMultiVectorView<'a, V: ValueType> {
+    values: &'a [V],
+    dim: usize,
+    num_vecs: usize,
+}
+
+impl<'a, V: ValueType> DenseMultiVectorView<'a, V> {
+    /// Build a view from a flat slice.
+    ///
+    /// Panics if `dim == 0` or `values.len() % dim != 0`.
+    #[inline]
+    pub fn new(values: &'a [V], dim: usize) -> Self {
+        assert!(dim > 0, "dim must be > 0");
+        assert_eq!(
+            values.len() % dim,
+            0,
+            "values.len() ({}) must be a multiple of dim ({})",
+            values.len(),
+            dim
+        );
+        let num_vecs = values.len() / dim;
+        Self {
+            values,
+            dim,
+            num_vecs,
+        }
+    }
+
+    /// Dimensionality of each individual token vector.
+    #[inline]
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Number of token vectors in this multivector.
+    #[inline]
+    pub fn num_vecs(&self) -> usize {
+        self.num_vecs
+    }
+
+    /// Total number of scalar values (`dim * num_vecs`).
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// True when the multivector contains no token vectors.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.num_vecs == 0
+    }
+
+    /// Flat slice of all values (`dim * num_vecs` elements).
+    #[inline]
+    pub fn values(&self) -> &'a [V] {
+        self.values
+    }
+
+    /// Iterate over individual token vectors as [`DenseVectorView`]s.
+    #[inline]
+    pub fn iter_vectors(&self) -> impl Iterator<Item = DenseVectorView<'a, V>> {
+        self.values.chunks_exact(self.dim).map(DenseVectorView::new)
+    }
+
+    /// Clone the view contents into an owned multivector.
+    #[inline]
+    pub fn to_owned(&self) -> DenseMultiVectorOwned<V> {
+        DenseMultiVectorOwned::new(self.values.to_vec(), self.dim)
+    }
+}
+
+impl<'a, V: ValueType> VectorView for DenseMultiVectorView<'a, V> {}
+
+/// Owned multivector storage: a flat buffer of `dim * num_vecs` values representing
+/// `num_vecs` dense token vectors each of dimensionality `dim`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DenseMultiVectorOwned<V: ValueType> {
+    values: Vec<V>,
+    dim: usize,
+    num_vecs: usize,
+}
+
+impl<V: ValueType> DenseMultiVectorOwned<V> {
+    /// Build from owned values.
+    ///
+    /// Panics if `dim == 0` or `values.len() % dim != 0`.
+    #[inline]
+    pub fn new(values: Vec<V>, dim: usize) -> Self {
+        assert!(dim > 0, "dim must be > 0");
+        assert_eq!(
+            values.len() % dim,
+            0,
+            "values.len() ({}) must be a multiple of dim ({})",
+            values.len(),
+            dim
+        );
+        let num_vecs = values.len() / dim;
+        Self {
+            values,
+            dim,
+            num_vecs,
+        }
+    }
+
+    /// Dimensionality of each individual token vector.
+    #[inline]
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Number of token vectors in this multivector.
+    #[inline]
+    pub fn num_vecs(&self) -> usize {
+        self.num_vecs
+    }
+
+    /// Total number of scalar values (`dim * num_vecs`).
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// True when the multivector contains no token vectors.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.num_vecs == 0
+    }
+
+    /// Flat slice of all values (`dim * num_vecs` elements).
+    #[inline]
+    pub fn values(&self) -> &[V] {
+        &self.values
+    }
+
+    /// Iterate over individual token vectors as [`DenseVectorView`]s.
+    #[inline]
+    pub fn iter_vectors(&self) -> impl Iterator<Item = DenseVectorView<'_, V>> {
+        self.values.chunks_exact(self.dim).map(DenseVectorView::new)
+    }
+
+    /// Borrow as a [`DenseMultiVectorView`].
+    #[inline]
+    pub fn as_view(&self) -> DenseMultiVectorView<'_, V> {
+        DenseMultiVectorView::new(&self.values, self.dim)
+    }
+}
+
+impl<V: ValueType> VectorView for DenseMultiVectorOwned<V> {}
+
+impl<'a, V: ValueType> From<&'a DenseMultiVectorOwned<V>> for DenseMultiVectorView<'a, V> {
+    fn from(owned: &'a DenseMultiVectorOwned<V>) -> Self {
+        owned.as_view()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 /// Owned storage for sparse component/value vectors.
 pub struct SparseVectorOwned<C: ComponentType, V: ValueType> {

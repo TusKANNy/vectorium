@@ -12,7 +12,7 @@
 //!
 //! `DotProduct` implements reversed ordering: larger values are considered better.
 
-use crate::core::vector::{DenseVectorView, SparseVectorView};
+use crate::core::vector::{DenseMultiVectorView, DenseVectorView, SparseVectorView};
 use crate::utils::is_strictly_sorted;
 use crate::{ComponentType, ValueType};
 
@@ -696,6 +696,128 @@ where
         .algebraic_sub(2.0f32.algebraic_mul(dot_query_b));
 
     SquaredEuclideanDistance::from(dist)
+}
+
+/// Compute the MaxSim score between a query multivector and a document multivector.
+///
+/// For each query token, finds the maximum dot product with any document token, then sums
+/// across all query tokens — the standard late-interaction (ColBERT-style) score.
+///
+/// The outer loop iterates over document tokens: each is converted from `Out` to `f32`
+/// exactly once (into `d_buf`), then the decoded f32 slice is reused for all query-tokens.
+///
+/// # Arguments
+/// * `query` — query multivector with `f32` token values
+/// * `doc` — document multivector with `Out`-typed token values
+/// * `d_buf` — caller-supplied scratch buffer of length `query.dim()` for the decoded doc token
+/// * `max_scores` — caller-supplied accumulator of length `query.num_vecs()`, one slot per query token;
+///   **must be pre-initialised to `f32::NEG_INFINITY`** before calling
+///
+/// # Panics
+/// Panics if `d_buf.len() != query.dim()`, `max_scores.len() != query.num_vecs()`, or
+/// `query.dim() != doc.dim()`.
+#[cfg_attr(test, inline(never))]
+#[cfg_attr(not(test), inline)]
+#[must_use]
+pub fn maxsim<Out>(
+    query: DenseMultiVectorView<'_, f32>,
+    doc: DenseMultiVectorView<'_, Out>,
+    d_buf: &mut [f32],
+    max_scores: &mut [f32],
+) -> f32
+where
+    Out: ValueType,
+{
+    assert_eq!(
+        d_buf.len(),
+        query.dim(),
+        "d_buf length must equal query.dim()"
+    );
+    assert_eq!(
+        max_scores.len(),
+        query.num_vecs(),
+        "max_scores length must equal query.num_vecs()"
+    );
+    assert_eq!(
+        query.dim(),
+        doc.dim(),
+        "query and doc must have the same token dimension"
+    );
+
+    for d_token in doc.iter_vectors() {
+        // Materialize this doc token to f32 once.
+        for (dst, &src) in d_buf.iter_mut().zip(d_token.values()) {
+            *dst = src.to_f32().unwrap();
+        }
+        let d_f32 = DenseVectorView::new(d_buf);
+
+        // Update per-query-token maxima using the decoded f32 slice.
+        for (score, q_token) in max_scores.iter_mut().zip(query.iter_vectors()) {
+            let dot = unsafe { dot_product_dense_unchecked(d_f32, q_token) }.distance();
+            *score = score.max(dot);
+        }
+    }
+
+    max_scores.iter().sum()
+}
+
+/// Compute the two-level PQ MaxSim score with blocked layout.
+///
+/// Layout requirements for `pq_codes_block`:
+/// - All PQ codes in one contiguous block: `pq_codes_block[t * M + m]` = code for token t, subspace m
+/// - No stride, no interleaved data.
+///
+/// # Safety
+/// - `centroid_scores.len() >= doc_n * Q`
+/// - `distance_table.len() >= M * 256 * Q`
+/// - `pq_codes_block.len() >= doc_n * M`
+#[cfg_attr(not(test), inline)]
+pub unsafe fn two_level_pq_maxsim_blocked<const M: usize, const Q: usize>(
+    centroid_scores: &[f32],
+    distance_table: &[f32],
+    pq_codes_block: &[u8],
+    doc_n: usize,
+) -> f32 {
+    const KSUB: usize = 256;
+
+    let mut acc = [0f32; Q];
+    let mut max_scores = [f32::NEG_INFINITY; Q];
+
+    unsafe {
+        let cs_ptr = centroid_scores.as_ptr();
+        let dt_ptr = distance_table.as_ptr();
+        let codes_ptr = pq_codes_block.as_ptr();
+
+        for t in 0..doc_n {
+            // Reset acc and load centroid scores in one pass.
+            let cs_t = cs_ptr.add(t * Q);
+            for q in 0..Q {
+                *acc.get_unchecked_mut(q) = *cs_t.add(q);
+            }
+
+            // PQ residual SAXPY: M passes, each Q-wide.
+            let codes_t = codes_ptr.add(t * M);
+            for m in 0..M {
+                let code = *codes_t.add(m) as usize;
+                let tbl = dt_ptr.add(m * KSUB * Q + code * Q);
+                for q in 0..Q {
+                    *acc.get_unchecked_mut(q) += *tbl.add(q);
+                }
+            }
+
+            // Update per-query-token maxima.
+            for q in 0..Q {
+                let v = *acc.get_unchecked(q);
+                let cur = max_scores.get_unchecked_mut(q);
+                if v > *cur {
+                    *cur = v;
+                }
+            }
+        }
+    }
+
+    // Sum maxima.
+    max_scores.iter().fold(0f32, |s, &x| s + x)
 }
 
 #[cfg(test)]
