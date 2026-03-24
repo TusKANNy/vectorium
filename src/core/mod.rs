@@ -1,5 +1,7 @@
 pub mod dataset;
 pub mod distances;
+pub mod index;
+pub mod rerank_index;
 pub mod storage;
 pub mod vector;
 pub mod vector_encoder;

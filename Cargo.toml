@@ -1,6 +1,6 @@
 [package]
 name = "vectorium"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = [
     "Rossano Venturini <rossano.venturini@unipi.it>"]
@@ -37,6 +37,7 @@ bytemuck = { version = "1.23", features = [
 rusty-perm = "0.2.0"
 rgb = { git = "https://github.com/JMMackenzie/enhanced-graph-bisection.git" } 
 rand = "0.8"
+matrixmultiply = "0.3"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

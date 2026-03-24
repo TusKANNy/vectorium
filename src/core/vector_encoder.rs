@@ -1,6 +1,6 @@
 pub use crate::core::vector::{
-    DenseVectorOwned, DenseVectorView, PackedVectorOwned, PackedVectorView, SparseVectorOwned,
-    SparseVectorView, VectorView,
+    DenseMultiVectorOwned, DenseMultiVectorView, DenseVectorOwned, DenseVectorView,
+    PackedVectorOwned, PackedVectorView, SparseVectorOwned, SparseVectorView, VectorView,
 };
 use crate::{ComponentType, SpaceUsage, ValueType};
 
@@ -130,6 +130,58 @@ pub trait DenseVectorEncoder:
         self.push_encoded(input, &mut values);
         DenseVectorOwned::new(values)
     }
+}
+
+/// Encoder contract for multivector (late-interaction) encoders.
+///
+/// Each encoded "vector" is a [`DenseMultiVectorView`] carrying `token_dim` and `num_vecs`
+/// alongside the flat scalar buffer. Because document lengths vary, datasets built on this
+/// encoder maintain an explicit offsets array rather than a fixed stride.
+///
+/// Queries are also multivectors of `f32` tokens; encoders must validate
+/// `query.dim() == token_dim` before building an evaluator.
+pub trait MultiVecEncoder:
+    for<'a> VectorEncoder<
+        InputVector<'a> = DenseMultiVectorView<'a, Self::InputValueType>,
+        QueryVector<'a> = DenseMultiVectorView<'a, f32>,
+        EncodedVector<'a> = DenseMultiVectorView<'a, Self::OutputValueType>,
+    >
+{
+    type InputValueType: ValueType;
+    type OutputValueType: ValueType;
+
+    /// Encode `input` and append the resulting elements into `output`.
+    ///
+    /// For scalar quantizers this is an element-wise type cast from `InputValueType` to
+    /// `OutputValueType`. Used by datasets to populate their flat storage buffers without
+    /// intermediate allocations.
+    fn push_encoded<'a, OutputContainer>(
+        &self,
+        input: DenseMultiVectorView<'a, Self::InputValueType>,
+        output: &mut OutputContainer,
+    ) where
+        OutputContainer: Extend<Self::OutputValueType>;
+
+    /// Convenience helper that encodes `input` into an owned multivector.
+    ///
+    /// Callers who already manage buffers should prefer `push_encoded` to avoid the
+    /// extra allocation and keep working buffers alive for reuse.
+    fn encode_vector<'a>(
+        &self,
+        input: DenseMultiVectorView<'a, Self::InputValueType>,
+    ) -> DenseMultiVectorOwned<Self::OutputValueType> {
+        let mut values = Vec::new();
+        self.push_encoded(input, &mut values);
+        DenseMultiVectorOwned::new(values, input.dim())
+    }
+
+    /// Decode an encoded multivector back to a plain `f32` multivector.
+    ///
+    /// Intended for index build and other internal workflows.
+    fn decode_vector<'a>(
+        &self,
+        encoded: DenseMultiVectorView<'a, Self::OutputValueType>,
+    ) -> DenseMultiVectorOwned<f32>;
 }
 
 /// A minimal shared trait capturing the sparse input/query contract, component/value types, and decode capability.
