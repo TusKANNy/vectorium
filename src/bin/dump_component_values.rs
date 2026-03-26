@@ -1,13 +1,18 @@
 use clap::Parser;
+use num_traits::AsPrimitive;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
 use vectorium::distances::DotProduct;
 use vectorium::readers;
-use vectorium::{Dataset, PlainSparseDataset};
+use vectorium::{ComponentType, Dataset, PlainSparseDataset};
 
 #[derive(Parser, Debug)]
-#[clap(author, version, about = "Dump per-component value distributions to a binary file")]
+#[clap(
+    author,
+    version,
+    about = "Dump per-component value distributions to a binary file"
+)]
 struct Args {
     /// Sparse dataset in Seismic binary format
     #[clap(short, long)]
@@ -16,6 +21,11 @@ struct Args {
     /// Output .npy file (one flat array: [dim, offsets..., values...])
     #[clap(short, long)]
     output_file: String,
+
+    /// Component type for sparse datasets: 'u16' or 'u32' (default: u32)
+    #[clap(long, value_parser)]
+    #[arg(default_value = "u32")]
+    component_type: String,
 }
 
 /// Output: a single .npy file containing a flat f32 array with the layout:
@@ -37,10 +47,31 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    println!("Loading dataset...");
-    let dataset: PlainSparseDataset<u16, f32, DotProduct> =
-        readers::read_seismic_format(&args.input_file).expect("failed to read dataset");
+    let component_type = args.component_type.to_lowercase();
+    match component_type.as_str() {
+        "u16" => {
+            let dataset: PlainSparseDataset<u16, f32, DotProduct> =
+                readers::read_seismic_format(&args.input_file).expect("failed to read dataset");
+            process_and_write(&dataset, &args.output_file);
+        }
+        "u32" => {
+            let dataset: PlainSparseDataset<u32, f32, DotProduct> =
+                readers::read_seismic_format(&args.input_file).expect("failed to read dataset");
+            process_and_write(&dataset, &args.output_file);
+        }
+        other => {
+            eprintln!("Unsupported component type: {other}. Use 'u16' or 'u32'.");
+            std::process::exit(1);
+        }
+    }
+}
 
+fn process_and_write<C: ComponentType>(
+    dataset: &PlainSparseDataset<C, f32, DotProduct>,
+    output_file: &str,
+) where
+    C: AsPrimitive<usize>,
+{
     let dim = dataset.input_dim();
     let n = dataset.len();
     let nnz = dataset.nnz();
@@ -51,7 +82,8 @@ fn main() {
     let mut per_component: Vec<Vec<f32>> = vec![Vec::new(); dim];
     for vec in dataset.iter() {
         for (&c, &v) in vec.components().iter().zip(vec.values()) {
-            per_component[c as usize].push(v);
+            let idx: usize = c.as_();
+            per_component[idx].push(v);
         }
     }
 
@@ -67,8 +99,8 @@ fn main() {
     let total_elements = 1 + (dim + 1) + total_values;
 
     // Write as .npy (NumPy format v1.0, float32, 1-D)
-    println!("Writing to {}...", args.output_file);
-    let file = File::create(&args.output_file).expect("failed to create output file");
+    println!("Writing to {output_file}...");
+    let file = File::create(output_file).expect("failed to create output file");
     let mut w = BufWriter::new(file);
 
     // .npy header

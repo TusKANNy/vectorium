@@ -53,12 +53,18 @@ pub use core::vector_encoder::{
 
 pub use clustering::{KMeans, KMeansBuilder};
 
+pub use encoders::centroid_quantization_sparse_scalar::{
+    CentroidQuantizedSparseSupportedDistance, CentroidSparseQuantizer,
+};
 pub use encoders::dense_scalar::{
     PlainDenseQuantizer, PlainDenseQuantizerDotProduct, PlainDenseQuantizerSquaredEuclidean,
     ScalarDenseQuantizer, ScalarDenseQuantizerDotProduct, ScalarDenseQuantizerSame,
     ScalarDenseQuantizerSquaredEuclidean, ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
 };
 pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Encoder, DotVByteFixedU8QueryEvaluator};
+pub use encoders::dotvbyte_u32_fixedu8::{
+    DotVByteU32FixedU8Encoder, OptimisticDotVByteFixedU8Encoder,
+};
 pub use encoders::multivec_pq::{MultiVecPQQueryEvaluator, MultiVecProductQuantizer};
 pub use encoders::multivec_scalar::{
     PlainMultiVecQuantizer, ScalarMultiVecQuantizer, ScalarMultiVecQueryEvaluator,
@@ -68,18 +74,16 @@ pub use encoders::multivec_two_level_pq::{
     reset_phase_timings,
 };
 pub use encoders::pq::ProductQuantizer;
+pub use encoders::reverse_exp_quantization_sparse_scalar::{
+    ReverseExpQuantizedSparseSupportedDistance, ReverseExpSparseQuantizer,
+};
 pub use encoders::sparse_scalar::{
     PlainSparseQuantizer, PlainSparseQuantizerDotProduct, ScalarSparseQuantizer,
     ScalarSparseQuantizerDotProduct, ScalarSparseQueryEvaluator, ScalarSparseSupportedDistance,
 };
-pub use encoders::reverse_exp_quantization_sparse_scalar::{
-    ReverseExpSparseQuantizer, ReverseExpQuantizedSparseSupportedDistance,
-};
 pub use encoders::uniform_quantization_sparse_scalar::{
-    UniformSparseQuantizer, UniformQuantizedSparseSupportedDistance,
+    UniformQuantizedSparseSupportedDistance, UniformSparseQuantizer,
 };
-
-
 
 pub use core::dataset::{Dataset, DatasetGrowable, DenseData, SparseData, VectorId};
 pub use core::storage::{
@@ -114,7 +118,11 @@ pub type UniformSparseDataset<C, D> = SparseDataset<UniformSparseQuantizer<C, D>
 pub type UniformSparseDatasetGrowable<C, D> = SparseDatasetGrowable<UniformSparseQuantizer<C, D>>;
 
 pub type ReverseExpSparseDataset<C, D> = SparseDataset<ReverseExpSparseQuantizer<C, D>>;
-pub type ReverseExpSparseDatasetGrowable<C, D> = SparseDatasetGrowable<ReverseExpSparseQuantizer<C, D>>;
+pub type ReverseExpSparseDatasetGrowable<C, D> =
+    SparseDatasetGrowable<ReverseExpSparseQuantizer<C, D>>;
+
+pub type CentroidSparseDataset<C, D> = SparseDataset<CentroidSparseQuantizer<C, D>>;
+pub type CentroidSparseDatasetGrowable<C, D> = SparseDatasetGrowable<CentroidSparseQuantizer<C, D>>;
 
 pub use core::dataset::{ScoredRange, ScoredVector};
 

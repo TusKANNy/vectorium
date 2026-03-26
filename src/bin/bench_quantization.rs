@@ -8,7 +8,7 @@ use vectorium::dataset::{ConvertInto, ScoredVector};
 use vectorium::distances::DotProduct;
 use vectorium::readers;
 use vectorium::{
-    Dataset, DatasetGrowable, FixedU8Q, PlainSparseDataset, ReverseExpSparseQuantizer,
+    CentroidSparseQuantizer, Dataset, DatasetGrowable, FixedU8Q, PlainSparseDataset,
     ScalarSparseDataset, SpaceUsage, SparseDatasetGrowable, UniformSparseQuantizer,
 };
 
@@ -118,79 +118,116 @@ fn main() {
     let training_data: PlainSparseDataset<u16, f32, vectorium::SquaredEuclideanDistance> =
         readers::read_seismic_format(&args.input_file).expect("failed to re-read for training");
 
-    // ── Uniform quantization with various lower percentiles ────────
-    let percentiles = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25];
-    let mut uniform_results: Vec<(f32, Vec<Vec<ScoredVector<DotProduct>>>)> = Vec::new();
-
-    for &pct in &percentiles {
-        println!("\n--- Uniform quantization (lower_percentile={pct:.2}) ---");
-
-        let start = Instant::now();
-        let quantizer = UniformSparseQuantizer::<u16, DotProduct>::train(&training_data, pct);
-        println!("  train: {:.3}s", start.elapsed().as_secs_f64());
-
-        let start = Instant::now();
-        let mut growable: SparseDatasetGrowable<UniformSparseQuantizer<u16, DotProduct>> =
-            SparseDatasetGrowable::new(quantizer);
-        for vec in dataset_f32.iter() {
-            growable.push(vec);
-        }
-        let dataset_uniform: vectorium::UniformSparseDataset<u16, DotProduct> = growable.into();
-        println!("  build: {:.3}s", start.elapsed().as_secs_f64());
-        println!("  size:  {:.3} GiB", dataset_uniform.space_usage_GiB());
-
-        let start = Instant::now();
-        let results: Vec<Vec<ScoredVector<DotProduct>>> = (0..n_queries)
-            .into_par_iter()
-            .progress_count(n_queries as u64)
-            .with_style(pb_style.clone())
-            .map(|qi| dataset_uniform.search(queries.get(qi as u64), args.k))
-            .collect();
-        println!("  search: {:.3}s", start.elapsed().as_secs_f64());
-
-        uniform_results.push((pct, results));
-    }
-
-    // ── Reverse exponential quantization ────────────────────────────
-    println!("\n--- Reverse exponential quantization ---");
+    let start = Instant::now();
+    let quantizer = UniformSparseQuantizer::<u16, DotProduct>::train(&training_data, 0.0, 1.0);
+    println!("  train: {:.3}s", start.elapsed().as_secs_f64());
 
     let start = Instant::now();
-    let rev_quantizer = ReverseExpSparseQuantizer::<u16, DotProduct>::train(&training_data);
-    println!("RevExp train: {:.3}s", start.elapsed().as_secs_f64());
-    drop(training_data);
-
-    let start = Instant::now();
-    let mut growable: SparseDatasetGrowable<ReverseExpSparseQuantizer<u16, DotProduct>> =
-        SparseDatasetGrowable::new(rev_quantizer);
+    let mut growable: SparseDatasetGrowable<UniformSparseQuantizer<u16, DotProduct>> =
+        SparseDatasetGrowable::new(quantizer);
     for vec in dataset_f32.iter() {
         growable.push(vec);
     }
-    let dataset_revexp: vectorium::ReverseExpSparseDataset<u16, DotProduct> = growable.into();
-    println!("RevExp build: {:.3}s", start.elapsed().as_secs_f64());
-    println!("RevExp size: {:.3} GiB", dataset_revexp.space_usage_GiB());
+    let dataset_uniform: vectorium::UniformSparseDataset<u16, DotProduct> = growable.into();
+    println!("  build: {:.3}s", start.elapsed().as_secs_f64());
+    println!("  size:  {:.3} GiB", dataset_uniform.space_usage_GiB());
 
     let start = Instant::now();
-    let results_revexp: Vec<Vec<ScoredVector<DotProduct>>> = (0..n_queries)
+    let results_uniform: Vec<Vec<ScoredVector<DotProduct>>> = (0..n_queries)
         .into_par_iter()
         .progress_count(n_queries as u64)
         .with_style(pb_style.clone())
-        .map(|qi| dataset_revexp.search(queries.get(qi as u64), args.k))
+        .map(|qi| dataset_uniform.search(queries.get(qi as u64), args.k))
         .collect();
-    println!("RevExp search: {:.3}s", start.elapsed().as_secs_f64());
+    println!("  search: {:.3}s", start.elapsed().as_secs_f64());
+
+    // ── Centroid-based quantization (uniform centroids) ─────────────
+    println!("\n--- Centroid quantization (Greedy KMeans) ---");
+    for n_iter in [1, 5, 10, 20, 100] {
+        let start = Instant::now();
+        let centroid_quantizer =
+            CentroidSparseQuantizer::<u16, DotProduct>::train(&training_data, 0.0, 1.0, n_iter);
+        println!("Centroid train: {:.3}s", start.elapsed().as_secs_f64());
+
+        let start = Instant::now();
+        let mut growable: SparseDatasetGrowable<CentroidSparseQuantizer<u16, DotProduct>> =
+            SparseDatasetGrowable::new(centroid_quantizer);
+        for vec in dataset_f32.iter() {
+            growable.push(vec);
+        }
+        let dataset_centroid: vectorium::CentroidSparseDataset<u16, DotProduct> = growable.into();
+        println!(
+            "Centroid build (MultiThread): {:.3}s",
+            start.elapsed().as_secs_f64()
+        );
+        println!(
+            "Centroid size: {:.3} GiB",
+            dataset_centroid.space_usage_GiB()
+        );
+
+        let start = Instant::now();
+        let results_centroid: Vec<Vec<ScoredVector<DotProduct>>> = (0..n_queries)
+            .into_par_iter()
+            .progress_count(n_queries as u64)
+            .with_style(pb_style.clone())
+            .map(|qi| dataset_centroid.search(queries.get(qi as u64), args.k))
+            .collect();
+        println!("Centroid search: {:.3}s", start.elapsed().as_secs_f64());
+        let recall_centroid = recall_at_k(&gt, &results_centroid, args.k);
+        println!("\nCentroid:                   {:.4}", recall_centroid);
+        println!("Centroid: {:.3}", dataset_centroid.space_usage_GiB());
+    }
+    // ── Reverse exponential quantization ────────────────────────────
+    // println!("\n--- Reverse exponential quantization ---");
+
+    // let start = Instant::now();
+    // let rev_quantizer = ReverseExpSparseQuantizer::<u16, DotProduct>::train(&training_data);
+    // println!("RevExp train: {:.3}s", start.elapsed().as_secs_f64());
+    // drop(training_data);
+
+    // let start = Instant::now();
+    // let mut growable: SparseDatasetGrowable<ReverseExpSparseQuantizer<u16, DotProduct>> =
+    //     SparseDatasetGrowable::new(rev_quantizer);
+    // for vec in dataset_f32.iter() {
+    //     growable.push(vec);
+    // }
+    // let dataset_revexp: vectorium::ReverseExpSparseDataset<u16, DotProduct> = growable.into();
+    // println!("RevExp build: {:.3}s", start.elapsed().as_secs_f64());
+    // println!("RevExp size: {:.3} GiB", dataset_revexp.space_usage_GiB());
+
+    // let start = Instant::now();
+    // let results_revexp: Vec<Vec<ScoredVector<DotProduct>>> = (0..n_queries)
+    //     .into_par_iter()
+    //     .progress_count(n_queries as u64)
+    //     .with_style(pb_style.clone())
+    //     .map(|qi| dataset_revexp.search(queries.get(qi as u64), args.k))
+    //     .collect();
+    // println!("RevExp search: {:.3}s", start.elapsed().as_secs_f64());
 
     // ── Results ────────────────────────────────────────────────────
     println!("\n=== Recall@{} ===", args.k);
     let recall_fixedu8 = recall_at_k(&gt, &results_fixedu8, args.k);
-    println!("FixedU8:          {:.4}", recall_fixedu8);
-    for (pct, results) in &uniform_results {
-        let recall = recall_at_k(&gt, results, args.k);
-        println!("Uniform p={pct:.2}:   {:.4}", recall);
-    }
-    let recall_revexp = recall_at_k(&gt, &results_revexp, args.k);
-    println!("RevExp:           {:.4}", recall_revexp);
+    println!("FixedU8:                    {:.4}", recall_fixedu8);
+    let recall_uniform = recall_at_k(&gt, &results_uniform, args.k);
+    println!("Uniform:                    {:.4}", recall_uniform);
+    // println!("\n  -- Varying lower percentile (upper=1.0) --");
+    // for (pct, results) in &uniform_lower_results {
+    //     let recall = recall_at_k(&gt, results, args.k);
+    //     println!("  Uniform lo={pct:.2} up=1.00:  {:.4}", recall);
+    // }
+    // println!("\n  -- Varying upper percentile (lower=0.0) --");
+    // for (pct, results) in &uniform_upper_results {
+    //     let recall = recall_at_k(&gt, results, args.k);
+    //     println!("  Uniform lo=0.00 up={pct:.3}: {:.4}", recall);
+    // }
+
+    //let recall_revexp = recall_at_k(&gt, &results_revexp, args.k);
+    //println!("RevExp:                     {:.4}", recall_revexp);
 
     println!("\n=== Space (GiB) ===");
     println!("f32:      {:.3}", dataset_f32.space_usage_GiB());
     println!("FixedU8:  {:.3}", dataset_fixedu8.space_usage_GiB());
-    println!("RevExp:   {:.3}", dataset_revexp.space_usage_GiB());
+    println!("Uniform:  {:.3}", dataset_uniform.space_usage_GiB());
+
+    //println!("RevExp:   {:.3}", dataset_revexp.space_usage_GiB());
 }

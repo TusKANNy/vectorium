@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::core::vector_encoder::{
@@ -9,57 +10,100 @@ use crate::distances::{Distance, DotProduct, SquaredEuclideanDistance};
 use crate::utils::is_strictly_sorted;
 use crate::{ComponentType, Dataset, PlainSparseDataset, SpaceUsage, SparseVectorView};
 
+/// Number of centroids per dimension (u8 codebook).
+const NUM_CENTROIDS: usize = 256;
+
+pub fn greedy_kmeans(values: &[f32], min: f32, max: f32, n_iterations: usize) -> Vec<f32> {
+    let mut centroids = Vec::with_capacity(NUM_CENTROIDS);
+    let span = (max - min) / (NUM_CENTROIDS as f32);
+    for i in 0..NUM_CENTROIDS {
+        centroids.push(min + span * i as f32);
+    }
+
+    let mut assignments = vec![0_usize; values.len()];
+
+    for _ in 0..n_iterations {
+        for (val_index, v) in values.iter().enumerate() {
+            let distances = centroids.iter().map(|c| (c - v) * (c - v));
+            let mut min_dist = f32::MAX;
+            let mut argmin_index = 0_usize;
+            for (i, d) in distances.enumerate() {
+                if d < min_dist {
+                    min_dist = d;
+                    argmin_index = i;
+                }
+            }
+            assignments[val_index] = argmin_index;
+        }
+
+        for centroid_index in 0..centroids.len() {
+            let assigned_vals: Vec<_> = values
+                .iter()
+                .zip(assignments.iter().copied())
+                .filter(|&(_, index)| index == centroid_index)
+                .map(|(val, _)| *val)
+                .collect();
+
+            if !assigned_vals.is_empty() {
+                centroids[centroid_index] =
+                    assigned_vals.iter().sum::<f32>() / (assigned_vals.len() as f32);
+            }
+        }
+    }
+
+    centroids
+}
+
+/// Centroid-based sparse quantizer.
+///
+/// Each dimension has its own codebook of 256 centroids. Encoding maps each value
+/// to the nearest centroid index (u8), and decoding looks up the centroid value.
+///
+/// Scoring uses a precomputed lookup table (LUT): for each query component `c`,
+/// `lut[c][v] = q[c] * centroids[c][v]` for all 256 codes. Then the dot product
+/// is just a sum of table lookups over the document's non-zero entries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UniformSparseQuantizer<C, D> {
+pub struct CentroidSparseQuantizer<C, D> {
     dim: usize,
-    quants: Box<[f32]>,
-    mins: Box<[f32]>,
+    /// Flat array of centroids: `centroids[c * 256 + v]` is the v-th centroid for dimension c.
+    centroids: Box<[f32]>,
     _phantom: PhantomData<(C, D)>,
 }
 
-impl<C, D> PartialEq for UniformSparseQuantizer<C, D> {
+impl<C, D> PartialEq for CentroidSparseQuantizer<C, D> {
     fn eq(&self, other: &Self) -> bool {
         self.dim == other.dim
     }
 }
 
-impl<C, D> UniformSparseQuantizer<C, D> {
-    #[inline]
-    pub fn new(input_dim: usize, output_dim: usize) -> Self {
+impl<C, D> CentroidSparseQuantizer<C, D> {
+    /// Create a new quantizer with the given per-dimension centroids.
+    ///
+    /// `centroids` must have length `dim * 256`. Centroids for dimension `i` are at
+    /// `centroids[i * 256 .. (i+1) * 256]` and must be sorted in ascending order.
+    pub fn from_centroids(dim: usize, centroids: Box<[f32]>) -> Self {
         assert_eq!(
-            input_dim, output_dim,
-            "UniformSparseQuantizer requires input_dim == output_dim"
+            centroids.len(),
+            dim * NUM_CENTROIDS,
+            "centroids length must be dim * 256"
         );
         Self {
-            dim: input_dim,
-            quants: vec![0.0; output_dim].into_boxed_slice(),
-            mins: vec![0.0; output_dim].into_boxed_slice(),
+            dim,
+            centroids,
             _phantom: PhantomData,
         }
     }
 
-    pub fn mins(&self) -> &[f32] {
-        &self.mins
-    }
-
-    pub fn quants(&self) -> &[f32] {
-        &self.quants
-    }
-
-    /// Train the quantizer from data.
+    /// Train the quantizer using uniform centroids derived from the data.
     ///
-    /// `lower_percentile` controls the lower bound of the quantization range per component.
-    /// - `0.0` uses the absolute min (classic min–max uniform quantization).
-    /// - `0.25` uses the 25th percentile as the lower bound, giving finer resolution
-    ///   to the upper 75% of values. Values below the percentile are clipped to 0.
-    ///
-    /// `upper_percentile` controls the upper bound of the quantization range per component.
-    /// - `1.0` uses the absolute max.
-    /// - `0.99` uses the 99th percentile as the upper bound. Values above are clipped to 255.
+    /// For each dimension, computes min/max and creates 256 evenly spaced centroids.
+    /// `lower_percentile` and `upper_percentile` control the range, same as
+    /// `UniformSparseQuantizer::train`.
     pub fn train(
         training_data: &PlainSparseDataset<C, f32, SquaredEuclideanDistance>,
         lower_percentile: f32,
         upper_percentile: f32,
+        n_iterations: usize,
     ) -> Self
     where
         C: ComponentType,
@@ -84,101 +128,128 @@ impl<C, D> UniformSparseQuantizer<C, D> {
             }
         }
 
-        let mut mins = vec![0.0f32; dim];
-        let mut quants = vec![0.0f32; dim];
+        let mut centroids = vec![0.0f32; dim * NUM_CENTROIDS];
 
-        for i in 0..dim {
-            let vals = &mut per_component[i];
-            if vals.is_empty() {
-                continue;
-            }
-            vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        per_component
+            .par_iter_mut()
+            .zip(centroids.par_chunks_mut(NUM_CENTROIDS))
+            .for_each(|(vals, slot)| {
+                if vals.is_empty() {
+                    return;
+                }
+                vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
 
-            let min = if lower_percentile == 0.0 {
-                *vals.first().unwrap()
-            } else {
-                let idx = ((vals.len() as f32) * lower_percentile) as usize;
-                let idx = idx.min(vals.len() - 1);
-                vals[idx]
-            };
+                // Apply percentile clipping before clustering
+                let min = if lower_percentile == 0.0 {
+                    *vals.first().unwrap()
+                } else {
+                    let idx = ((vals.len() as f32) * lower_percentile) as usize;
+                    vals[idx.min(vals.len() - 1)]
+                };
 
-            let max = if upper_percentile >= 1.0 {
-                *vals.last().unwrap()
-            } else {
-                let idx = ((vals.len() as f32) * upper_percentile) as usize;
-                let idx = idx.min(vals.len() - 1);
-                vals[idx]
-            };
+                let max = if upper_percentile >= 1.0 {
+                    *vals.last().unwrap()
+                } else {
+                    let idx = ((vals.len() as f32) * upper_percentile) as usize;
+                    vals[idx.min(vals.len() - 1)]
+                };
 
-            mins[i] = min;
-            if max > min {
-                quants[i] = (max - min) / 255.0;
-            }
-        }
+                for v in vals.iter_mut() {
+                    *v = v.clamp(min, max);
+                }
+
+                let dim_centroids = greedy_kmeans(vals, min, max, n_iterations);
+                slot.copy_from_slice(&dim_centroids);
+            });
 
         Self {
             dim,
-            quants: quants.into_boxed_slice(),
-            mins: mins.into_boxed_slice(),
+            centroids: centroids.into_boxed_slice(),
             _phantom: PhantomData,
         }
     }
+
+    /// Get the centroid table for a given dimension.
+    #[inline]
+    pub fn centroids_for_dim(&self, dim: usize) -> &[f32] {
+        &self.centroids[dim * NUM_CENTROIDS..(dim + 1) * NUM_CENTROIDS]
+    }
+
+    /// Find the nearest centroid index for a value in a given dimension.
+    #[inline]
+    fn quantize(&self, dim: usize, value: f32) -> u8 {
+        let table = self.centroids_for_dim(dim);
+        // Binary search: find the insertion point, then pick the closer neighbor.
+        match table.binary_search_by(|c| c.partial_cmp(&value).unwrap()) {
+            Ok(idx) => idx as u8,
+            Err(idx) => {
+                if idx == 0 {
+                    0
+                } else if idx >= NUM_CENTROIDS {
+                    255
+                } else {
+                    let lo = table[idx - 1];
+                    let hi = table[idx];
+                    if (value - lo) <= (hi - value) {
+                        (idx - 1) as u8
+                    } else {
+                        idx as u8
+                    }
+                }
+            }
+        }
+    }
+
+    /// Dequantize: look up the centroid value.
+    #[inline]
+    fn dequantize(&self, dim: usize, code: u8) -> f32 {
+        self.centroids[dim * NUM_CENTROIDS + code as usize]
+    }
 }
 
-/// Distance dispatch trait for uniform-quantized sparse vectors.
-///
-/// Unlike `ScalarSparseSupportedDistance`, this trait works with pre-transformed query data
-/// so that scoring avoids per-element dequantization.
+/// Distance dispatch trait for centroid-quantized sparse vectors.
 ///
 /// For DotProduct:
-///   `q · dequant(v) = Σ_S correction[c] + transformed[c] * v_int[c]`
-///   where `transformed[i] = q[i] * quants[i]`, `correction[i] = q[i] * mins[i]`
+///   `q · dequant(v) = Σ_{(c,v_int) in doc} lut[c][v_int]`
+///   where `lut[c][v] = q[c] * centroids[c][v]`
 ///
 /// For SquaredEuclidean:
-///   `||q - dequant(v)||² = ||q||² - 2·(q · dequant(v)) + ||dequant(v)||²`
-pub trait UniformQuantizedSparseSupportedDistance: Distance {
+///   `||q - dequant(v)||² = ||q||² - 2·Σ dot_lut[c][v_int] + Σ sq_lut[c][v_int]`
+///   where `dot_lut[c][v] = q[c] * centroids[c][v]`, `sq_lut[c][v] = centroids[c][v]²`
+pub trait CentroidQuantizedSparseSupportedDistance: Distance {
+    fn requires_sq_lut() -> bool {
+        false
+    }
+
     fn requires_dot_query() -> bool {
         false
     }
 
-    /// Score using a dense pre-transformed query (dim < 2^20).
-    fn compute_dense<C: ComponentType>(
-        dense_transformed: &[f32],
-        dense_correction: &[f32],
-        mins: &[f32],
-        quants: &[f32],
+    /// Score using a dense LUT (dim < 2^20).
+    fn compute_dense_lut<C: ComponentType>(
+        dense_lut: &[f32],
+        dense_sq_lut: Option<&[f32]>,
         vector: SparseVectorView<'_, C, u8>,
         dot_query: Option<f32>,
     ) -> Self;
 
-    /// Score using a sparse query with merge-sort (dim >= 2^20).
+    /// Score using sparse merge (dim >= 2^20).
     fn compute_sparse<C: ComponentType>(
         query: &SparseVectorOwned<C, f32>,
-        mins: &[f32],
-        quants: &[f32],
+        centroids: &[f32],
         vector: SparseVectorView<'_, C, u8>,
         dot_query: Option<f32>,
     ) -> Self;
 }
 
-fn compute_query_squared_norm(values: &[f32]) -> f32 {
-    values
-        .iter()
-        .fold(0.0f32, |acc, &v| acc.algebraic_add(v.algebraic_mul(v)))
-}
-
-impl UniformQuantizedSparseSupportedDistance for DotProduct {
+impl CentroidQuantizedSparseSupportedDistance for DotProduct {
     #[inline]
-    fn compute_dense<C: ComponentType>(
-        dense_transformed: &[f32],
-        _dense_correction: &[f32],
-        _mins: &[f32],
-        _quants: &[f32],
+    fn compute_dense_lut<C: ComponentType>(
+        dense_lut: &[f32],
+        _dense_sq_lut: Option<&[f32]>,
         vector: SparseVectorView<'_, C, u8>,
         _dot_query: Option<f32>,
     ) -> Self {
-        // q · dequant(v) = Σ_S transformed[c] * v_int[c]
-        // where transformed[c] = q[c] * quants[c]
         let result =
             vector
                 .components()
@@ -187,7 +258,7 @@ impl UniformQuantizedSparseSupportedDistance for DotProduct {
                 .fold(0.0f32, |acc, (&c, &v)| {
                     let idx: usize = c.as_();
                     acc.algebraic_add(unsafe {
-                        dense_transformed.get_unchecked(idx).algebraic_mul(v as f32)
+                        *dense_lut.get_unchecked(idx * NUM_CENTROIDS + v as usize)
                     })
                 });
         DotProduct::from(result)
@@ -196,48 +267,52 @@ impl UniformQuantizedSparseSupportedDistance for DotProduct {
     #[inline]
     fn compute_sparse<C: ComponentType>(
         query: &SparseVectorOwned<C, f32>,
-        mins: &[f32],
-        quants: &[f32],
+        centroids: &[f32],
         vector: SparseVectorView<'_, C, u8>,
         _dot_query: Option<f32>,
     ) -> Self {
-        let result = sparse_merge_dot_product_with_dequant(query.as_view(), vector, mins, quants);
+        let result = sparse_merge_dot_product_with_centroids(query.as_view(), vector, centroids);
         DotProduct::from(result)
     }
 }
 
-impl UniformQuantizedSparseSupportedDistance for SquaredEuclideanDistance {
+fn compute_query_squared_norm(values: &[f32]) -> f32 {
+    values
+        .iter()
+        .fold(0.0f32, |acc, &v| acc.algebraic_add(v.algebraic_mul(v)))
+}
+
+impl CentroidQuantizedSparseSupportedDistance for SquaredEuclideanDistance {
+    #[inline]
+    fn requires_sq_lut() -> bool {
+        true
+    }
+
     #[inline]
     fn requires_dot_query() -> bool {
         true
     }
 
     #[inline]
-    fn compute_dense<C: ComponentType>(
-        dense_transformed: &[f32],
-        dense_correction: &[f32],
-        mins: &[f32],
-        quants: &[f32],
+    fn compute_dense_lut<C: ComponentType>(
+        dense_lut: &[f32],
+        dense_sq_lut: Option<&[f32]>,
         vector: SparseVectorView<'_, C, u8>,
         dot_query: Option<f32>,
     ) -> Self {
         let dot_query =
             dot_query.expect("SquaredEuclideanDistance requires a precomputed ||q||² value");
+        let sq_lut = dense_sq_lut.expect("SquaredEuclideanDistance requires sq_lut");
 
-        // Single pass: compute q·dequant(v) and ||dequant(v)||² simultaneously
         let mut dot_qv = 0.0f32;
         let mut v_norm_sq = 0.0f32;
         for (&c, &v) in vector.components().iter().zip(vector.values()) {
             let idx: usize = c.as_();
-            let vi = v as f32;
-            let v_real = mins[idx].algebraic_add(quants[idx].algebraic_mul(vi));
-            dot_qv = dot_qv.algebraic_add(
-                dense_correction[idx].algebraic_add(dense_transformed[idx].algebraic_mul(vi)),
-            );
-            v_norm_sq = v_norm_sq.algebraic_add(v_real.algebraic_mul(v_real));
+            let offset = idx * NUM_CENTROIDS + v as usize;
+            dot_qv = dot_qv.algebraic_add(unsafe { *dense_lut.get_unchecked(offset) });
+            v_norm_sq = v_norm_sq.algebraic_add(unsafe { *sq_lut.get_unchecked(offset) });
         }
 
-        // ||q - v||² = ||q||² - 2·(q·v) + ||v||²
         let dist = dot_query
             .algebraic_add(v_norm_sq)
             .algebraic_sub(2.0f32.algebraic_mul(dot_qv));
@@ -247,17 +322,15 @@ impl UniformQuantizedSparseSupportedDistance for SquaredEuclideanDistance {
     #[inline]
     fn compute_sparse<C: ComponentType>(
         query: &SparseVectorOwned<C, f32>,
-        mins: &[f32],
-        quants: &[f32],
+        centroids: &[f32],
         vector: SparseVectorView<'_, C, u8>,
         dot_query: Option<f32>,
     ) -> Self {
         let dot_query =
             dot_query.expect("SquaredEuclideanDistance requires a precomputed ||q||² value");
 
-        let dot_qv = sparse_merge_dot_product_with_dequant(query.as_view(), vector, mins, quants);
+        let dot_qv = sparse_merge_dot_product_with_centroids(query.as_view(), vector, centroids);
 
-        // Compute ||dequant(v)||²
         let v_norm_sq =
             vector
                 .components()
@@ -265,7 +338,7 @@ impl UniformQuantizedSparseSupportedDistance for SquaredEuclideanDistance {
                 .zip(vector.values())
                 .fold(0.0f32, |acc, (&c, &v)| {
                     let idx: usize = c.as_();
-                    let v_real = mins[idx].algebraic_add(quants[idx].algebraic_mul(v as f32));
+                    let v_real = centroids[idx * NUM_CENTROIDS + v as usize];
                     acc.algebraic_add(v_real.algebraic_mul(v_real))
                 });
 
@@ -277,13 +350,12 @@ impl UniformQuantizedSparseSupportedDistance for SquaredEuclideanDistance {
 }
 
 /// Merge-sort style dot product between a sparse f32 query and a sparse u8 vector,
-/// dequantizing the u8 values on the fly using per-component mins/quants.
+/// dequantizing via centroid lookup.
 #[inline]
-fn sparse_merge_dot_product_with_dequant<C: ComponentType>(
+fn sparse_merge_dot_product_with_centroids<C: ComponentType>(
     query: SparseVectorView<'_, C, f32>,
     vector: SparseVectorView<'_, C, u8>,
-    mins: &[f32],
-    quants: &[f32],
+    centroids: &[f32],
 ) -> f32 {
     let q_components = query.components();
     let q_values = query.values();
@@ -295,27 +367,29 @@ fn sparse_merge_dot_product_with_dequant<C: ComponentType>(
     let mut result = 0.0f32;
 
     while qi < q_components.len() && vi < v_components.len() {
-        let qc: usize = q_components[qi].as_();
-        let vc: usize = v_components[vi].as_();
-        if qc == vc {
-            let v_real = mins[vc].algebraic_add(quants[vc].algebraic_mul(v_values[vi] as f32));
-            result = result.algebraic_add(q_values[qi].algebraic_mul(v_real));
-            qi += 1;
-            vi += 1;
-        } else if qc < vc {
-            qi += 1;
-        } else {
-            vi += 1;
+        unsafe {
+            let qc: usize = q_components.get_unchecked(qi).as_();
+            let vc: usize = v_components.get_unchecked(vi).as_();
+            if qc == vc {
+                let v_real = centroids[vc * NUM_CENTROIDS + v_values[vi] as usize];
+                result = result.algebraic_add(q_values.get_unchecked(qi).algebraic_mul(v_real));
+                qi += 1;
+                vi += 1;
+            } else if qc < vc {
+                qi += 1;
+            } else {
+                vi += 1;
+            }
         }
     }
 
     result
 }
 
-impl<C, D> SparseDataEncoder for UniformSparseQuantizer<C, D>
+impl<C, D> SparseDataEncoder for CentroidSparseQuantizer<C, D>
 where
     C: ComponentType,
-    D: UniformQuantizedSparseSupportedDistance,
+    D: CentroidQuantizedSparseSupportedDistance,
 {
     type InputComponentType = C;
     type InputValueType = f32;
@@ -332,19 +406,16 @@ where
             .components()
             .iter()
             .zip(encoded.values())
-            .map(|(&c, &v)| {
-                let idx: usize = c.as_();
-                self.mins[idx] + (v as f32) * self.quants[idx]
-            })
+            .map(|(&c, &v)| self.dequantize(c.as_(), v))
             .collect();
         SparseVectorOwned::new(components, values)
     }
 }
 
-impl<C, D> SparseVectorEncoder for UniformSparseQuantizer<C, D>
+impl<C, D> SparseVectorEncoder for CentroidSparseQuantizer<C, D>
 where
     C: ComponentType,
-    D: UniformQuantizedSparseSupportedDistance,
+    D: CentroidQuantizedSparseSupportedDistance,
 {
     fn push_encoded<'a, ComponentContainer, ValueContainer>(
         &self,
@@ -361,15 +432,7 @@ where
                 .components()
                 .iter()
                 .zip(input.values())
-                .map(|(&c, &v)| {
-                    let idx: usize = c.as_();
-                    let q = self.quants[idx];
-                    if q > 0.0 {
-                        ((v - self.mins[idx]) / q).clamp(0.0, 255.0) as u8
-                    } else {
-                        0u8
-                    }
-                }),
+                .map(|(&c, &v)| self.quantize(c.as_(), v)),
         );
     }
 
@@ -384,10 +447,10 @@ where
     }
 }
 
-impl<C, D> VectorEncoder for UniformSparseQuantizer<C, D>
+impl<C, D> VectorEncoder for CentroidSparseQuantizer<C, D>
 where
     C: ComponentType,
-    D: UniformQuantizedSparseSupportedDistance,
+    D: CentroidQuantizedSparseSupportedDistance,
 {
     type Distance = D;
     type InputVector<'a> = SparseVectorView<'a, C, f32>;
@@ -395,17 +458,17 @@ where
     type EncodedVector<'a> = SparseVectorView<'a, C, u8>;
 
     type Evaluator<'e>
-        = UniformSparseQueryEvaluator<'e, C, D>
+        = CentroidSparseQueryEvaluator<'e, C, D>
     where
         Self: 'e;
 
     fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
-        UniformSparseQueryEvaluator::new(query, self)
+        CentroidSparseQueryEvaluator::new(query, self)
     }
 
     fn vector_evaluator<'e, 'v>(&'e self, vector: Self::EncodedVector<'v>) -> Self::Evaluator<'e> {
         let decoded = <Self as SparseDataEncoder>::decode_vector(self, vector);
-        UniformSparseQueryEvaluator::new_from_owned_query(decoded, self)
+        CentroidSparseQueryEvaluator::new_from_owned_query(decoded, self)
     }
 
     #[inline]
@@ -419,40 +482,39 @@ where
     }
 }
 
-/// Query evaluator that pre-transforms the query for efficient scoring against u8 vectors.
+/// Query evaluator using precomputed LUT for centroid-based scoring.
 ///
-/// For the dense case (dim < 2^20), stores two precomputed arrays:
-/// - `dense_transformed[i] = q[i] * quants[i]`
-/// - `dense_correction[i] = q[i] * mins[i]`
+/// For the dense case (dim < 2^20), stores a flat LUT of `dim * 256` entries:
+/// `dense_lut[c * 256 + v] = q[c] * centroids[c][v]`
 ///
-/// Scoring is then a single pass: `Σ_S correction[c] + transformed[c] * v_int[c]`
+/// Scoring is a single pass: `Σ_{(c,v) in doc} dense_lut[c * 256 + v]`
 #[derive(Debug, Clone)]
-pub struct UniformSparseQueryEvaluator<'e, C, D>
+pub struct CentroidSparseQueryEvaluator<'e, C, D>
 where
     C: ComponentType,
-    D: UniformQuantizedSparseSupportedDistance,
+    D: CentroidQuantizedSparseSupportedDistance,
 {
-    // Dense pre-transformed query (dim < 2^20)
-    dense_transformed: Option<Vec<f32>>,
-    dense_correction: Option<Vec<f32>>,
+    // Dense LUT (dim < 2^20): dense_lut[c * 256 + v] = q[c] * centroids[c][v]
+    dense_lut: Option<Vec<f32>>,
+    // Dense squared LUT for Euclidean: sq_lut[c * 256 + v] = centroids[c][v]²
+    dense_sq_lut: Option<Vec<f32>>,
     // Sparse query fallback (dim >= 2^20)
     sparse_query: Option<SparseVectorOwned<C, f32>>,
     // Precomputed ||q||² for Euclidean
     dot_query: Option<f32>,
-    // Borrowed from quantizer for Euclidean v_norm_sq and sparse dequantization
-    quants: &'e [f32],
-    mins: &'e [f32],
+    // Borrowed centroids for sparse path
+    centroids: &'e [f32],
     _phantom: PhantomData<D>,
 }
 
-impl<'e, C, D> UniformSparseQueryEvaluator<'e, C, D>
+impl<'e, C, D> CentroidSparseQueryEvaluator<'e, C, D>
 where
     C: ComponentType,
-    D: UniformQuantizedSparseSupportedDistance,
+    D: CentroidQuantizedSparseSupportedDistance,
 {
     pub fn new(
         query: SparseVectorView<'_, C, f32>,
-        quantizer: &'e UniformSparseQuantizer<C, D>,
+        quantizer: &'e CentroidSparseQuantizer<C, D>,
     ) -> Self {
         let dot_query = if D::requires_dot_query() {
             Some(compute_query_squared_norm(query.values()))
@@ -481,21 +543,40 @@ where
         let small_dim = quantizer.input_dim() < 2_usize.pow(20);
 
         if small_dim {
-            let mut transformed = vec![0.0f32; quantizer.dim];
-            let mut correction = vec![0.0f32; quantizer.dim];
-            for (&c, &v) in query.components().iter().zip(query.values()) {
+            let lut_size = quantizer.dim * NUM_CENTROIDS;
+            let mut lut = vec![0.0f32; lut_size];
+
+            // Only fill entries for query components (rest stays 0)
+            for (&c, &qv) in query.components().iter().zip(query.values()) {
                 let idx: usize = c.as_();
-                transformed[idx] = v * quantizer.quants[idx];
-                correction[idx] = v * quantizer.mins[idx];
+                let base = idx * NUM_CENTROIDS;
+                for v in 0..NUM_CENTROIDS {
+                    lut[base + v] = qv.algebraic_mul(quantizer.centroids[base + v]);
+                }
             }
 
+            // For Euclidean, also precompute sq_lut for all dimensions that appear
+            // in any document (we fill all dims since we don't know which docs we'll see)
+            let sq_lut = if D::requires_sq_lut() {
+                let mut sq = vec![0.0f32; lut_size];
+                for i in 0..quantizer.dim {
+                    let base = i * NUM_CENTROIDS;
+                    for v in 0..NUM_CENTROIDS {
+                        let c_val = quantizer.centroids[base + v];
+                        sq[base + v] = c_val.algebraic_mul(c_val);
+                    }
+                }
+                Some(sq)
+            } else {
+                None
+            };
+
             Self {
-                dense_transformed: Some(transformed),
-                dense_correction: Some(correction),
+                dense_lut: Some(lut),
+                dense_sq_lut: sq_lut,
                 sparse_query: None,
                 dot_query,
-                quants: &quantizer.quants,
-                mins: &quantizer.mins,
+                centroids: &quantizer.centroids,
                 _phantom: PhantomData,
             }
         } else {
@@ -505,15 +586,14 @@ where
             );
 
             Self {
-                dense_transformed: None,
-                dense_correction: None,
+                dense_lut: None,
+                dense_sq_lut: None,
                 sparse_query: Some(SparseVectorOwned::new(
                     query.components().to_vec(),
                     query.values().to_vec(),
                 )),
                 dot_query,
-                quants: &quantizer.quants,
-                mins: &quantizer.mins,
+                centroids: &quantizer.centroids,
                 _phantom: PhantomData,
             }
         }
@@ -521,7 +601,7 @@ where
 
     pub fn new_from_owned_query(
         query: SparseVectorOwned<C, f32>,
-        quantizer: &'e UniformSparseQuantizer<C, D>,
+        quantizer: &'e CentroidSparseQuantizer<C, D>,
     ) -> Self {
         let dot_query = if D::requires_dot_query() {
             Some(compute_query_squared_norm(query.values()))
@@ -544,21 +624,37 @@ where
         let small_dim = quantizer.input_dim() < 2_usize.pow(20);
 
         if small_dim {
-            let mut transformed = vec![0.0f32; quantizer.dim];
-            let mut correction = vec![0.0f32; quantizer.dim];
-            for (&c, &v) in query.components().iter().zip(query.values()) {
+            let lut_size = quantizer.dim * NUM_CENTROIDS;
+            let mut lut = vec![0.0f32; lut_size];
+
+            for (&c, &qv) in query.components().iter().zip(query.values()) {
                 let idx: usize = c.as_();
-                transformed[idx] = v * quantizer.quants[idx];
-                correction[idx] = v * quantizer.mins[idx];
+                let base = idx * NUM_CENTROIDS;
+                for v in 0..NUM_CENTROIDS {
+                    lut[base + v] = qv.algebraic_mul(quantizer.centroids[base + v]);
+                }
             }
 
+            let sq_lut = if D::requires_sq_lut() {
+                let mut sq = vec![0.0f32; lut_size];
+                for i in 0..quantizer.dim {
+                    let base = i * NUM_CENTROIDS;
+                    for v in 0..NUM_CENTROIDS {
+                        let c_val = quantizer.centroids[base + v];
+                        sq[base + v] = c_val.algebraic_mul(c_val);
+                    }
+                }
+                Some(sq)
+            } else {
+                None
+            };
+
             Self {
-                dense_transformed: Some(transformed),
-                dense_correction: Some(correction),
+                dense_lut: Some(lut),
+                dense_sq_lut: sq_lut,
                 sparse_query: None,
                 dot_query,
-                quants: &quantizer.quants,
-                mins: &quantizer.mins,
+                centroids: &quantizer.centroids,
                 _phantom: PhantomData,
             }
         } else {
@@ -568,12 +664,11 @@ where
             );
 
             Self {
-                dense_transformed: None,
-                dense_correction: None,
+                dense_lut: None,
+                dense_sq_lut: None,
                 sparse_query: Some(query),
                 dot_query,
-                quants: &quantizer.quants,
-                mins: &quantizer.mins,
+                centroids: &quantizer.centroids,
                 _phantom: PhantomData,
             }
         }
@@ -581,31 +676,21 @@ where
 }
 
 impl<'e, 'v, C, D> QueryEvaluator<SparseVectorView<'v, C, u8>>
-    for UniformSparseQueryEvaluator<'e, C, D>
+    for CentroidSparseQueryEvaluator<'e, C, D>
 where
     C: ComponentType,
-    D: UniformQuantizedSparseSupportedDistance,
+    D: CentroidQuantizedSparseSupportedDistance,
 {
     type Distance = D;
 
     #[inline]
     fn compute_distance(&self, vector: SparseVectorView<'v, C, u8>) -> D {
-        if let (Some(transformed), Some(correction)) =
-            (&self.dense_transformed, &self.dense_correction)
-        {
-            D::compute_dense(
-                transformed,
-                correction,
-                self.mins,
-                self.quants,
-                vector,
-                self.dot_query,
-            )
+        if let Some(lut) = &self.dense_lut {
+            D::compute_dense_lut(lut, self.dense_sq_lut.as_deref(), vector, self.dot_query)
         } else {
             D::compute_sparse(
                 self.sparse_query.as_ref().unwrap(),
-                self.mins,
-                self.quants,
+                self.centroids,
                 vector,
                 self.dot_query,
             )
@@ -613,15 +698,13 @@ where
     }
 }
 
-impl<C, D> SpaceUsage for UniformSparseQuantizer<C, D>
+impl<C, D> SpaceUsage for CentroidSparseQuantizer<C, D>
 where
     C: ComponentType,
-    D: UniformQuantizedSparseSupportedDistance,
+    D: CentroidQuantizedSparseSupportedDistance,
 {
     fn space_usage_bytes(&self) -> usize {
-        self.dim.space_usage_bytes()
-            + self.quants.space_usage_bytes()
-            + self.mins.space_usage_bytes()
+        self.dim.space_usage_bytes() + self.centroids.space_usage_bytes()
     }
 }
 
@@ -633,7 +716,7 @@ mod tests {
     use crate::core::vector::SparseVectorView;
     use crate::encoders::sparse_scalar::PlainSparseQuantizer;
 
-    type DotQuantizer = UniformSparseQuantizer<u16, DotProduct>;
+    type DotQuantizer = CentroidSparseQuantizer<u16, DotProduct>;
 
     fn build_training_data(
         dim: usize,
@@ -656,7 +739,7 @@ mod tests {
                 (&[0, 1, 2], &[1.0, 20.0, 5.0]),
             ],
         );
-        let q = DotQuantizer::train(&td, 0.0, 1.0);
+        let q = DotQuantizer::train(&td, 0.0, 1.0, 10);
 
         let enc_min = <DotQuantizer as SparseVectorEncoder>::encode_vector(
             &q,
@@ -668,7 +751,6 @@ mod tests {
             &q,
             SparseVectorView::new(&[0_u16, 1, 2], &[1.0_f32, 20.0, 5.0]),
         );
-        // May be 254 or 255 due to floating-point rounding in (max-min)/quant
         for &v in enc_max.values() {
             assert!(v >= 254, "max value should encode to 254 or 255, got {v}");
         }
@@ -676,9 +758,23 @@ mod tests {
 
     #[test]
     fn decode_reconstructs_within_step() {
-        let td = build_training_data(2, &[(&[0, 1], &[0.0, 0.0]), (&[0, 1], &[10.0, 10.0])]);
-        let q = DotQuantizer::train(&td, 0.0, 1.0);
-        let step = 10.0 / 255.0;
+        // Provide 255 distinct training values over [0, 10] so ckmeans learns 255 centroids.
+        // With that many centroids the max quantization error is ~one inter-centroid gap.
+        let n = 255usize;
+        let comps: Vec<u16> = vec![0, 1];
+        let vecs: Vec<(Vec<u16>, Vec<f32>)> = (0..n)
+            .map(|i| {
+                let v = i as f32 * 10.0 / (n - 1) as f32;
+                (comps.clone(), vec![v, v])
+            })
+            .collect();
+        let refs: Vec<(&[u16], &[f32])> = vecs
+            .iter()
+            .map(|(c, v)| (c.as_slice(), v.as_slice()))
+            .collect();
+        let td = build_training_data(2, &refs);
+        let q = DotQuantizer::train(&td, 0.0, 1.0, 10);
+        let tolerance = 10.0 / (n as f32 - 2.0) + 1e-4;
 
         let input = SparseVectorView::new(&[0_u16, 1], &[3.7_f32, 8.2]);
         let enc = <DotQuantizer as SparseVectorEncoder>::encode_vector(&q, input);
@@ -688,7 +784,12 @@ mod tests {
         );
 
         for (&orig, &got) in input.values().iter().zip(dec.values()) {
-            assert!((orig - got).abs() <= step + 1e-5);
+            assert!(
+                (orig - got).abs() <= tolerance,
+                "error {} exceeds tolerance {}",
+                (orig - got).abs(),
+                tolerance
+            );
         }
     }
 
@@ -698,7 +799,7 @@ mod tests {
             4,
             &[(&[0, 1, 2, 3], &[0.0; 4]), (&[0, 1, 2, 3], &[10.0; 4])],
         );
-        let q = DotQuantizer::train(&td, 0.0, 1.0);
+        let q = DotQuantizer::train(&td, 0.0, 1.0, 10);
 
         let query = SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 3.0]);
         let doc = SparseVectorView::new(&[0_u16, 1, 2], &[5.0_f32, 7.0, 9.0]);
@@ -712,7 +813,6 @@ mod tests {
 
         // Compute reference: dequantize then manual dot
         let dec = <DotQuantizer as SparseDataEncoder>::decode_vector(&q, enc_view);
-        // overlap on components 0 and 2: 1.0*dec[0] + 3.0*dec[2]
         let mut ref_dot = 0.0f32;
         for (&qc, &qv) in [0_u16, 2].iter().zip(&[1.0_f32, 3.0]) {
             for (&dc, &dv) in dec.components().iter().zip(dec.values()) {
@@ -734,7 +834,7 @@ mod tests {
             4,
             &[(&[0, 1, 2, 3], &[0.0; 4]), (&[0, 1, 2, 3], &[10.0; 4])],
         );
-        let q = DotQuantizer::train(&td, 0.0, 1.0);
+        let q = DotQuantizer::train(&td, 0.0, 1.0, 10);
 
         let query = SparseVectorView::new(&[0_u16, 1], &[5.0_f32, 5.0]);
         let doc = SparseVectorView::new(&[2_u16, 3], &[5.0_f32, 5.0]);

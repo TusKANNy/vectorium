@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::marker::PhantomData;
 
-mod swizzle;
+pub(super) mod swizzle;
 
 use crate::core::sealed;
 use crate::core::vector::{PackedVectorView, SparseVectorView};
@@ -678,7 +678,7 @@ const fn generate_mask_u16(i: u8) -> Simd<u8, { N * 2 }> {
     Simd::from_array(mask)
 }
 
-fn simd_prefix_sum<const N: usize>(mut n: Simd<u16, N>) -> Simd<u16, N> {
+pub(super) fn simd_prefix_sum<const N: usize>(mut n: Simd<u16, N>) -> Simd<u16, N> {
     // I'd use a for loop, but the const argument prevents doing that...
     // God I wish there was an easier way to do this
     if N > 1 {
@@ -694,7 +694,7 @@ fn simd_prefix_sum<const N: usize>(mut n: Simd<u16, N>) -> Simd<u16, N> {
     n
 }
 
-fn simd_fixedu8_to_f32<const N: usize>(f: Simd<u8, N>) -> Simd<f32, N> {
+pub(super) fn simd_fixedu8_to_f32<const N: usize>(f: Simd<u8, N>) -> Simd<f32, N> {
     let converted_f32 = f.cast();
     // This is *so* hardcoded
     let mult = Simd::splat(1.0 / (1 << crate::FixedU8Q::FRAC_NBITS) as f32);
