@@ -913,7 +913,7 @@ impl<'a> DotVbyteU32Fixedu8<'a> {
         let first_bound = u8::MAX as u32;
         let second_bound = u16::MAX as u32;
         let third_bound = 2_u32.pow(24) - 1;
-        let fourth_bound = u32::MAX as u32;
+        let fourth_bound = u32::MAX;
 
         let bitvec: Vec<u8> = components_chunked
             .chunks_exact(N)
@@ -930,7 +930,7 @@ impl<'a> DotVbyteU32Fixedu8<'a> {
                     if third_bound < value && value <= fourth_bound {
                         bits = 3_u8;
                     };
-                    byte |= bits << (N - 1 - i) * 2;
+                    byte |= bits << ((N - 1 - i) * 2);
                 }
                 byte
             })
@@ -1125,7 +1125,7 @@ const fn generate_mask_u32(i: u8) -> Simd<u8, { N * 4 }> {
     let mut scroll: u8 = 0;
     while j < N {
         // Extract 2-bit code for component j (MSB-first in the control byte)
-        let code = ((i >> (6 - j * 2)) & 0b11) as u8;
+        let code = (i >> (6 - j * 2)) & 0b11;
         let byte_width = code + 1; // 1, 2, 3, or 4 bytes
 
         // Place stream bytes into the u32 lane in native byte order.

@@ -36,7 +36,7 @@ pub fn greedy_kmeans(values: &[f32], min: f32, max: f32, n_iterations: usize) ->
             assignments[val_index] = argmin_index;
         }
 
-        for centroid_index in 0..centroids.len() {
+        for (centroid_index, centroid) in centroids.iter_mut().enumerate() {
             let assigned_vals: Vec<_> = values
                 .iter()
                 .zip(assignments.iter().copied())
@@ -45,8 +45,7 @@ pub fn greedy_kmeans(values: &[f32], min: f32, max: f32, n_iterations: usize) ->
                 .collect();
 
             if !assigned_vals.is_empty() {
-                centroids[centroid_index] =
-                    assigned_vals.iter().sum::<f32>() / (assigned_vals.len() as f32);
+                *centroid = assigned_vals.iter().sum::<f32>() / (assigned_vals.len() as f32);
             }
         }
     }

@@ -38,6 +38,7 @@ rusty-perm = "0.2.0"
 rgb = { git = "https://github.com/JMMackenzie/enhanced-graph-bisection.git" } 
 rand = "0.8"
 matrixmultiply = "0.3"
+ckmeans = {git="https://github.com/urschrei/ckmeans.git"}
 
 [features]
 default = []
@@ -55,8 +56,27 @@ path = "src/bin/bench_quantization.rs"
 required-features = ["cli"]
 
 [[bin]]
+name = "bench_dotvbyte"
+path = "src/bin/bench_dotvbyte.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "bench_dotvbyte_u16"
+path = "src/bin/bench_dotvbyte_u16.rs"
+required-features = ["cli"]
+[[bin]]
+name = "bench_centroid_quantization"
+path = "src/bin/bench_centroid_quantization.rs"
+required-features = ["cli"]
+
+[[bin]]
 name = "dump_component_values"
 path = "src/bin/dump_component_values.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "analyze_deltas"
+path = "src/bin/analyze_deltas.rs"
 required-features = ["cli"]
 
 [profile.release]

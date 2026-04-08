@@ -6,14 +6,13 @@ use crate::core::vector_encoder::{
     QueryEvaluator, SparseDataEncoder, SparseVectorEncoder, SparseVectorOwned, VectorEncoder,
 };
 use crate::distances::{Distance, DotProduct, SquaredEuclideanDistance};
-use crate::utils::is_strictly_sorted;
+use crate::utils::{is_strictly_sorted, train_sparse_scalar_quantizer};
 use crate::{ComponentType, Dataset, PlainSparseDataset, SpaceUsage, SparseVectorView};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UniformSparseQuantizer<C, D> {
     dim: usize,
     quants: Box<[f32]>,
-    mins: Box<[f32]>,
     _phantom: PhantomData<(C, D)>,
 }
 
@@ -33,93 +32,29 @@ impl<C, D> UniformSparseQuantizer<C, D> {
         Self {
             dim: input_dim,
             quants: vec![0.0; output_dim].into_boxed_slice(),
-            mins: vec![0.0; output_dim].into_boxed_slice(),
             _phantom: PhantomData,
         }
-    }
-
-    pub fn mins(&self) -> &[f32] {
-        &self.mins
     }
 
     pub fn quants(&self) -> &[f32] {
         &self.quants
     }
 
-    /// Train the quantizer from data.
-    ///
-    /// `lower_percentile` controls the lower bound of the quantization range per component.
-    /// - `0.0` uses the absolute min (classic min–max uniform quantization).
-    /// - `0.25` uses the 25th percentile as the lower bound, giving finer resolution
-    ///   to the upper 75% of values. Values below the percentile are clipped to 0.
-    ///
-    /// `upper_percentile` controls the upper bound of the quantization range per component.
-    /// - `1.0` uses the absolute max.
-    /// - `0.99` uses the 99th percentile as the upper bound. Values above are clipped to 255.
     pub fn train(
         training_data: &PlainSparseDataset<C, f32, SquaredEuclideanDistance>,
+        //training_data: impl Iterator<Item = SparseVectorView<'a, C, f32>>,
         lower_percentile: f32,
         upper_percentile: f32,
     ) -> Self
     where
         C: ComponentType,
     {
-        assert!(
-            (0.0..1.0).contains(&lower_percentile),
-            "lower_percentile must be in [0.0, 1.0), got {lower_percentile}"
-        );
-        assert!(
-            (0.0..=1.0).contains(&upper_percentile) && upper_percentile > lower_percentile,
-            "upper_percentile must be in (lower_percentile, 1.0], got {upper_percentile}"
-        );
-
-        let dim = training_data.output_dim();
-
-        // Collect per-component values
-        let mut per_component: Vec<Vec<f32>> = vec![Vec::new(); dim];
-        for doc in training_data.iter() {
-            for (&c, &v) in doc.components().iter().zip(doc.values()) {
-                let idx: usize = c.as_();
-                per_component[idx].push(v);
-            }
-        }
-
-        let mut mins = vec![0.0f32; dim];
-        let mut quants = vec![0.0f32; dim];
-
-        for i in 0..dim {
-            let vals = &mut per_component[i];
-            if vals.is_empty() {
-                continue;
-            }
-            vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-
-            let min = if lower_percentile == 0.0 {
-                *vals.first().unwrap()
-            } else {
-                let idx = ((vals.len() as f32) * lower_percentile) as usize;
-                let idx = idx.min(vals.len() - 1);
-                vals[idx]
-            };
-
-            let max = if upper_percentile >= 1.0 {
-                *vals.last().unwrap()
-            } else {
-                let idx = ((vals.len() as f32) * upper_percentile) as usize;
-                let idx = idx.min(vals.len() - 1);
-                vals[idx]
-            };
-
-            mins[i] = min;
-            if max > min {
-                quants[i] = (max - min) / 255.0;
-            }
-        }
+        let quants =
+            train_sparse_scalar_quantizer(training_data, lower_percentile, upper_percentile);
 
         Self {
-            dim,
+            dim: training_data.output_dim(),
             quants: quants.into_boxed_slice(),
-            mins: mins.into_boxed_slice(),
             _phantom: PhantomData,
         }
     }
@@ -131,8 +66,8 @@ impl<C, D> UniformSparseQuantizer<C, D> {
 /// so that scoring avoids per-element dequantization.
 ///
 /// For DotProduct:
-///   `q · dequant(v) = Σ_S correction[c] + transformed[c] * v_int[c]`
-///   where `transformed[i] = q[i] * quants[i]`, `correction[i] = q[i] * mins[i]`
+///   `q · dequant(v) = Σ_S transformed[c] * v_int[c]`
+///   where `transformed[i] = q[i] * quants[i]`
 ///
 /// For SquaredEuclidean:
 ///   `||q - dequant(v)||² = ||q||² - 2·(q · dequant(v)) + ||dequant(v)||²`
@@ -144,8 +79,6 @@ pub trait UniformQuantizedSparseSupportedDistance: Distance {
     /// Score using a dense pre-transformed query (dim < 2^20).
     fn compute_dense<C: ComponentType>(
         dense_transformed: &[f32],
-        dense_correction: &[f32],
-        mins: &[f32],
         quants: &[f32],
         vector: SparseVectorView<'_, C, u8>,
         dot_query: Option<f32>,
@@ -154,7 +87,6 @@ pub trait UniformQuantizedSparseSupportedDistance: Distance {
     /// Score using a sparse query with merge-sort (dim >= 2^20).
     fn compute_sparse<C: ComponentType>(
         query: &SparseVectorOwned<C, f32>,
-        mins: &[f32],
         quants: &[f32],
         vector: SparseVectorView<'_, C, u8>,
         dot_query: Option<f32>,
@@ -171,8 +103,6 @@ impl UniformQuantizedSparseSupportedDistance for DotProduct {
     #[inline]
     fn compute_dense<C: ComponentType>(
         dense_transformed: &[f32],
-        _dense_correction: &[f32],
-        _mins: &[f32],
         _quants: &[f32],
         vector: SparseVectorView<'_, C, u8>,
         _dot_query: Option<f32>,
@@ -196,12 +126,11 @@ impl UniformQuantizedSparseSupportedDistance for DotProduct {
     #[inline]
     fn compute_sparse<C: ComponentType>(
         query: &SparseVectorOwned<C, f32>,
-        mins: &[f32],
         quants: &[f32],
         vector: SparseVectorView<'_, C, u8>,
         _dot_query: Option<f32>,
     ) -> Self {
-        let result = sparse_merge_dot_product_with_dequant(query.as_view(), vector, mins, quants);
+        let result = sparse_merge_dot_product_with_dequant(query.as_view(), vector, quants);
         DotProduct::from(result)
     }
 }
@@ -215,8 +144,6 @@ impl UniformQuantizedSparseSupportedDistance for SquaredEuclideanDistance {
     #[inline]
     fn compute_dense<C: ComponentType>(
         dense_transformed: &[f32],
-        dense_correction: &[f32],
-        mins: &[f32],
         quants: &[f32],
         vector: SparseVectorView<'_, C, u8>,
         dot_query: Option<f32>,
@@ -230,10 +157,8 @@ impl UniformQuantizedSparseSupportedDistance for SquaredEuclideanDistance {
         for (&c, &v) in vector.components().iter().zip(vector.values()) {
             let idx: usize = c.as_();
             let vi = v as f32;
-            let v_real = mins[idx].algebraic_add(quants[idx].algebraic_mul(vi));
-            dot_qv = dot_qv.algebraic_add(
-                dense_correction[idx].algebraic_add(dense_transformed[idx].algebraic_mul(vi)),
-            );
+            let v_real = quants[idx].algebraic_mul(vi);
+            dot_qv = dot_qv.algebraic_add(dense_transformed[idx].algebraic_mul(vi));
             v_norm_sq = v_norm_sq.algebraic_add(v_real.algebraic_mul(v_real));
         }
 
@@ -247,7 +172,6 @@ impl UniformQuantizedSparseSupportedDistance for SquaredEuclideanDistance {
     #[inline]
     fn compute_sparse<C: ComponentType>(
         query: &SparseVectorOwned<C, f32>,
-        mins: &[f32],
         quants: &[f32],
         vector: SparseVectorView<'_, C, u8>,
         dot_query: Option<f32>,
@@ -255,7 +179,7 @@ impl UniformQuantizedSparseSupportedDistance for SquaredEuclideanDistance {
         let dot_query =
             dot_query.expect("SquaredEuclideanDistance requires a precomputed ||q||² value");
 
-        let dot_qv = sparse_merge_dot_product_with_dequant(query.as_view(), vector, mins, quants);
+        let dot_qv = sparse_merge_dot_product_with_dequant(query.as_view(), vector, quants);
 
         // Compute ||dequant(v)||²
         let v_norm_sq =
@@ -265,7 +189,7 @@ impl UniformQuantizedSparseSupportedDistance for SquaredEuclideanDistance {
                 .zip(vector.values())
                 .fold(0.0f32, |acc, (&c, &v)| {
                     let idx: usize = c.as_();
-                    let v_real = mins[idx].algebraic_add(quants[idx].algebraic_mul(v as f32));
+                    let v_real = quants[idx].algebraic_mul(v as f32);
                     acc.algebraic_add(v_real.algebraic_mul(v_real))
                 });
 
@@ -282,7 +206,6 @@ impl UniformQuantizedSparseSupportedDistance for SquaredEuclideanDistance {
 fn sparse_merge_dot_product_with_dequant<C: ComponentType>(
     query: SparseVectorView<'_, C, f32>,
     vector: SparseVectorView<'_, C, u8>,
-    mins: &[f32],
     quants: &[f32],
 ) -> f32 {
     let q_components = query.components();
@@ -298,7 +221,7 @@ fn sparse_merge_dot_product_with_dequant<C: ComponentType>(
         let qc: usize = q_components[qi].as_();
         let vc: usize = v_components[vi].as_();
         if qc == vc {
-            let v_real = mins[vc].algebraic_add(quants[vc].algebraic_mul(v_values[vi] as f32));
+            let v_real = quants[vc].algebraic_mul(v_values[vi] as f32);
             result = result.algebraic_add(q_values[qi].algebraic_mul(v_real));
             qi += 1;
             vi += 1;
@@ -334,7 +257,7 @@ where
             .zip(encoded.values())
             .map(|(&c, &v)| {
                 let idx: usize = c.as_();
-                self.mins[idx] + (v as f32) * self.quants[idx]
+                (v as f32) * self.quants[idx]
             })
             .collect();
         SparseVectorOwned::new(components, values)
@@ -365,7 +288,7 @@ where
                     let idx: usize = c.as_();
                     let q = self.quants[idx];
                     if q > 0.0 {
-                        ((v - self.mins[idx]) / q).clamp(0.0, 255.0) as u8
+                        (v / q).clamp(0.0, 255.0) as u8
                     } else {
                         0u8
                     }
@@ -421,11 +344,10 @@ where
 
 /// Query evaluator that pre-transforms the query for efficient scoring against u8 vectors.
 ///
-/// For the dense case (dim < 2^20), stores two precomputed arrays:
+/// For the dense case (dim < 2^20), stores a precomputed array:
 /// - `dense_transformed[i] = q[i] * quants[i]`
-/// - `dense_correction[i] = q[i] * mins[i]`
 ///
-/// Scoring is then a single pass: `Σ_S correction[c] + transformed[c] * v_int[c]`
+/// Scoring is then a single pass: `Σ_S transformed[c] * v_int[c]`
 #[derive(Debug, Clone)]
 pub struct UniformSparseQueryEvaluator<'e, C, D>
 where
@@ -434,14 +356,12 @@ where
 {
     // Dense pre-transformed query (dim < 2^20)
     dense_transformed: Option<Vec<f32>>,
-    dense_correction: Option<Vec<f32>>,
     // Sparse query fallback (dim >= 2^20)
     sparse_query: Option<SparseVectorOwned<C, f32>>,
     // Precomputed ||q||² for Euclidean
     dot_query: Option<f32>,
     // Borrowed from quantizer for Euclidean v_norm_sq and sparse dequantization
     quants: &'e [f32],
-    mins: &'e [f32],
     _phantom: PhantomData<D>,
 }
 
@@ -482,20 +402,16 @@ where
 
         if small_dim {
             let mut transformed = vec![0.0f32; quantizer.dim];
-            let mut correction = vec![0.0f32; quantizer.dim];
             for (&c, &v) in query.components().iter().zip(query.values()) {
                 let idx: usize = c.as_();
                 transformed[idx] = v * quantizer.quants[idx];
-                correction[idx] = v * quantizer.mins[idx];
             }
 
             Self {
                 dense_transformed: Some(transformed),
-                dense_correction: Some(correction),
                 sparse_query: None,
                 dot_query,
                 quants: &quantizer.quants,
-                mins: &quantizer.mins,
                 _phantom: PhantomData,
             }
         } else {
@@ -506,14 +422,12 @@ where
 
             Self {
                 dense_transformed: None,
-                dense_correction: None,
                 sparse_query: Some(SparseVectorOwned::new(
                     query.components().to_vec(),
                     query.values().to_vec(),
                 )),
                 dot_query,
                 quants: &quantizer.quants,
-                mins: &quantizer.mins,
                 _phantom: PhantomData,
             }
         }
@@ -545,20 +459,18 @@ where
 
         if small_dim {
             let mut transformed = vec![0.0f32; quantizer.dim];
-            let mut correction = vec![0.0f32; quantizer.dim];
             for (&c, &v) in query.components().iter().zip(query.values()) {
                 let idx: usize = c.as_();
                 transformed[idx] = v * quantizer.quants[idx];
-                correction[idx] = v * quantizer.mins[idx];
             }
 
             Self {
                 dense_transformed: Some(transformed),
-                dense_correction: Some(correction),
+
                 sparse_query: None,
                 dot_query,
                 quants: &quantizer.quants,
-                mins: &quantizer.mins,
+
                 _phantom: PhantomData,
             }
         } else {
@@ -569,11 +481,11 @@ where
 
             Self {
                 dense_transformed: None,
-                dense_correction: None,
+
                 sparse_query: Some(query),
                 dot_query,
                 quants: &quantizer.quants,
-                mins: &quantizer.mins,
+
                 _phantom: PhantomData,
             }
         }
@@ -590,21 +502,11 @@ where
 
     #[inline]
     fn compute_distance(&self, vector: SparseVectorView<'v, C, u8>) -> D {
-        if let (Some(transformed), Some(correction)) =
-            (&self.dense_transformed, &self.dense_correction)
-        {
-            D::compute_dense(
-                transformed,
-                correction,
-                self.mins,
-                self.quants,
-                vector,
-                self.dot_query,
-            )
+        if let Some(transformed) = &self.dense_transformed {
+            D::compute_dense(transformed, self.quants, vector, self.dot_query)
         } else {
             D::compute_sparse(
                 self.sparse_query.as_ref().unwrap(),
-                self.mins,
                 self.quants,
                 vector,
                 self.dot_query,
@@ -619,9 +521,7 @@ where
     D: UniformQuantizedSparseSupportedDistance,
 {
     fn space_usage_bytes(&self) -> usize {
-        self.dim.space_usage_bytes()
-            + self.quants.space_usage_bytes()
-            + self.mins.space_usage_bytes()
+        self.dim.space_usage_bytes() + self.quants.space_usage_bytes()
     }
 }
 
@@ -648,27 +548,35 @@ mod tests {
     }
 
     #[test]
-    fn encode_min_gives_zero_max_gives_255() {
+    fn encode_zero_gives_zero_max_gives_255() {
         let td = build_training_data(
             3,
             &[
-                (&[0, 1, 2], &[0.0, 10.0, -5.0]),
+                (&[0, 1, 2], &[0.0, 0.0, 0.0]),
                 (&[0, 1, 2], &[1.0, 20.0, 5.0]),
             ],
         );
         let q = DotQuantizer::train(&td, 0.0, 1.0);
 
-        let enc_min = <DotQuantizer as SparseVectorEncoder>::encode_vector(
+        // Zero values should encode to 0
+        let enc_zero = <DotQuantizer as SparseVectorEncoder>::encode_vector(
             &q,
-            SparseVectorView::new(&[0_u16, 1, 2], &[0.0_f32, 10.0, -5.0]),
+            SparseVectorView::new(&[0_u16, 1, 2], &[0.0_f32, 0.0, 0.0]),
         );
-        assert_eq!(enc_min.values(), &[0_u8, 0, 0]);
+        assert_eq!(enc_zero.values(), &[0_u8, 0, 0]);
+
+        // Negative values should be clamped to 0
+        let enc_neg = <DotQuantizer as SparseVectorEncoder>::encode_vector(
+            &q,
+            SparseVectorView::new(&[0_u16, 1, 2], &[-1.0_f32, -5.0, -3.0]),
+        );
+        assert_eq!(enc_neg.values(), &[0_u8, 0, 0]);
 
         let enc_max = <DotQuantizer as SparseVectorEncoder>::encode_vector(
             &q,
             SparseVectorView::new(&[0_u16, 1, 2], &[1.0_f32, 20.0, 5.0]),
         );
-        // May be 254 or 255 due to floating-point rounding in (max-min)/quant
+        // May be 254 or 255 due to floating-point rounding
         for &v in enc_max.values() {
             assert!(v >= 254, "max value should encode to 254 or 255, got {v}");
         }

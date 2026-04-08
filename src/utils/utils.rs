@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::hash::Hash;
 
-use crate::ComponentType;
+use crate::{ComponentType, Dataset, PlainSparseDataset, SquaredEuclideanDistance};
+
 use rgb::forward::Doc;
 
 #[inline]
@@ -45,7 +46,7 @@ pub fn intersection<T: Eq + Hash + Clone>(s: &[T], groundtruth: &[T]) -> usize {
 
 /// Compute a permutation of components using recursive graph bisection.
 /// Components that often appear together in documents will be grouped close together.
-pub(crate) fn permute_components_with_bisection<C, Item>(
+pub fn permute_components_with_bisection<C, Item>(
     dim: usize,
     vectors: impl Iterator<Item = Item>,
 ) -> Box<[usize]>
@@ -96,6 +97,92 @@ where
     }
 
     permutation.into_boxed_slice()
+}
+
+/// Train the quantizer from data. This function is in the utils module as it is used by different quantizers.
+///
+/// `lower_percentile` controls the lower bound of the quantization range per component.
+/// - `0.0` uses the absolute min (classic min–max uniform quantization).
+/// - `0.25` uses the 25th percentile as the lower bound, giving finer resolution
+///   to the upper 75% of values. Values below the percentile are clipped to 0.
+///
+/// `upper_percentile` controls the upper bound of the quantization range per component.
+/// - `1.0` uses the absolute max.
+/// - `0.99` uses the 99th percentile as the upper bound. Values above are clipped to 255.
+pub fn train_sparse_scalar_quantizer<C>(
+    training_data: &PlainSparseDataset<C, f32, SquaredEuclideanDistance>,
+    //training_data: impl Iterator<Item = SparseVectorView<'a, C, f32>>,
+    lower_percentile: f32,
+    upper_percentile: f32,
+) -> Vec<f32>
+where
+    C: ComponentType,
+{
+    assert!(
+        (0.0..1.0).contains(&lower_percentile),
+        "lower_percentile must be in [0.0, 1.0), got {lower_percentile}"
+    );
+    assert!(
+        (0.0..=1.0).contains(&upper_percentile) && upper_percentile > lower_percentile,
+        "upper_percentile must be in (lower_percentile, 1.0], got {upper_percentile}"
+    );
+
+    let dim = training_data.output_dim();
+
+    // Fast path: classic min-max quantization. Sorting every per-component bucket
+    // is wasteful when we only need the maximum, and on high-dim sparse datasets
+    // (e.g. SPLADE on MS MARCO) that sort dominates training time. Single pass,
+    // no per-component allocations.
+    if lower_percentile == 0.0 && upper_percentile >= 1.0 {
+        let mut maxes = vec![0.0f32; dim];
+        for doc in training_data.iter() {
+            for (&c, &v) in doc.components().iter().zip(doc.values()) {
+                let idx: usize = c.as_();
+                if v > maxes[idx] {
+                    maxes[idx] = v;
+                }
+            }
+        }
+        for q in maxes.iter_mut() {
+            if *q > 0.0 {
+                *q /= 255.0;
+            }
+        }
+        return maxes;
+    }
+
+    // Collect per-component values
+    let mut per_component: Vec<Vec<f32>> = vec![Vec::new(); dim];
+    for doc in training_data.iter() {
+        for (&c, &v) in doc.components().iter().zip(doc.values()) {
+            let idx: usize = c.as_();
+            per_component[idx].push(v);
+        }
+    }
+
+    let mut quants = vec![0.0f32; dim];
+
+    for i in 0..dim {
+        let vals = &mut per_component[i];
+        if vals.is_empty() {
+            continue;
+        }
+        vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let max = if upper_percentile >= 1.0 {
+            *vals.last().unwrap()
+        } else {
+            let idx = ((vals.len() as f32) * upper_percentile) as usize;
+            let idx = idx.min(vals.len() - 1);
+            vals[idx]
+        };
+
+        if max > 0.0 {
+            quants[i] = max / 255.0;
+        }
+    }
+
+    quants
 }
 
 #[cfg(test)]
