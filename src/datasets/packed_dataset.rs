@@ -547,6 +547,81 @@ where
     }
 }
 
+impl<EIn, S> From<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
+    for PackedSparseDataset<crate::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder>
+where
+    EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
+    EIn::OutputValueType: crate::ValueType + crate::Float,
+    for<'a> EIn::EncodedVector<'a>: crate::VectorView,
+    S: crate::core::storage::SparseStorage<EIn>,
+{
+    fn from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>) -> Self {
+        use crate::DatasetGrowable;
+        use crate::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder;
+        use crate::encoders::sparse_scalar::PlainSparseQuantizer;
+        use crate::core::vector::SparseVectorView;
+        use crate::SquaredEuclideanDistance;
+        use num_traits::ToPrimitive as _;
+
+        let dim = dataset.output_dim();
+
+        const SAMPLE_RATE: usize = 20;
+        let sample_size = if dataset.len() / SAMPLE_RATE < 50_000 {
+            dataset.len()
+        } else {
+            dataset.len() / SAMPLE_RATE
+        };
+
+        // Materialize a f32 sample to train the scalar quantizer (per-component max).
+        let plain_quantizer =
+            PlainSparseQuantizer::<u16, f32, SquaredEuclideanDistance>::new(dim, dim);
+        let mut growable = crate::PlainSparseDatasetGrowable::new(plain_quantizer);
+        for v in dataset.iter().take(sample_size) {
+            let components: Vec<u16> = v.components().to_vec();
+            let values: Vec<f32> = v.values().iter().map(|x| x.to_f32().unwrap_or(0.0)).collect();
+            growable.push(SparseVectorView::new(&components, &values));
+        }
+        let training_data: crate::PlainSparseDataset<u16, f32, SquaredEuclideanDistance> =
+            growable.into();
+
+        let mut encoder = DotVByteScalarU8Encoder::new(dim, dim);
+        encoder.train::<f32>(&training_data);
+
+        // Encode all vectors.
+        let mut offsets = Vec::with_capacity(dataset.len() + 1);
+        offsets.push(0);
+        let mut data = Vec::new();
+        for v in dataset.iter() {
+            let components: Vec<u16> = v.components().to_vec();
+            let values: Vec<f32> = v.values().iter().map(|x| x.to_f32().unwrap_or(0.0)).collect();
+            encoder.push_encoded(SparseVectorView::new(&components, &values), &mut data);
+            offsets.push(data.len());
+        }
+
+        PackedSparseDatasetGeneric {
+            offsets: offsets.into_boxed_slice(),
+            data: data.into_boxed_slice(),
+            encoder,
+            nnz: dataset.nnz(),
+        }
+    }
+}
+
+impl<EIn, S> crate::dataset::ConvertFrom<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
+    for PackedSparseDataset<crate::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder>
+where
+    EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
+    EIn::OutputValueType: crate::ValueType + crate::Float,
+    for<'a> EIn::EncodedVector<'a>: crate::VectorView,
+    S: crate::core::storage::SparseStorage<EIn>,
+{
+    fn convert_from(
+        dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>,
+    ) -> Self {
+        dataset.into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
