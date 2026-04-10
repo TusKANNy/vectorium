@@ -56,8 +56,8 @@ path = "src/bin/bench_quantization.rs"
 required-features = ["cli"]
 
 [[bin]]
-name = "bench_dotvbyte"
-path = "src/bin/bench_dotvbyte.rs"
+name = "bench_dotvbyte_u32"
+path = "src/bin/bench_dotvbyte_u32.rs"
 required-features = ["cli"]
 
 [[bin]]
