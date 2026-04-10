@@ -86,6 +86,8 @@ pub use encoders::uniform_quantization_sparse_scalar::{
     UniformQuantizedSparseSupportedDistance, UniformSparseQuantizer,
 };
 
+pub use encoders::block8_fixedu8::{Block8FixedU8Encoder, Block8FixedU8QueryEvaluator};
+
 pub use core::dataset::{Dataset, DatasetGrowable, DenseData, SparseData, VectorId};
 pub use core::storage::{
     GrowableSparseStorage, ImmutableSparseStorage, SparseStorage, SparseStorageMut,
