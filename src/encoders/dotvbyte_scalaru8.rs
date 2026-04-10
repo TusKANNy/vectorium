@@ -117,7 +117,7 @@ impl SparseDataEncoder for DotVByteScalarU8Encoder {
         let mut values: Vec<f32> = Vec::new();
         for (component, value) in dotvbyte_view.iter() {
             components.push(component);
-            values.push(self.quants[value as usize]);
+            values.push(value as f32 * self.quants[component as usize]);
         }
 
         // Components are stored in mapped space if a mapping is present.
@@ -324,7 +324,14 @@ mod tests {
         let decoded = encoder.decode_vector(PackedVectorView::new(&buffer));
         assert_eq!(decoded.components(), &[0_u16, 3]);
         assert_eq!(decoded.values().len(), 2);
-        assert!(decoded.values().iter().all(|v| v.is_finite() && *v >= 0.0));
+        // Scalar quantization to u8 loses precision; allow ~1% of the max range per component.
+        // quants[c] = max/255, so one LSB = max/255. The max is 255 here, so one LSB = 1.0.
+        for (&decoded_v, &original_v) in decoded.values().iter().zip(values.iter()) {
+            assert!(
+                (decoded_v - original_v).abs() <= 1.01,
+                "decoded {decoded_v} too far from original {original_v}"
+            );
+        }
     }
 
     #[test]
@@ -383,9 +390,104 @@ mod tests {
         let decoded = encoder.decode_vector(PackedVectorView::new(&buffer));
         assert_eq!(decoded.components(), &[0_u16, 1]);
         assert_eq!(decoded.values().len(), 2);
-        assert!(decoded.values().iter().all(|v| v.is_finite() && *v >= 0.0));
+        for (&decoded_v, &original_v) in decoded.values().iter().zip(values.iter()) {
+            assert!(
+                (decoded_v - original_v).abs() <= 1.01,
+                "decoded {decoded_v} too far from original {original_v}"
+            );
+        }
         assert!(encoder.component_mapping().is_some());
         assert!(encoder.inverse_component_mapping().is_some());
+    }
+
+    /// Regression test: decode_vector must index quants by component, not by the
+    /// encoded u8 value.  With dim < 256 and an encoded value >= dim the old code
+    /// would panic with index-out-of-bounds.
+    #[test]
+    fn dotvbyte_decode_small_dim_high_value_no_panic() {
+        // dim = 3, so quants has length 3.
+        // If we encode a value that quantizes to a u8 >= 3, the buggy
+        // `quants[value as usize]` would go out of bounds.
+        let mut encoder = DotVByteScalarU8Encoder::new(3, 3);
+        // Training max = 1.0 per component → quants[c] = 1.0/255 ≈ 0.00392
+        let td = build_training_data(3, &[(&[0_u16, 1, 2], &[1.0_f32, 1.0, 1.0])]);
+        encoder.train::<f32>(&td);
+
+        // Encode a vector whose values will quantize above 3.
+        // value 0.5 / (1.0/255) ≈ 127 → encoded u8 = 127, which is >= dim(3).
+        let values = [0.5_f32, 0.8];
+        let input = SparseVectorView::new(&[0_u16, 2], &values);
+
+        let mut buffer = Vec::new();
+        encoder.push_encoded(input, &mut buffer);
+
+        // This must not panic.
+        let decoded = encoder.decode_vector(PackedVectorView::new(&buffer));
+        assert_eq!(decoded.components(), &[0_u16, 2]);
+        for (&decoded_v, &original_v) in decoded.values().iter().zip(values.iter()) {
+            assert!(
+                (decoded_v - original_v).abs() < 0.01,
+                "decoded {decoded_v} too far from original {original_v}"
+            );
+        }
+    }
+
+    /// End-to-end test: encode → decode → dot product with analytically known values.
+    ///
+    /// Training with max=255 per component gives quants[c] = 1.0 exactly.
+    /// Integer input values in [0,255] are encoded without any quantization error
+    /// (floor(v / 1.0) == v), so decoded values must match exactly and the dot
+    /// product is a known integer sum.
+    ///
+    /// The previous bug (`quants[value as usize]` instead of
+    /// `value as f32 * quants[component as usize]`) would have caused an
+    /// index-out-of-bounds panic here: dim=4 but encoded u8 values reach 200,
+    /// so `quants[200]` is out of bounds.
+    #[test]
+    fn encode_decode_dot_product_exact() {
+        // dim=4, all components trained to max=255 → quants[c] = 1.0 for all c.
+        let mut encoder = DotVByteScalarU8Encoder::new(4, 4);
+        let td = build_training_data(
+            4,
+            &[(&[0_u16, 1, 2, 3], &[255.0_f32, 255.0, 255.0, 255.0])],
+        );
+        encoder.train::<f32>(&td);
+        assert!(
+            encoder.quants.iter().all(|&q| (q - 1.0).abs() < 1e-6),
+            "expected quants == 1.0 for all components"
+        );
+
+        // Vector: integer values in [0,255] → encoded u8 == value, decoded == value.
+        let vec_values = [100.0_f32, 150.0, 200.0];
+        let vec_input = SparseVectorView::new(&[0_u16, 1, 2], &vec_values);
+
+        let mut buffer = Vec::new();
+        encoder.push_encoded(vec_input, &mut buffer);
+
+        // --- decode check ---
+        // expected: decoded[c] = encoded_u8[c] * quants[c] = value * 1.0 = value
+        let decoded = encoder.decode_vector(PackedVectorView::new(&buffer));
+        assert_eq!(decoded.components(), &[0_u16, 1, 2]);
+        for (&decoded_v, &original_v) in decoded.values().iter().zip(vec_values.iter()) {
+            assert!(
+                (decoded_v - original_v).abs() < 1e-4,
+                "decoded {decoded_v} != original {original_v}"
+            );
+        }
+
+        // --- dot product check ---
+        // query_transformed[c] = query[c] * quants[c] = query[c] * 1.0
+        // dot = sum_c(encoded_u8[c] * query_transformed[c])
+        //     = 100*2 + 150*3 + 200*1 = 200 + 450 + 200 = 850
+        let query_values = [2.0_f32, 3.0, 1.0];
+        let query = SparseVectorView::new(&[0_u16, 1, 2], &query_values);
+        let evaluator = encoder.query_evaluator(query);
+        let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
+        assert!(
+            (dist.0 - 850.0).abs() < 1e-2,
+            "expected dot product 850.0, got {}",
+            dist.0
+        );
     }
 }
 

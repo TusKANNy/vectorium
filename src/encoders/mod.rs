@@ -4,6 +4,7 @@ pub mod dotvbyte_fixedu8;
 pub mod block8_fixedu8;
 pub mod dotvbyte_scalaru8;
 pub mod dotvbyte_u32_fixedu8;
+pub mod dotvbyte_u32_scalaru8;
 pub mod multivec_pq;
 pub mod multivec_scalar;
 pub mod multivec_two_level_pq;

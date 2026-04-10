@@ -66,6 +66,10 @@ pub use encoders::dotvbyte_scalaru8::{DotVByteScalarU8Encoder, DotVByteScalarU8Q
 pub use encoders::dotvbyte_u32_fixedu8::{
     DotVByteU32FixedU8Encoder, OptimisticDotVByteFixedU8Encoder,
 };
+pub use encoders::dotvbyte_u32_scalaru8::{
+    DotVByteU32ScalarU8Encoder, DotVByteU32ScalarU8QueryEvaluator,
+    OptimisticDotVByteScalarU8Encoder, OptimisticDotVByteScalarU8QueryEvaluator,
+};
 pub use encoders::multivec_pq::{MultiVecPQQueryEvaluator, MultiVecProductQuantizer};
 pub use encoders::multivec_scalar::{
     PlainMultiVecQuantizer, ScalarMultiVecQuantizer, ScalarMultiVecQueryEvaluator,
