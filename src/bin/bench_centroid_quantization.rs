@@ -167,10 +167,7 @@ fn main() {
             let dataset_fixedu8: ScalarSparseDataset<u16, f32, FixedU8Q, DotProduct> =
                 (&dataset_f32).convert_into();
             println!("FixedU8 build: {:.3}s", start.elapsed().as_secs_f64());
-            println!(
-                "FixedU8 size: {:.3} GiB",
-                dataset_fixedu8.space_usage_GiB()
-            );
+            println!("FixedU8 size: {:.3} GiB", dataset_fixedu8.space_usage_GiB());
 
             let start = Instant::now();
             let results: Vec<Vec<ScoredVector<DotProduct>>> = (0..n_queries)
@@ -193,9 +190,15 @@ fn main() {
                 readers::read_seismic_format(&args.input_file)
                     .expect("failed to re-read for training");
 
+            let n_iterations = 1;
+
             let start = Instant::now();
-            let quantizer =
-                CentroidSparseQuantizer::<u16, DotProduct>::train(&training_data, 0.0, 1.0);
+            let quantizer = CentroidSparseQuantizer::<u16, DotProduct>::train(
+                &training_data,
+                0.0,
+                1.0,
+                n_iterations,
+            );
             println!("Centroid train: {:.3}s", start.elapsed().as_secs_f64());
             drop(training_data);
 
