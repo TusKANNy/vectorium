@@ -9,9 +9,9 @@ use vectorium::distances::DotProduct;
 use vectorium::encoders::sparse_scalar::ScalarSparseQuantizer;
 use vectorium::readers;
 use vectorium::{
-    Dataset, DatasetGrowable, DotVByteFixedU8Encoder, DotVByteU32FixedU8Encoder, FixedU8Q,
-    OptimisticDotVByteFixedU8Encoder, PackedSparseDataset, PackedSparseDatasetGrowable,
-    PlainSparseDataset, SpaceUsage, SparseVectorEncoder,
+    Block8FixedU8Encoder, Dataset, DatasetGrowable, DotVByteFixedU8Encoder,
+    DotVByteU32FixedU8Encoder, FixedU8Q, OptimisticDotVByteFixedU8Encoder, PackedSparseDataset,
+    PackedSparseDatasetGrowable, PlainSparseDataset, SpaceUsage, SparseVectorEncoder,
 };
 
 #[derive(Parser, Debug)]
@@ -234,12 +234,58 @@ fn main() {
     let search_time_opt_u32 = start.elapsed().as_secs_f64();
     println!("Search: {search_time_opt_u32:.3}s");
 
+    // ── Block8 FixedU8 ─────────────────────────────────────────────
+    let (dataset_block8_size, build_time_block8, search_time_block8, results_block8) =
+        if run_dvb_u16 {
+            println!("\n=== Block8 FixedU8 ===");
+            println!("Loading dataset (u16 components)...");
+            let dataset_u16: PlainSparseDataset<u16, f32, DotProduct> =
+                readers::read_seismic_format(&args.input_file).expect("failed to read dataset");
+            println!("Loading queries (u16 components)...");
+            let queries_u16: PlainSparseDataset<u16, f32, DotProduct> =
+                readers::read_seismic_format(&args.query_file).expect("failed to read queries");
+
+            let start = Instant::now();
+            let dataset_block8: PackedSparseDataset<Block8FixedU8Encoder> =
+                dataset_u16.convert_into();
+            let build_time_block8 = start.elapsed().as_secs_f64();
+            let dataset_block8_size = dataset_block8.space_usage_GiB();
+            println!("Build:  {build_time_block8:.3}s");
+            println!("Size:   {:.3} GiB", dataset_block8_size);
+
+            let start = Instant::now();
+            let results_block8: Vec<Vec<ScoredVector<DotProduct>>> = (0..n_queries)
+                .into_par_iter()
+                .progress_count(n_queries as u64)
+                .with_style(pb_style.clone())
+                .map(|qi| dataset_block8.search(queries_u16.get(qi as u64), args.k))
+                .collect();
+            let search_time_block8 = start.elapsed().as_secs_f64();
+            println!("Search: {search_time_block8:.3}s");
+            (
+                Some(dataset_block8_size),
+                Some(build_time_block8),
+                Some(search_time_block8),
+                Some(results_block8),
+            )
+        } else {
+            println!(
+                "\n=== Block8 FixedU8 ===\nSkipping: dataset dim {} exceeds u16 max {}",
+                dim,
+                u16::MAX
+            );
+            (None, None, None, None)
+        };
+
     // ── Results ────────────────────────────────────────────────────
     let recall_u16 = results_u16
         .as_ref()
         .map(|results| recall_at_k(&gt, results, args.k));
     let recall_u32 = recall_at_k(&gt, &results_u32, args.k);
     let recall_opt_u32 = recall_at_k(&gt, &results_opt_u32, args.k);
+    let recall_block8 = results_block8
+        .as_ref()
+        .map(|results| recall_at_k(&gt, results, args.k));
 
     println!("\n=== Summary ===");
     println!(
@@ -283,4 +329,20 @@ fn main() {
         search_time_opt_u32,
         recall_opt_u32
     );
+    if let (Some(size), Some(build), Some(search), Some(recall)) = (
+        dataset_block8_size,
+        build_time_block8,
+        search_time_block8,
+        recall_block8,
+    ) {
+        println!(
+            "{:<20} {:>10.3} {:>12.3} {:>12.3} {:>10.4}",
+            "Block8 FixedU8", size, build, search, recall
+        );
+    } else {
+        println!(
+            "{:<20} {:>10} {:>12} {:>12} {:>10}",
+            "Block8 FixedU8", "skipped", "-", "-", "-"
+        );
+    }
 }
