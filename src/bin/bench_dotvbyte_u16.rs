@@ -10,9 +10,8 @@ use vectorium::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder;
 use vectorium::readers;
 use vectorium::{
     Block8FixedU8Encoder, Dataset, DatasetGrowable, DotVByteFixedU8Encoder, FixedU8Q,
-    PackedSparseDataset, PackedSparseDatasetGrowable, PlainSparseDataset,
-    ReverseExpSparseQuantizer, ScalarSparseDataset, SpaceUsage, SparseDatasetGrowable,
-    UniformSparseQuantizer,
+    PackedSparseDataset, PackedSparseDatasetGrowable, PlainSparseDataset, ScalarSparseDataset,
+    SpaceUsage, SparseDatasetGrowable, UniformSparseQuantizer,
 };
 
 #[derive(Parser, Debug)]
@@ -120,6 +119,8 @@ fn main() {
     println!("Search: {search_time_fixedu8:.3}s");
 
     // ── Shared training data for trainable sparse quantizers ────────
+    // Note: Reverse-exp and centroid-based quantization were intentionally removed
+    // from this benchmark because they are too slow for this DotVByte-focused run.
     let training_data: PlainSparseDataset<u16, f32, vectorium::SquaredEuclideanDistance> =
         readers::read_seismic_format(&args.input_file).expect("failed to re-read for training");
 
@@ -153,36 +154,7 @@ fn main() {
     let search_time_scalar = start.elapsed().as_secs_f64();
     println!("Search: {search_time_scalar:.3}s");
 
-    // ── 4. <u16, reverse-exp> ───────────────────────────────────────
-    println!("\n=== <u16, reverse-exp> ===");
-    let start = Instant::now();
-    let revexp_quantizer = ReverseExpSparseQuantizer::<u16, DotProduct>::train(&training_data);
-    let train_time_revexp = start.elapsed().as_secs_f64();
-    println!("Train:  {train_time_revexp:.3}s");
-
-    let start = Instant::now();
-    let mut growable: SparseDatasetGrowable<ReverseExpSparseQuantizer<u16, DotProduct>> =
-        SparseDatasetGrowable::new(revexp_quantizer);
-    for vec in dataset_f32.iter() {
-        growable.push(vec);
-    }
-    let dataset_revexp: vectorium::ReverseExpSparseDataset<u16, DotProduct> = growable.into();
-    let build_time_revexp = start.elapsed().as_secs_f64();
-    let revexp_size = dataset_revexp.space_usage_GiB();
-    println!("Build:  {build_time_revexp:.3}s");
-    println!("Size:   {revexp_size:.3} GiB");
-
-    let start = Instant::now();
-    let results_revexp: Vec<Vec<ScoredVector<DotProduct>>> = (0..n_queries)
-        .into_par_iter()
-        .progress_count(n_queries as u64)
-        .with_style(pb_style.clone())
-        .map(|qi| dataset_revexp.search(queries.get(qi as u64), args.k))
-        .collect();
-    let search_time_revexp = start.elapsed().as_secs_f64();
-    println!("Search: {search_time_revexp:.3}s");
-
-    // ── 5. Block8 <packed, fixedu8> ─────────────────────────────────
+    // ── 4. Block8 <packed, fixedu8> ─────────────────────────────────
     let (block8_size, build_time_block8, search_time_block8, results_block8) = if run_dvb_u16 {
         println!("\n=== Block8 <packed, fixedu8> ===");
         let dataset_for_block8: PlainSparseDataset<u16, f32, DotProduct> =
@@ -220,7 +192,7 @@ fn main() {
         (None, None, None, None)
     };
 
-    // ── 6. DotVByte <packed, fixedu8> ───────────────────────────────
+    // ── 5. DotVByte <packed, fixedu8> ───────────────────────────────
     let (dvb_size, build_time_dvb, search_time_dvb, results_dvb) = if run_dvb_u16 {
         println!("\n=== DotVByte <packed, fixedu8> ===");
         // Re-load to get an owned dataset for convert_into (consumes it)
@@ -261,7 +233,7 @@ fn main() {
         (None, None, None, None)
     };
 
-    // ── 7. DotVByte <packed, scalaru8> ──────────────────────────────
+    // ── 6. DotVByte <packed, scalaru8> ──────────────────────────────
     let (
         dvb_scalaru8_size,
         train_time_dvb_scalaru8,
@@ -323,7 +295,6 @@ fn main() {
     // ── Results ────────────────────────────────────────────────────
     let recall_fixedu8 = recall_at_k(&gt, &results_fixedu8, args.k);
     let recall_scalar = recall_at_k(&gt, &results_scalar, args.k);
-    let recall_revexp = recall_at_k(&gt, &results_revexp, args.k);
     let recall_block8 = results_block8
         .as_ref()
         .map(|results| recall_at_k(&gt, results, args.k));
@@ -351,14 +322,6 @@ fn main() {
     println!(
         "{:<25} {:>10.3} {:>12.3} {:>12.3} {:>10.4}",
         "<u16, scalar>", scalar_size, build_time_scalar, search_time_scalar, recall_scalar
-    );
-    println!(
-        "{:<25} {:>10.3} {:>12.3} {:>12.3} {:>10.4}",
-        "<u16, reverse-exp>",
-        revexp_size,
-        train_time_revexp + build_time_revexp,
-        search_time_revexp,
-        recall_revexp
     );
     if let (Some(size), Some(build), Some(search), Some(recall)) = (
         block8_size,
