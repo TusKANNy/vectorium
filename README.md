@@ -4,7 +4,7 @@
     <img width="300px" src="/imgs/vectorium_logo.png" />
 </p>
 
-Vectorium is a Rust library for storing, accessing, and compressing dense and sparse embedding datasets.
+Vectorium is a Rust library for storing, accessing, and compressing dense, sparse and multivector embedding datasets.
 The main goal is to provide a unified dataset/encoder interface that can be shared by indexing/search crates such as
 [Seismic](https://github.com/TusKANNy/seismic) and [kANNolo](https://github.com/TusKANNy/kannolo).
 
