@@ -93,7 +93,9 @@ fn main() {
         println!("Dotvbyte encoder: quantizing values using FixedU8Q.");
     }
     if encoder == "block8" {
-        println!("Block8 encoder: compressing integer with Block8FixedU8Encoder and quantizing values using FixedU8Q.");
+        println!(
+            "Block8 encoder: compressing integer with Block8FixedU8Encoder and quantizing values using FixedU8Q."
+        );
     }
     if encoder != "plain" && encoder != "dotvbyte" && encoder != "pq" && encoder != "block8" {
         eprintln!(
@@ -864,7 +866,6 @@ fn compute_sparse_groundtruth_dotvbyte<V>(
         }
     }
 }
-
 
 fn compute_sparse_groundtruth_block8<V>(
     input_path: String,

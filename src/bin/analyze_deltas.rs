@@ -1,12 +1,16 @@
 use clap::Parser;
 
 use vectorium::distances::DotProduct;
+use vectorium::readers;
 use vectorium::utils::permute_components_with_bisection;
 use vectorium::{Dataset, PlainSparseDataset};
-use vectorium::readers;
 
 #[derive(Parser, Debug)]
-#[clap(author, version, about = "Analyze delta distributions in sparse vectors with and without component reordering")]
+#[clap(
+    author,
+    version,
+    about = "Analyze delta distributions in sparse vectors with and without component reordering"
+)]
 struct Args {
     /// Sparse dataset in Seismic binary format
     #[clap(short, long)]
@@ -19,9 +23,9 @@ struct Args {
 
 struct DeltaStats {
     total_deltas: u64,
-    one_byte: u64,    // delta <= 255
-    two_byte: u64,    // 256 <= delta <= 65535
-    larger: u64,      // delta > 65535
+    one_byte: u64, // delta <= 255
+    two_byte: u64, // 256 <= delta <= 65535
+    larger: u64,   // delta > 65535
     max_delta: u64,
 }
 
@@ -51,9 +55,21 @@ impl DeltaStats {
     fn print(&self, label: &str) {
         println!("\n=== {} ===", label);
         println!("Total deltas:     {}", self.total_deltas);
-        println!("1-byte (<=255):   {} ({:.4}%)", self.one_byte, 100.0 * self.one_byte as f64 / self.total_deltas as f64);
-        println!("2-byte (256..=65535): {} ({:.4}%)", self.two_byte, 100.0 * self.two_byte as f64 / self.total_deltas as f64);
-        println!(">2-byte (>65535): {} ({:.4}%)", self.larger, 100.0 * self.larger as f64 / self.total_deltas as f64);
+        println!(
+            "1-byte (<=255):   {} ({:.4}%)",
+            self.one_byte,
+            100.0 * self.one_byte as f64 / self.total_deltas as f64
+        );
+        println!(
+            "2-byte (256..=65535): {} ({:.4}%)",
+            self.two_byte,
+            100.0 * self.two_byte as f64 / self.total_deltas as f64
+        );
+        println!(
+            ">2-byte (>65535): {} ({:.4}%)",
+            self.larger,
+            100.0 * self.larger as f64 / self.total_deltas as f64
+        );
         println!("Max delta:        {}", self.max_delta);
     }
 }
@@ -79,7 +95,10 @@ fn main() {
 
     let permutation = permute_components_with_bisection::<u32, _>(
         dim,
-        dataset.iter().take(sample_size).map(|v| v.components().to_vec()),
+        dataset
+            .iter()
+            .take(sample_size)
+            .map(|v| v.components().to_vec()),
     );
 
     // Analyze deltas
@@ -115,7 +134,10 @@ fn main() {
         }
 
         // With reordering: remap then sort
-        let mut remapped: Vec<u32> = components.iter().map(|&c| permutation[c as usize] as u32).collect();
+        let mut remapped: Vec<u32> = components
+            .iter()
+            .map(|&c| permutation[c as usize] as u32)
+            .collect();
         remapped.sort_unstable();
 
         let mut prev = 0u32;
@@ -134,10 +156,15 @@ fn main() {
     stats_reordered.print("With bisection reordering");
 
     println!("\n=== Per-position in SIMD pack (fraction >1 byte) ===");
-    println!("{:>4}  {:>12}  {:>12}  {:>12}", "Pos", "No reorder", "Reordered", "Total");
+    println!(
+        "{:>4}  {:>12}  {:>12}  {:>12}",
+        "Pos", "No reorder", "Reordered", "Total"
+    );
     for pos in 0..8 {
         let total = per_position_total[pos];
-        if total == 0 { continue; }
+        if total == 0 {
+            continue;
+        }
         println!(
             "{:>4}  {:>11.4}%  {:>11.4}%  {:>12}",
             pos,
@@ -161,16 +188,23 @@ fn print_histogram(
     permutation: &Option<Box<[usize]>>,
 ) {
     let n = dataset.len();
-    let buckets = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536];
+    let buckets = [
+        1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
+    ];
     let mut counts = vec![0u64; buckets.len() + 1];
 
     for i in 0..n {
         let vec = dataset.get(i as u64);
         let components = vec.components();
-        if components.is_empty() { continue; }
+        if components.is_empty() {
+            continue;
+        }
 
         let sorted: Vec<u32> = if let Some(perm) = permutation {
-            let mut remapped: Vec<u32> = components.iter().map(|&c| perm[c as usize] as u32).collect();
+            let mut remapped: Vec<u32> = components
+                .iter()
+                .map(|&c| perm[c as usize] as u32)
+                .collect();
             remapped.sort_unstable();
             remapped
         } else {
@@ -180,7 +214,10 @@ fn print_histogram(
         let mut prev = 0u32;
         for &c in &sorted {
             let delta = c - prev;
-            let bucket = buckets.iter().position(|&b| (delta as u64) < b).unwrap_or(buckets.len());
+            let bucket = buckets
+                .iter()
+                .position(|&b| (delta as u64) < b)
+                .unwrap_or(buckets.len());
             counts[bucket] += 1;
             prev = c;
         }

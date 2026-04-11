@@ -1159,7 +1159,10 @@ mod tests {
         let td = build_training_data(
             5,
             &[
-                (&[0_u32, 1, 2, 3, 4], &[255.0_f32, 255.0, 255.0, 255.0, 255.0]),
+                (
+                    &[0_u32, 1, 2, 3, 4],
+                    &[255.0_f32, 255.0, 255.0, 255.0, 255.0],
+                ),
                 (&[0_u32, 2], &[128.0_f32, 64.0]),
             ],
         );
@@ -1317,7 +1320,10 @@ mod tests {
         let mut encoder = OptimisticDotVByteScalarU8Encoder::new(5, 5);
         let td = build_training_data(
             5,
-            &[(&[0_u32, 1, 2, 3, 4], &[255.0_f32, 255.0, 255.0, 255.0, 255.0])],
+            &[(
+                &[0_u32, 1, 2, 3, 4],
+                &[255.0_f32, 255.0, 255.0, 255.0, 255.0],
+            )],
         );
         encoder.train::<f32>(&td);
 
@@ -1366,10 +1372,7 @@ mod tests {
     fn encode_decode_dot_product_exact() {
         // dim=4, all components trained to max=255 → quants[c] = 1.0 for all c.
         let mut encoder = DotVByteU32ScalarU8Encoder::new(4, 4);
-        let td = build_training_data(
-            4,
-            &[(&[0_u32, 1, 2, 3], &[255.0_f32, 255.0, 255.0, 255.0])],
-        );
+        let td = build_training_data(4, &[(&[0_u32, 1, 2, 3], &[255.0_f32, 255.0, 255.0, 255.0])]);
         encoder.train::<f32>(&td);
         assert!(
             encoder.quants.iter().all(|&q| (q - 1.0).abs() < 1e-6),
@@ -1413,10 +1416,7 @@ mod tests {
     #[test]
     fn optimistic_encode_decode_dot_product_exact() {
         let mut encoder = OptimisticDotVByteScalarU8Encoder::new(4, 4);
-        let td = build_training_data(
-            4,
-            &[(&[0_u32, 1, 2, 3], &[255.0_f32, 255.0, 255.0, 255.0])],
-        );
+        let td = build_training_data(4, &[(&[0_u32, 1, 2, 3], &[255.0_f32, 255.0, 255.0, 255.0])]);
         encoder.train::<f32>(&td);
         assert!(
             encoder.inner.quants.iter().all(|&q| (q - 1.0).abs() < 1e-6),

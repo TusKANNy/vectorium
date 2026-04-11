@@ -1,7 +1,7 @@
+pub mod block8_fixedu8;
 pub mod centroid_quantization_sparse_scalar;
 pub mod dense_scalar;
 pub mod dotvbyte_fixedu8;
-pub mod block8_fixedu8;
 pub mod dotvbyte_scalaru8;
 pub mod dotvbyte_u32_fixedu8;
 pub mod dotvbyte_u32_scalaru8;

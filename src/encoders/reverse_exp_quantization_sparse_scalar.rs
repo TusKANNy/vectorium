@@ -57,8 +57,7 @@ impl<C, D> ReverseExpSparseQuantizer<C, D> {
     /// x = max - eps * f^v_int + eps
     #[inline]
     fn dequant(&self, component_idx: usize, v_int: u8) -> f32 {
-        self.maxs[component_idx] + EPS
-            - EPS * self.fs[component_idx].powi(v_int as i32)
+        self.maxs[component_idx] + EPS - EPS * self.fs[component_idx].powi(v_int as i32)
     }
 
     pub fn train(training_data: &PlainSparseDataset<C, f32, SquaredEuclideanDistance>) -> Self
@@ -197,9 +196,8 @@ impl ReverseExpQuantizedSparseSupportedDistance for SquaredEuclideanDistance {
         for (&c, &v) in vector.components().iter().zip(vector.values()) {
             let idx: usize = c.as_();
             let v_real = dequant_value(maxs[idx], fs[idx], v);
-            dot_qv = dot_qv.algebraic_add(unsafe {
-                dense_query.get_unchecked(idx).algebraic_mul(v_real)
-            });
+            dot_qv = dot_qv
+                .algebraic_add(unsafe { dense_query.get_unchecked(idx).algebraic_mul(v_real) });
             v_norm_sq = v_norm_sq.algebraic_add(v_real.algebraic_mul(v_real));
         }
 

@@ -424,7 +424,6 @@ impl PackedSparseVectorEncoder for Block8FixedU8Encoder {
 
         output.extend(data);
     }
-
 }
 
 impl VectorEncoder for Block8FixedU8Encoder {

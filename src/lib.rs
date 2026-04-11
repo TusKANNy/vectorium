@@ -64,7 +64,8 @@ pub use encoders::dense_scalar::{
 pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Encoder, DotVByteFixedU8QueryEvaluator};
 pub use encoders::dotvbyte_scalaru8::{DotVByteScalarU8Encoder, DotVByteScalarU8QueryEvaluator};
 pub use encoders::dotvbyte_u32_fixedu8::{
-    DotVByteU32FixedU8Encoder, OptimisticDotVByteFixedU8Encoder,
+    DotVByteU32FixedU8Encoder, DotVByteU32FixedU8QueryEvaluator, OptimisticDotVByteFixedU8Encoder,
+    OptimisticDotVByteFixedU8QueryEvaluator,
 };
 pub use encoders::dotvbyte_u32_scalaru8::{
     DotVByteU32ScalarU8Encoder, DotVByteU32ScalarU8QueryEvaluator,
