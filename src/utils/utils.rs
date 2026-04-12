@@ -185,6 +185,80 @@ where
     quants
 }
 
+/// Same as `train_sparse_scalar_quantizer` but divides by `num_levels` instead of 255.
+/// `num_levels` is typically `(1 << nbits) - 1`.
+pub fn train_sparse_scalar_quantizer_with_levels<C>(
+    training_data: &PlainSparseDataset<C, f32, SquaredEuclideanDistance>,
+    lower_percentile: f32,
+    upper_percentile: f32,
+    num_levels: f32,
+) -> Vec<f32>
+where
+    C: ComponentType,
+{
+    assert!(
+        (0.0..1.0).contains(&lower_percentile),
+        "lower_percentile must be in [0.0, 1.0), got {lower_percentile}"
+    );
+    assert!(
+        (0.0..=1.0).contains(&upper_percentile) && upper_percentile > lower_percentile,
+        "upper_percentile must be in (lower_percentile, 1.0], got {upper_percentile}"
+    );
+    assert!(num_levels > 0.0, "num_levels must be positive, got {num_levels}");
+
+    let dim = training_data.output_dim();
+
+    if lower_percentile == 0.0 && upper_percentile >= 1.0 {
+        let mut maxes = vec![0.0f32; dim];
+        for doc in training_data.iter() {
+            for (&c, &v) in doc.components().iter().zip(doc.values()) {
+                let idx: usize = c.as_();
+                if v > maxes[idx] {
+                    maxes[idx] = v;
+                }
+            }
+        }
+        for q in maxes.iter_mut() {
+            if *q > 0.0 {
+                *q /= num_levels;
+            }
+        }
+        return maxes;
+    }
+
+    let mut per_component: Vec<Vec<f32>> = vec![Vec::new(); dim];
+    for doc in training_data.iter() {
+        for (&c, &v) in doc.components().iter().zip(doc.values()) {
+            let idx: usize = c.as_();
+            per_component[idx].push(v);
+        }
+    }
+
+    let mut quants = vec![0.0f32; dim];
+
+    for i in 0..dim {
+        let vals = &mut per_component[i];
+        if vals.is_empty() {
+            continue;
+        }
+        vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let max = if upper_percentile >= 1.0 {
+            *vals.last().unwrap()
+        } else {
+            let idx = ((vals.len() as f32) * upper_percentile) as usize;
+            let idx = idx.min(vals.len() - 1);
+            vals[idx]
+        };
+
+        if max > 0.0 {
+            quants[i] = max / num_levels;
+        }
+    }
+
+    quants
+}
+
 #[cfg(test)]
 mod tests {
     use super::{intersection, is_strictly_sorted, permute_components_with_bisection};

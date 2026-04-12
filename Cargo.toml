@@ -65,6 +65,11 @@ name = "bench_dotvbyte_u16"
 path = "src/bin/bench_dotvbyte_u16.rs"
 required-features = ["cli"]
 [[bin]]
+name = "bench_variable_bit_quantization"
+path = "src/bin/bench_variable_bit_quantization.rs"
+required-features = ["cli"]
+
+[[bin]]
 name = "bench_centroid_quantization"
 path = "src/bin/bench_centroid_quantization.rs"
 required-features = ["cli"]

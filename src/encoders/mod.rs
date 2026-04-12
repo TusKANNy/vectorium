@@ -12,3 +12,4 @@ pub mod pq;
 pub mod reverse_exp_quantization_sparse_scalar;
 pub mod sparse_scalar;
 pub mod uniform_quantization_sparse_scalar;
+pub mod variable_bit_uniform_quantization_sparse_scalar;
