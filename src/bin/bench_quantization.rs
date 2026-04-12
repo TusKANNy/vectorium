@@ -146,7 +146,7 @@ fn main() {
     for n_iter in [1, 5, 10, 20, 100] {
         let start = Instant::now();
         let centroid_quantizer =
-            CentroidSparseQuantizer::<u16, DotProduct>::train(&training_data, 0.0, 1.0, n_iter);
+            CentroidSparseQuantizer::<u16, DotProduct>::train(&training_data, 0.0, 1.0, 8, n_iter);
         println!("Centroid train: {:.3}s", start.elapsed().as_secs_f64());
 
         let start = Instant::now();
