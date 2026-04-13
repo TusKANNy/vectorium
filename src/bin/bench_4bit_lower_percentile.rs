@@ -19,7 +19,7 @@ use vectorium::{
 #[clap(
     author,
     version,
-    about = "Benchmark variable-bit uniform sparse quantization (1..=8 bits)"
+    about = "Benchmark 4-bit uniform sparse quantization at various lower percentile values"
 )]
 struct Args {
     /// Sparse dataset in Seismic binary format
@@ -39,10 +39,10 @@ struct Args {
     n_queries: usize,
 
     /// Output TSV file path
-    #[clap(short, long, default_value = "variable_bit_quantization_results.tsv")]
+    #[clap(short, long, default_value = "4bit_lower_percentile_results.tsv")]
     output: String,
 
-    /// Directory where per-query recall .npy files are written (recalls_Xbits.npy)
+    /// Directory where per-query recall .npy files are written
     #[clap(long, default_value = ".")]
     recall_dir: String,
 }
@@ -72,7 +72,7 @@ fn recall_at_k(
 }
 
 struct BenchResult {
-    nbits: u8,
+    lower_percentile: f32,
     size_gib: f64,
     train_time: f64,
     build_time: f64,
@@ -124,18 +124,22 @@ fn main() {
     let training_data: PlainSparseDataset<u16, f32, vectorium::SquaredEuclideanDistance> =
         readers::read_seismic_format(&args.input_file).expect("failed to re-read for training");
 
-    // ── Benchmark each nbits from 1 to 8 ───────────────────────────
+    // ── Benchmark 4-bit with various lower percentile values ────────
+    let lower_percentiles = vec![0.0, 0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9];
     let mut results: Vec<BenchResult> = Vec::new();
 
-    for nbits in [4] {
-        println!("\n=== uniform quantization, nbits={nbits} ===");
+    for lower_pct in lower_percentiles {
+        println!(
+            "\n=== 4-bit uniform quantization, lower_percentile={} ===",
+            lower_pct
+        );
 
         let start = Instant::now();
         let quantizer = VariableBitUniformSparseQuantizer::<u16, DotProduct>::train(
             &training_data,
-            0.0,
+            lower_pct,
             1.0,
-            nbits,
+            4,
         );
         let train_time = start.elapsed().as_secs_f64();
         println!("Train:  {train_time:.3}s");
@@ -168,13 +172,17 @@ fn main() {
         println!("Recall@{}: {recall:.4}", args.k);
 
         // Save per-query recall as a numpy array.
-        let npy_path = format!("{}/recalls_{}bits.npy", args.recall_dir, nbits);
+        let npy_path = format!(
+            "{}/recalls_4bit_lower{}.npy",
+            args.recall_dir,
+            lower_pct.to_string().replace(".", "_")
+        );
         let arr = Array1::from(per_query_recall);
         write_npy(&npy_path, &arr).expect("failed to write per-query recall npy");
         println!("Per-query recall written to {npy_path}");
 
         results.push(BenchResult {
-            nbits,
+            lower_percentile: lower_pct as f32,
             size_gib,
             train_time,
             build_time,
@@ -186,18 +194,18 @@ fn main() {
     // ── Summary table (stdout) ──────────────────────────────────────
     println!("\n=== Summary ===");
     println!(
-        "{:<10} {:>10} {:>12} {:>12} {:>12} {:>10}",
-        "nbits", "Size GiB", "Train (s)", "Build (s)", "Search (s)", "Recall@k"
+        "{:<18} {:>10} {:>12} {:>12} {:>12} {:>10}",
+        "lower_percentile", "Size GiB", "Train (s)", "Build (s)", "Search (s)", "Recall@k"
     );
-    println!("{:-<68}", "");
+    println!("{:-<80}", "");
     println!(
-        "{:<10} {:>10.3} {:>12} {:>12} {:>12.3} {:>10}",
+        "{:<18} {:>10.3} {:>12} {:>12} {:>12.3} {:>10}",
         "f32", f32_size, "-", "-", search_time_f32, "1.0000"
     );
     for r in &results {
         println!(
-            "{:<10} {:>10.3} {:>12.3} {:>12.3} {:>12.3} {:>10.4}",
-            r.nbits, r.size_gib, r.train_time, r.build_time, r.search_time, r.recall
+            "{:<18} {:>10.3} {:>12.3} {:>12.3} {:>12.3} {:>10.4}",
+            r.lower_percentile, r.size_gib, r.train_time, r.build_time, r.search_time, r.recall
         );
     }
 
@@ -205,15 +213,15 @@ fn main() {
     let mut f = std::fs::File::create(&args.output).expect("failed to create output TSV");
     writeln!(
         f,
-        "nbits\tsize_gib\ttrain_time_s\tbuild_time_s\tsearch_time_s\trecall_at_k"
+        "lower_percentile\tsize_gib\ttrain_time_s\tbuild_time_s\tsearch_time_s\trecall_at_k"
     )
     .unwrap();
     writeln!(f, "f32\t{f32_size:.6}\t\t\t{search_time_f32:.6}\t1.000000").unwrap();
     for r in &results {
         writeln!(
             f,
-            "{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}",
-            r.nbits, r.size_gib, r.train_time, r.build_time, r.search_time, r.recall
+            "{:.2}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}",
+            r.lower_percentile, r.size_gib, r.train_time, r.build_time, r.search_time, r.recall
         )
         .unwrap();
     }
