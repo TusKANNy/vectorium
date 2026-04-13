@@ -73,7 +73,7 @@ required-features = ["cli"]
 
 [[bin]]
 name = "bench_4bit_lower_percentile"
-path = "src/bin/bench_4bit_lower_percentile"
+path = "src/bin/bench_4bit_lower_percentile.rs"
 required-features = ["cli"]
 
 
