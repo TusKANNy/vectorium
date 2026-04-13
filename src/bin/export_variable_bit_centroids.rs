@@ -134,11 +134,21 @@ fn export_for_nbits(
     }
 
     let centroids_path = output_dir.join(format!("{}_nbits{}_centroids.npy", output_prefix, nbits));
-    let error_path =
-        output_dir.join(format!("{}_nbits{}_per_component_abs_error.npy", output_prefix, nbits));
+    let error_path = output_dir.join(format!(
+        "{}_nbits{}_per_component_abs_error.npy",
+        output_prefix, nbits
+    ));
+    let terms_path = output_dir.join(format!(
+        "{}_nbits{}_per_component_terms.npy",
+        output_prefix, nbits
+    ));
 
     write_npy(&centroids_path, &centroids)?;
     write_npy(&error_path, &per_component_mae)?;
+
+    // Convert count to u64 Array1 and save
+    let per_component_terms = Array1::<u64>::from_vec(count.clone());
+    write_npy(&terms_path, &per_component_terms)?;
 
     let non_empty = count.iter().filter(|&&n| n > 0).count();
     println!(
@@ -148,6 +158,10 @@ fn export_for_nbits(
     println!(
         "nbits={}: saved per-component MAE {:?} with shape ({}) [non-empty components: {}/{}]",
         nbits, error_path, dim, non_empty, dim
+    );
+    println!(
+        "nbits={}: saved per-component terms {:?} with shape ({})",
+        nbits, terms_path, dim
     );
 
     Ok(())
