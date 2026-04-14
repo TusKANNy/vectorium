@@ -76,6 +76,11 @@ name = "bench_4bit_lower_percentile"
 path = "src/bin/bench_4bit_lower_percentile.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "bench_4bit_oversample"
+path = "src/bin/bench_4bit_oversample.rs"
+required-features = ["cli"]
+
 
 [[bin]]
 name = "bench_centroid_quantization"
@@ -100,6 +105,11 @@ required-features = ["cli"]
 [[bin]]
 name = "analyze_quantization_errors"
 path = "src/bin/analyze_quantization_errors.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "bench_hybrid_variable_bit_quantization"
+path = "src/bin/bench_hybrid_variable_bit_quantization.rs"
 required-features = ["cli"]
 
 [profile.release]

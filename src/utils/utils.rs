@@ -103,8 +103,8 @@ where
 ///
 /// `lower_percentile` controls the lower bound of the quantization range per component.
 /// - `0.0` uses the absolute min (classic min–max uniform quantization).
-/// - `0.25` uses the 25th percentile as the lower bound, giving finer resolution
-///   to the upper 75% of values. Values below the percentile are clipped to 0.
+/// - `0.25` uses the 25th percentile as a robust floor for the fitted range,
+///   giving finer resolution to the upper 75% of values.
 ///
 /// `upper_percentile` controls the upper bound of the quantization range per component.
 /// - `1.0` uses the absolute max.
@@ -169,6 +169,14 @@ where
         }
         vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
 
+        let min = if lower_percentile <= 0.0 {
+            vals[0]
+        } else {
+            let idx = ((vals.len() as f32) * lower_percentile) as usize;
+            let idx = idx.min(vals.len() - 1);
+            vals[idx]
+        };
+
         let max = if upper_percentile >= 1.0 {
             *vals.last().unwrap()
         } else {
@@ -177,7 +185,13 @@ where
             vals[idx]
         };
 
-        if max > 0.0 {
+        // This quantizer stores only a per-component step (no per-component offset),
+        // so we fit the step to the robust span [min, max].
+        let span = (max - min).max(0.0);
+        if span > 0.0 {
+            quants[i] = span / 255.0;
+        } else if max > 0.0 {
+            // Degenerate bucket (or identical percentiles): keep previous behavior.
             quants[i] = max / 255.0;
         }
     }
@@ -243,6 +257,14 @@ where
         }
         vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
 
+        let min = if lower_percentile <= 0.0 {
+            vals[0]
+        } else {
+            let idx = ((vals.len() as f32) * lower_percentile) as usize;
+            let idx = idx.min(vals.len() - 1);
+            vals[idx]
+        };
+
         let max = if upper_percentile >= 1.0 {
             *vals.last().unwrap()
         } else {
@@ -251,7 +273,13 @@ where
             vals[idx]
         };
 
-        if max > 0.0 {
+        // This quantizer stores only a per-component step (no per-component offset),
+        // so we fit the step to the robust span [min, max].
+        let span = (max - min).max(0.0);
+        if span > 0.0 {
+            quants[i] = span / num_levels;
+        } else if max > 0.0 {
+            // Degenerate bucket (or identical percentiles): keep previous behavior.
             quants[i] = max / num_levels;
         }
     }
@@ -261,7 +289,26 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{intersection, is_strictly_sorted, permute_components_with_bisection};
+    use super::{
+        intersection, is_strictly_sorted, permute_components_with_bisection,
+        train_sparse_scalar_quantizer, train_sparse_scalar_quantizer_with_levels,
+    };
+    use crate::PlainSparseDatasetGrowable;
+    use crate::core::dataset::DatasetGrowable;
+    use crate::core::vector::SparseVectorView;
+    use crate::encoders::sparse_scalar::PlainSparseQuantizer;
+    use crate::{PlainSparseDataset, SquaredEuclideanDistance};
+
+    fn build_1d_training_data(
+        values: &[f32],
+    ) -> PlainSparseDataset<u16, f32, SquaredEuclideanDistance> {
+        let q = PlainSparseQuantizer::<u16, f32, SquaredEuclideanDistance>::new(1, 1);
+        let mut g = PlainSparseDatasetGrowable::new(q);
+        for &v in values {
+            g.push(SparseVectorView::new(&[0_u16], &[v]));
+        }
+        g.into()
+    }
 
     #[test]
     fn permute_components_with_bisection_returns_permutation() {
@@ -290,5 +337,28 @@ mod tests {
         let a = vec![1i32, 2, 3, 5];
         let b = vec![2i32, 3, 4];
         assert_eq!(intersection(&a, &b), 2);
+    }
+
+    #[test]
+    fn lower_percentile_affects_trained_quant_step() {
+        let td = build_1d_training_data(&[1.0, 2.0, 3.0, 4.0]);
+
+        let q0 = train_sparse_scalar_quantizer(&td, 0.0, 1.0);
+        let q50 = train_sparse_scalar_quantizer(&td, 0.5, 1.0);
+        assert!(
+            q50[0] < q0[0],
+            "expected lower_percentile=0.5 to reduce quant step: q0={} q50={}",
+            q0[0],
+            q50[0]
+        );
+
+        let q0_levels = train_sparse_scalar_quantizer_with_levels(&td, 0.0, 1.0, 15.0);
+        let q50_levels = train_sparse_scalar_quantizer_with_levels(&td, 0.5, 1.0, 15.0);
+        assert!(
+            q50_levels[0] < q0_levels[0],
+            "expected lower_percentile=0.5 to reduce quant step (with levels): q0={} q50={}",
+            q0_levels[0],
+            q50_levels[0]
+        );
     }
 }
