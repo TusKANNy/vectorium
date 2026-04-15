@@ -3,6 +3,9 @@ use std::io::Write;
 use std::time::Instant;
 
 use indicatif::{ParallelProgressIterator, ProgressStyle};
+use ndarray::Array2;
+use ndarray_npy::write_npy;
+use num_traits::AsPrimitive;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use vectorium::dataset::ScoredVector;
@@ -10,7 +13,7 @@ use vectorium::distances::DotProduct;
 use vectorium::readers;
 use vectorium::{
     CentroidSparseQuantizer, Dataset, DatasetGrowable, PlainSparseDataset, SpaceUsage,
-    SparseDatasetGrowable,
+    SparseDatasetGrowable, VectorEncoder,
 };
 
 #[derive(Parser, Debug)]
@@ -37,8 +40,12 @@ struct Args {
     n_queries: usize,
 
     /// Number of k-means iterations for centroid training
-    #[clap(long, default_value_t = 1)]
+    #[clap(long, default_value_t = 10)]
     n_iterations: usize,
+
+    /// Number of bits for quantization (1-8). If not specified, runs all bits from 1 to 8
+    #[clap(long)]
+    nbits: Option<u8>,
 
     /// Output TSV file path
     #[clap(short, long, default_value = "centroid_quantization_results.tsv")]
@@ -71,6 +78,67 @@ struct BenchResult {
     build_time: f64,
     search_time: f64,
     recall: f64,
+}
+
+fn save_centroids(
+    quantizer: &CentroidSparseQuantizer<u16, DotProduct>,
+    stage: &str,
+    nbits: u8,
+) {
+    let num_centroids = quantizer.num_centroids();
+    let dim = quantizer.output_dim();
+
+    // Create a 2D array: (dim, num_centroids)
+    let mut centroids_data = vec![0.0f32; dim * num_centroids];
+    for d in 0..dim {
+        let dim_centroids = quantizer.centroids_for_dim(d);
+        for (idx, &val) in dim_centroids.iter().enumerate() {
+            centroids_data[d * num_centroids + idx] = val;
+        }
+    }
+
+    let centroids_array = Array2::from_shape_vec((dim, num_centroids), centroids_data)
+        .expect("shape error");
+
+    let filename = format!("centroids_{}_{}.npy", stage, nbits);
+    write_npy(&filename, &centroids_array).expect("failed to write npy file");
+    println!("Saved centroids to {}", filename);
+}
+
+fn save_initial_uniform_centroids(
+    training_data: &PlainSparseDataset<u16, f32, vectorium::SquaredEuclideanDistance>,
+    nbits: u8,
+) {
+    let num_centroids = 1usize << nbits;
+    let dim = training_data.output_dim();
+
+    // Collect per-component min/max
+    let mut min_vals = vec![f32::MAX; dim];
+    let mut max_vals = vec![f32::MIN; dim];
+
+    for doc in training_data.iter() {
+        for (&c, &v) in doc.components().iter().zip(doc.values()) {
+            let idx: usize = c.as_();
+            min_vals[idx] = min_vals[idx].min(v);
+            max_vals[idx] = max_vals[idx].max(v);
+        }
+    }
+
+    // Create uniform centroids
+    let mut centroids_data = vec![0.0f32; dim * num_centroids];
+    for d in 0..dim {
+        let span = (max_vals[d] - min_vals[d]) / (num_centroids as f32);
+        for i in 0..num_centroids {
+            centroids_data[d * num_centroids + i] = min_vals[d] + span * i as f32;
+        }
+    }
+
+    let centroids_array = Array2::from_shape_vec((dim, num_centroids), centroids_data)
+        .expect("shape error");
+
+    let filename = format!("centroids_initial_{}.npy", nbits);
+    write_npy(&filename, &centroids_array).expect("failed to write npy file");
+    println!("Saved initial centroids to {}", filename);
 }
 
 fn main() {
@@ -120,30 +188,42 @@ fn main() {
     // ── Benchmark each nbits from 1 to 8 ───────────────────────────
     let mut results: Vec<BenchResult> = Vec::new();
 
-    for nbits in 1..=8u8 {
-        println!("\n=== centroid quantization, nbits={nbits} (2^{nbits}={} centroids) ===", 1u32 << nbits);
+    let nbits_range: Box<dyn Iterator<Item = u8>> = if let Some(nbits_val) = args.nbits {
+        Box::new(std::iter::once(nbits_val))
+    } else {
+        Box::new(1..=8u8)
+    };
+
+    for nbits in nbits_range {
+        println!(
+            "\n=== centroid quantization, nbits={nbits} (2^{nbits}={} centroids) ===",
+            1u32 << nbits
+        );
+
+        // Save initial uniform centroids
+        save_initial_uniform_centroids(&training_data, nbits);
 
         let start = Instant::now();
-        let quantizer =
-            CentroidSparseQuantizer::<u16, DotProduct>::train(
-                &training_data,
-                0.0,
-                1.0,
-                nbits,
-                args.n_iterations,
-            );
+        let quantizer = CentroidSparseQuantizer::<u16, DotProduct>::train(
+            &training_data,
+            0.0,
+            1.0,
+            nbits,
+            args.n_iterations,
+        );
         let train_time = start.elapsed().as_secs_f64();
         println!("Train:  {train_time:.3}s");
 
+        // Save final centroids
+        save_centroids(&quantizer, "final", nbits);
+
         let start = Instant::now();
-        let mut growable: SparseDatasetGrowable<
-            CentroidSparseQuantizer<u16, DotProduct>,
-        > = SparseDatasetGrowable::new(quantizer);
+        let mut growable: SparseDatasetGrowable<CentroidSparseQuantizer<u16, DotProduct>> =
+            SparseDatasetGrowable::new(quantizer);
         for vec in dataset_f32.iter() {
             growable.push(vec);
         }
-        let dataset_quantized: vectorium::CentroidSparseDataset<u16, DotProduct> =
-            growable.into();
+        let dataset_quantized: vectorium::CentroidSparseDataset<u16, DotProduct> = growable.into();
         let build_time = start.elapsed().as_secs_f64();
         let size_gib = dataset_quantized.space_usage_GiB();
         println!("Build:  {build_time:.3}s");
@@ -197,11 +277,7 @@ fn main() {
         "nbits\tsize_gib\ttrain_time_s\tbuild_time_s\tsearch_time_s\trecall_at_k"
     )
     .unwrap();
-    writeln!(
-        f,
-        "f32\t{f32_size:.6}\t\t\t{search_time_f32:.6}\t1.000000"
-    )
-    .unwrap();
+    writeln!(f, "f32\t{f32_size:.6}\t\t\t{search_time_f32:.6}\t1.000000").unwrap();
     for r in &results {
         writeln!(
             f,
