@@ -1,5 +1,7 @@
 use std::marker::PhantomData;
 
+use rand::distributions::Normal;
+use rand::thread_rng;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -18,10 +20,25 @@ pub fn greedy_kmeans(
     n_iterations: usize,
 ) -> Vec<f32> {
     let mut centroids = Vec::with_capacity(num_centroids);
-    let span = (max - min) / (num_centroids as f32);
-    for i in 0..num_centroids {
-        centroids.push(min + span * i as f32);
+
+    // Gaussian initialization
+    let mean = values.iter().sum::<f32>() / values.len() as f32;
+    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32;
+    let std_dev = variance.sqrt();
+
+    let mut rng = thread_rng();
+    let normal = Normal::new(mean, std_dev).unwrap_or(Normal::new(mean, 1.0).unwrap());
+    use rand::distributions::Distribution;
+
+    for _ in 0..num_centroids {
+        let mut centroid = normal.sample(&mut rng);
+        // Clamp to [min, max] range
+        centroid = centroid.clamp(min, max);
+        centroids.push(centroid);
     }
+
+    // Sort centroids for consistency with binary search in quantization
+    centroids.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let mut assignments = vec![0_usize; values.len()];
 
