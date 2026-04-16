@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
-use rand::distributions::Normal;
 use rand::thread_rng;
+use rand_distr::{Distribution, Normal};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +28,6 @@ pub fn greedy_kmeans(
 
     let mut rng = thread_rng();
     let normal = Normal::new(mean, std_dev).unwrap_or(Normal::new(mean, 1.0).unwrap());
-    use rand::distributions::Distribution;
 
     for _ in 0..num_centroids {
         let mut centroid = normal.sample(&mut rng);
@@ -70,6 +69,79 @@ pub fn greedy_kmeans(
         }
     }
 
+    centroids
+}
+
+/// K-means variant that minimizes value-weighted MSE: Σ (c_i - x_i)² · |x_i|.
+///
+/// Compared to standard k-means (which treats all points equally), this objective
+/// penalizes reconstruction error proportionally to the magnitude of the value being
+/// quantized — useful when large components dominate dot-product scoring.
+///
+/// # M-step derivation
+/// For cluster k, minimise f(c) = Σ_{x ∈ k} (c - x)² · |x|.
+/// Setting df/dc = 0 gives c_k = Σ x·|x| / Σ |x| (value-weighted mean).
+///
+/// Initialization is uniform (evenly spaced between min and max).
+pub fn weighted_kmeans(
+    values: &[f32],
+    min: f32,
+    max: f32,
+    num_centroids: usize,
+    n_iterations: usize,
+) -> Vec<f32> {
+    // Uniform initialization
+    let mut centroids: Vec<f32> = (0..num_centroids)
+        .map(|i| {
+            if num_centroids == 1 {
+                (min + max) / 2.0
+            } else {
+                min + (max - min) * (i as f32) / ((num_centroids - 1) as f32)
+            }
+        })
+        .collect();
+
+    let mut assignments = vec![0_usize; values.len()];
+
+    for _ in 0..n_iterations {
+        // E-step: assign each value to the nearest centroid.
+        // Under weighted MSE the weight |x_i| is fixed per point, so the nearest
+        // centroid by squared distance is also nearest under the weighted loss.
+        for (val_index, v) in values.iter().enumerate() {
+            let mut min_dist = f32::MAX;
+            let mut argmin = 0_usize;
+            for (i, c) in centroids.iter().enumerate() {
+                let d = (c - v) * (c - v);
+                if d < min_dist {
+                    min_dist = d;
+                    argmin = i;
+                }
+            }
+            assignments[val_index] = argmin;
+        }
+
+        // M-step: c_k = Σ x·|x| / Σ |x| for x in cluster k.
+        for (centroid_index, centroid) in centroids.iter_mut().enumerate() {
+            let mut weight_sum = 0.0f32; // Σ |x|
+            let mut weighted_val_sum = 0.0f32; // Σ x·|x|
+
+            for (&v, &a) in values.iter().zip(assignments.iter()) {
+                if a == centroid_index {
+                    let w = v.abs();
+                    weight_sum += w;
+                    weighted_val_sum += v * w;
+                }
+            }
+
+            if weight_sum > 0.0 {
+                *centroid = weighted_val_sum / weight_sum;
+            }
+            // If weight_sum == 0 (empty cluster or all-zero values), keep the centroid.
+        }
+    }
+
+    // Keep sorted so binary search in quantization still works.
+    centroids.sort_by(|a, b| a.partial_cmp(b).unwrap());
     centroids
 }
 

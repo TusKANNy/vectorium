@@ -38,6 +38,7 @@ bytemuck = { version = "1.23", features = [
 rusty-perm = "0.2.0"
 rgb = { git = "https://github.com/JMMackenzie/enhanced-graph-bisection.git" } 
 rand = "0.8"
+rand_distr = "0.4"
 matrixmultiply = "0.3"
 ckmeans = {git="https://github.com/urschrei/ckmeans.git"}
 
