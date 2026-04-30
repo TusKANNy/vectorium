@@ -29,8 +29,14 @@
 //!    residual contributions (from table), update per-query-token maxima.
 
 use std::marker::PhantomData;
+use std::cell::{Cell, RefCell};
+use std::time::Instant;
 
-use matrixmultiply;
+use half::f16;
+
+use faer::linalg::matmul::matmul;
+use faer::mat;
+use faer::Parallelism;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +53,8 @@ use crate::{
 const KSUB: usize = 256;
 /// Bytes used to store the coarse centroid id per encoded token (u32 little-endian).
 const COARSE_ID_BYTES: usize = 4;
+/// Bytes used to store a per-token residual norm when `with_norms = true` (f16 little-endian).
+const NORM_BYTES: usize = 2;
 /// Number of query tokens processed per scoring call.
 ///
 /// Fixed at compile time so all inner loops over query tokens are fully unrolled by the
@@ -85,6 +93,18 @@ pub struct MultiVecTwoLevelProductQuantizer<const M: usize, In> {
     coarse_centroids: PlainDenseDataset<f32, SquaredEuclideanDistance>,
     /// Per-subspace PQ centroids: M datasets, each with KSUB vectors of dimension `dsub`.
     pq_centroids: Box<[PlainDenseDataset<f32, SquaredEuclideanDistance>]>,
+    /// Whether each encoded token carries a residual norm in its payload.
+    ///
+    /// When `true`, `push_encoded` normalises the residual to unit length before PQ encoding
+    /// and appends the original norm as a 4-byte f32 in a third block:
+    /// `[coarse_ids: 4·n][pq_codes: M·n][norms: 4·n]`
+    /// so `output_dim = COARSE_ID_BYTES + M + NORM_BYTES`.
+    ///
+    /// Indexes and datasets are entirely unaware of this field — they just see byte vectors
+    /// of the declared `output_dim`.  The evaluator reads the norm bytes from the payload
+    /// and applies them during MaxSim scoring without any external storage.
+    #[serde(default)]
+    with_norms: bool,
     _phantom: PhantomData<In>,
 }
 
@@ -93,10 +113,13 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
     ///
     /// Panics if `M % 4 != 0`, `token_dim % M != 0`, or any centroid dataset has the
     /// wrong number of vectors or dimension.
+    /// `with_norms`: when `true`, `push_encoded` normalises residuals and embeds the norm
+    /// in the payload third block; `output_dim` increases by `NORM_BYTES`.
     pub fn from_pretrained(
         token_dim: usize,
         coarse_centroids: PlainDenseDataset<f32, SquaredEuclideanDistance>,
         pq_centroids: Vec<PlainDenseDataset<f32, SquaredEuclideanDistance>>,
+        with_norms: bool,
     ) -> Self {
         assert_eq!(M % 4, 0, "M ({}) must be divisible by 4", M);
         assert_eq!(
@@ -144,6 +167,7 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
             dsub,
             coarse_centroids,
             pq_centroids: pq_centroids.into_boxed_slice(),
+            with_norms,
             _phantom: PhantomData,
         }
     }
@@ -244,6 +268,153 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
             dsub,
             coarse_centroids,
             pq_centroids: pq_centroids.into_boxed_slice(),
+            with_norms: false, // training always produces a no-norm encoder; set via from_pretrained
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Train a two-level product quantizer from pre-computed coarse centroids.
+    ///
+    /// Skips coarse k-means (centroids are provided, e.g. from TAC) and only
+    /// trains the residual PQ on a sample of the token vectors.
+    ///
+    /// Steps:
+    /// 1. Sample `sample_size` tokens (sorted for sequential memory access).
+    /// 2. Compute residuals `token − coarse_centroid`; optionally L2-normalise.
+    /// 3. Per-subspace k-means on residuals → `M` × `KSUB` PQ centroids.
+    ///
+    /// # Arguments
+    /// * `coarse_centroids` – Pre-trained coarse centroids (e.g. from TAC).
+    /// * `flat_input` – All token vectors in their native type, layout `[n_tokens × token_dim]`.
+    ///   Values are converted to f32 on-the-fly; only the sampled subset is ever materialised,
+    ///   so no full f32 copy of the dataset is needed.
+    /// * `assignments` – Coarse-centroid index per token (same length as `flat_input / token_dim`).
+    /// * `sample_size` – Tokens to use for PQ training (capped at `n_tokens`).
+    /// * `n_iter` – K-means iterations for PQ subspace training.
+    /// * `normalize` – Normalise residuals before PQ; embeds original norm in payload.
+    /// * `seed` – Optional RNG seed for reproducible sampling.
+    pub fn train_from_coarse(
+        coarse_centroids: PlainDenseDataset<f32, SquaredEuclideanDistance>,
+        flat_input: &[In],
+        assignments: &[usize],
+        sample_size: usize,
+        n_iter: usize,
+        normalize: bool,
+        seed: Option<u64>,
+    ) -> Self
+    where
+        In: ValueType,
+    {
+        let token_dim = coarse_centroids.output_dim();
+        let n_tokens = flat_input.len() / token_dim;
+        let dsub = token_dim / M;
+
+        assert_eq!(M % 4, 0, "M ({}) must be divisible by 4", M);
+        assert_eq!(
+            token_dim % M,
+            0,
+            "token_dim ({}) must be divisible by M ({})",
+            token_dim,
+            M
+        );
+        assert_eq!(
+            assignments.len(),
+            n_tokens,
+            "assignments.len={} must equal n_tokens={}",
+            assignments.len(),
+            n_tokens
+        );
+
+        let train_n = sample_size.min(n_tokens);
+
+        println!(
+            "train_from_coarse: {} tokens × dim={}, {} coarse centroids, \
+             M={}, dsub={}, sample={}, normalize={}",
+            n_tokens,
+            token_dim,
+            coarse_centroids.len(),
+            M,
+            dsub,
+            train_n,
+            normalize
+        );
+
+        // Build sorted sample indices for sequential memory access.
+        let sample_indices: Vec<usize> = if train_n >= n_tokens {
+            (0..n_tokens).collect()
+        } else {
+            use rand::SeedableRng;
+            use rand::seq::SliceRandom;
+            use rand::rngs::StdRng;
+            let mut rng = match seed {
+                Some(s) => StdRng::seed_from_u64(s),
+                None => StdRng::from_entropy(),
+            };
+            let mut indices: Vec<usize> = (0..n_tokens).collect();
+            indices.shuffle(&mut rng);
+            indices.truncate(train_n);
+            indices.sort_unstable();
+            indices
+        };
+
+        println!("  Step 1: computing {} training residuals...", train_n);
+
+        let coarse_ref = &coarse_centroids;
+        let mut residuals_flat = vec![0f32; train_n * token_dim];
+        residuals_flat
+            .par_chunks_mut(token_dim)
+            .zip(sample_indices.par_iter())
+            .for_each(|(res, &idx)| {
+                let tok_base = idx * token_dim;
+                let centroid = coarse_ref.get(assignments[idx] as VectorId);
+                for d in 0..token_dim {
+                    // Convert the raw input element to f32 on the fly — no full f32 copy needed.
+                    let v = unsafe { flat_input[tok_base + d].to_f32().unwrap_unchecked() };
+                    res[d] = v - centroid.values()[d];
+                }
+                if normalize {
+                    let sq: f32 = res.iter().map(|&x| x * x).sum();
+                    let inv = 1.0 / sq.sqrt().max(1e-12);
+                    res.iter_mut().for_each(|x| *x *= inv);
+                }
+            });
+
+        let residuals_ds = PlainDenseDataset::<f32, SquaredEuclideanDistance>::from_raw(
+            residuals_flat.into_boxed_slice(),
+            train_n,
+            PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(token_dim),
+        );
+
+        println!(
+            "  Step 2: training PQ ({} subspaces × {} centroids, {} iters)...",
+            M, KSUB, n_iter
+        );
+
+        let pq_centroids: Vec<PlainDenseDataset<f32, SquaredEuclideanDistance>> = (0..M)
+            .into_par_iter()
+            .map(|m| {
+                let q = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(dsub);
+                let mut sub_ds =
+                    PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
+                        q, train_n,
+                    );
+                for vec in residuals_ds.iter() {
+                    sub_ds.push(DenseVectorView::new(
+                        &vec.values()[m * dsub..(m + 1) * dsub],
+                    ));
+                }
+                KMeansBuilder::new().n_iter(n_iter).build().train(&sub_ds, KSUB, None)
+            })
+            .collect();
+
+        println!("  train_from_coarse complete.");
+
+        Self {
+            token_dim,
+            dsub,
+            coarse_centroids,
+            pq_centroids: pq_centroids.into_boxed_slice(),
+            with_norms: normalize,
             _phantom: PhantomData,
         }
     }
@@ -272,23 +443,26 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
         KSUB
     }
 
-    /// Decode an encoded multivector back to f32 token vectors.
+    /// Decode an encoded multivector back to approximate f32 token vectors.
     ///
-    /// For each encoded token the reconstructed vector is
-    /// `coarse_centroid[coarse_id] + Σ_m pq_centroid[m][code_m]`.
+    /// Reconstructs each token as `coarse_centroid + Σ_m pq_centroid[m][code_m]`.
+    /// When `with_norms = true`, the per-token norm is read from the third payload block
+    /// and applied: the PQ residual decodes to a unit-norm vector, scaled back by the norm.
     ///
-    /// Handles blocked layout: first 4*n bytes are coarse IDs, then n*M bytes are PQ codes.
+    /// Blocked layout:
+    ///   without norms: `[coarse_ids: 4·n][pq_codes: M·n]`
+    ///   with norms:    `[coarse_ids: 4·n][pq_codes: M·n][norms: 4·n]`
     fn decode_multivec(&self, encoded: DenseMultiVectorView<'_, u8>) -> DenseMultiVectorOwned<f32> {
         let n_tokens = encoded.num_vecs();
         let all_bytes = encoded.values();
-        let codes_offset = 4 * n_tokens;
+        let codes_offset = COARSE_ID_BYTES * n_tokens;
+        let norms_offset = (COARSE_ID_BYTES + M) * n_tokens;
 
         let mut values = Vec::with_capacity(n_tokens * self.token_dim);
         let mut decoded = vec![0f32; self.token_dim];
 
         for t in 0..n_tokens {
-            // Read coarse_id from blocked layout
-            let byte_offset = t * 4;
+            let byte_offset = t * COARSE_ID_BYTES;
             let coarse_id = u32::from_le_bytes([
                 all_bytes[byte_offset],
                 all_bytes[byte_offset + 1],
@@ -299,7 +473,6 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
             let centroid = self.coarse_centroids.get(coarse_id);
             decoded.copy_from_slice(centroid.values());
 
-            // Read PQ codes from blocked layout
             for m in 0..M {
                 let code = all_bytes[codes_offset + t * M + m] as VectorId;
                 let pq_centroid = self.pq_centroids[m].get(code);
@@ -308,9 +481,164 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
                     decoded[sub_start + j] += v;
                 }
             }
+
+            // When norms are embedded, scale the residual part back by its norm.
+            if self.with_norms {
+                let nb = norms_offset + t * NORM_BYTES;
+                let norm = f16::from_bits(u16::from_le_bytes([all_bytes[nb], all_bytes[nb + 1]])).to_f32();
+                // decoded = centroid + pq_residual_unit; we want centroid + norm * pq_residual_unit.
+                let centroid_vals = self.coarse_centroids.get(coarse_id);
+                for (d, (v, &c)) in decoded.iter_mut().zip(centroid_vals.values().iter()).enumerate() {
+                    let _ = d;
+                    *v = c + (*v - c) * norm;
+                }
+            }
+
             values.extend_from_slice(&decoded);
         }
         DenseMultiVectorOwned::new(values, self.token_dim)
+    }
+
+    /// Like `push_encoded`, but uses pre-computed coarse-centroid ids instead of searching.
+    ///
+    /// Bypasses the O(ncoarse) `search_nearest` call per token — use this when coarse
+    /// assignments are already available (e.g. from TAC).  All other steps (residual
+    /// computation, optional normalisation, PQ encoding) are identical to `push_encoded`.
+    ///
+    /// `precomputed_ids[t]` must be the coarse-centroid index for the t-th token of `input`.
+    pub fn push_encoded_with_ids<'a, Out>(
+        &self,
+        input: DenseMultiVectorView<'a, In>,
+        precomputed_ids: &[u32],
+        output: &mut Out,
+    ) where
+        In: ValueType,
+        Out: Extend<u8>,
+    {
+        let n_tokens = input.num_vecs();
+        debug_assert_eq!(precomputed_ids.len(), n_tokens);
+
+        let mut token_f32 = vec![0f32; self.token_dim];
+        let mut residual = vec![0f32; self.token_dim];
+        let mut pq_codes = Vec::with_capacity(n_tokens * M);
+        let mut norm_bytes: Vec<u8> = if self.with_norms {
+            Vec::with_capacity(n_tokens * NORM_BYTES)
+        } else {
+            Vec::new()
+        };
+
+        for (t, token) in input.iter_vectors().enumerate() {
+            let coarse_id = precomputed_ids[t];
+            for (dst, &src) in token_f32.iter_mut().zip(token.values()) {
+                *dst = unsafe { src.to_f32().unwrap_unchecked() };
+            }
+            let centroid = self.coarse_centroids.get(coarse_id as VectorId);
+            for (r, (&v, &c)) in residual.iter_mut().zip(token_f32.iter().zip(centroid.values())) {
+                *r = v - c;
+            }
+            if self.with_norms {
+                let sq: f32 = residual.iter().map(|x| x * x).sum();
+                let norm = sq.sqrt().max(1e-12);
+                norm_bytes.extend_from_slice(&f16::from_f32(norm).to_le_bytes());
+                let inv = 1.0 / norm;
+                residual.iter_mut().for_each(|x| *x *= inv);
+            }
+            for m in 0..M {
+                let sub = DenseVectorView::new(&residual[m * self.dsub..(m + 1) * self.dsub]);
+                let code = self.pq_centroids[m]
+                    .search_nearest(sub)
+                    .map(|s| s.vector as u8)
+                    .unwrap_or(0);
+                pq_codes.push(code);
+            }
+        }
+
+        for &id in precomputed_ids {
+            output.extend(id.to_le_bytes());
+        }
+        output.extend(pq_codes);
+        if self.with_norms {
+            output.extend(norm_bytes);
+        }
+    }
+}
+
+/// Reusable scratchpad for scoring operations to eliminate repeated allocations.
+///
+/// High-performance scoring requires scoring many documents per query. This scratchpad
+/// pre-allocates buffers once and reuses them across all document scoring calls,
+/// eliminating heap allocations in the hot path.
+///
+/// **Safety guarantee**: The buffers are completely overwritten before being read:
+/// - `centroid_cols` is overwritten by `copy_nonoverlapping` (Phase 1b)
+/// - `centroid_scores` is overwritten by `sgemm` with `beta = 0.0` (Phase 1c)
+///
+/// This means we leave garbage data in memory and rely on these operations to overwrite
+/// it completely, saving the overhead of unnecessary `memset` initialization.
+///
+/// Typical usage:
+/// ```ignore
+/// let encoder = /* ... */;
+/// let query = /* ... */;
+/// let evaluator = encoder.query_evaluator(query);
+/// let mut scratchpad = MultiVecTwoLevelPQScratchpad::with_capacity(token_dim, max_doc_n);
+///
+/// for doc in documents {
+///     let score = evaluator.compute_distance_with_scratchpad(encoded_doc, &mut scratchpad, offset);
+/// }
+/// ```
+#[derive(Debug)]
+pub struct MultiVecTwoLevelPQScratchpad<const M: usize> {
+    /// Coarse centroid buffer: reused for extracting centroid vectors.
+    /// Completely overwritten by copy_nonoverlapping before any read.
+    centroid_cols: Vec<f32>,
+    /// GEMM output buffer: reused for centroid score matrix.
+    /// Completely overwritten by sgemm (beta=0.0) before any read.
+    centroid_scores: Vec<f32>,
+    /// Per-token norm buffer, used only when the encoder has `with_norms = true`.
+    /// Filled by decoding the norm bytes from the encoded payload before MaxSim.
+    pub norms_buf: Vec<f32>,
+    /// Precomputed dimensions to avoid repeated parameter passing.
+    token_dim: usize,
+}
+
+impl<const M: usize> MultiVecTwoLevelPQScratchpad<M> {
+    pub fn with_capacity(token_dim: usize, max_doc_n: usize) -> Self {
+        Self {
+            centroid_cols: Vec::with_capacity(max_doc_n * token_dim),
+            centroid_scores: Vec::with_capacity(max_doc_n * Q_TOKEN),
+            norms_buf: Vec::with_capacity(max_doc_n),
+            token_dim,
+        }
+    }
+
+    /// Ensure all buffers can hold at least `doc_n` tokens.
+    /// Extends lengths WITHOUT zero-initialisation; callers guarantee complete overwrite.
+    #[inline]
+    pub fn ensure_capacity(&mut self, doc_n: usize) {
+        let needed_cols = doc_n * self.token_dim;
+        let needed_scores = doc_n * Q_TOKEN;
+
+        if self.centroid_cols.capacity() < needed_cols {
+            self.centroid_cols
+                .reserve(needed_cols - self.centroid_cols.len());
+        }
+        if self.centroid_scores.capacity() < needed_scores {
+            self.centroid_scores
+                .reserve(needed_scores - self.centroid_scores.len());
+        }
+        if self.norms_buf.capacity() < doc_n {
+            self.norms_buf.reserve(doc_n - self.norms_buf.len());
+        }
+
+        // SAFETY: centroid_cols and centroid_scores are completely overwritten by
+        // copy_nonoverlapping and sgemm(beta=0) respectively before any read.
+        // norms_buf is completely overwritten by the norm-extraction loop below.
+        unsafe {
+            self.centroid_cols.set_len(needed_cols);
+            self.centroid_scores.set_len(needed_scores);
+            self.norms_buf.set_len(doc_n);
+        }
     }
 }
 
@@ -318,25 +646,26 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
 ///
 /// Requires exactly [`Q_TOKEN`] query tokens. Precomputes two structures:
 ///
-/// - **Transposed query** `query_flat_t[d * Q_TOKEN + q]`: contiguous Q-slices per dimension,
-///   enabling SIMD-friendly SAXPY for both the PQ table and the centroid GEMM.
+/// - **Transposed query** `query_flat_t[d * Q_TOKEN + q]`: contiguous Q-slices per dimension.
 /// - **PQ table** `[M × KSUB × Q_TOKEN]`: built via SAXPY over PQ centroid dimensions.
 ///
-/// Scoring phases:
-/// 1. Extract coarse centroid columns `[doc_n × D]` in one pass.
-/// 2. GEMM (D-outer, doc_n-middle, Q_TOKEN-inner SAXPY) → `centroid_scores[doc_n × Q_TOKEN]`.
-/// 3. Per doc token: `acc[Q_TOKEN]` = centroid row + PQ SAXPY; update `max_scores[Q_TOKEN]`.
+/// When the encoder has `with_norms = true`, per-token norms are read from the encoded
+/// payload's third block during scoring — no external norm slice is needed.
 ///
-/// `acc` and `max_scores` are stack arrays — no heap allocation in the hot path.
+/// The internal scratchpad is created at evaluator construction and reused across all
+/// `compute_distance` calls, eliminating per-call heap allocations in the hot path.
 pub struct MultiVecTwoLevelPQQueryEvaluator<'e, const M: usize, In> {
-    /// Reference to the encoder for coarse centroid lookups at scoring time.
     encoder: &'e MultiVecTwoLevelProductQuantizer<M, In>,
-    /// Transposed query layout `[D × Q_TOKEN]`: `query_flat_t[d * Q_TOKEN + q] = query[q][d]`.
-    /// Contiguous Q_TOKEN-wide rows per dimension enable SIMD-friendly broadcast.
     query_flat_t: Vec<f32>,
-    /// PQ residual distance table `[M × KSUB × Q_TOKEN]`:
-    /// `table[m * KSUB * Q_TOKEN + k * Q_TOKEN + q]` = `dot(query_q_subspace_m, pq_centroid_mk)`.
     distance_table: Vec<f32>,
+    /// Reusable buffers for centroid extraction, GEMM, and norm decoding.
+    /// `RefCell` provides interior mutability so `compute_distance(&self, …)` can mutate them.
+    scratchpad: RefCell<MultiVecTwoLevelPQScratchpad<M>>,
+    pub centroid_time_us: Cell<f64>,
+    pub residual_time_us: Cell<f64>,
+    pub centroid_alloc_us: Cell<f64>,
+    pub centroid_extract_us: Cell<f64>,
+    pub centroid_gemm_us: Cell<f64>,
 }
 
 impl<'e, const M: usize, In> MultiVecTwoLevelPQQueryEvaluator<'e, M, In>
@@ -358,10 +687,6 @@ where
         let dsub = encoder.dsub;
         let query_vals = query.values();
 
-        // Build transposed query layout [D × Q_TOKEN].
-        // query_flat_t[d * Q_TOKEN + q] = query[q][d]
-        // Contiguous Q_TOKEN-wide rows allow the inner `for q in 0..Q_TOKEN` loops
-        // to be a simple SIMD load + fused-multiply-add broadcast.
         let mut query_flat_t = vec![0f32; token_dim * Q_TOKEN];
         for qi in 0..Q_TOKEN {
             for d in 0..token_dim {
@@ -369,7 +694,6 @@ where
             }
         }
 
-        // Build PQ table [M × KSUB × Q_TOKEN] via SAXPY over centroid dimensions.
         let mut distance_table = vec![0f32; M * KSUB * Q_TOKEN];
         unsafe {
             let qt_ptr = query_flat_t.as_ptr();
@@ -398,9 +722,18 @@ where
         }
 
         Self {
+            scratchpad: RefCell::new(MultiVecTwoLevelPQScratchpad::with_capacity(
+                encoder.token_dim,
+                0, // grows on first call; no external max_doc_n hint needed
+            )),
             encoder,
             query_flat_t,
             distance_table,
+            centroid_time_us: Cell::new(0.0),
+            residual_time_us: Cell::new(0.0),
+            centroid_alloc_us: Cell::new(0.0),
+            centroid_extract_us: Cell::new(0.0),
+            centroid_gemm_us: Cell::new(0.0),
         }
     }
 }
@@ -414,77 +747,97 @@ where
 
     /// Compute MaxSim between the stored query and a two-level PQ-encoded document multivector.
     ///
-    /// **Phase 1 — Centroid GEMM**: extract `centroid_cols[doc_n × D]` (one centroid copy per
-    /// doc token), then compute `centroid_scores[doc_n × Q_TOKEN]` via `matrixmultiply::sgemm`,
-    /// a pure-Rust cache-blocking micro-kernel that correctly holds accumulator registers across
-    /// the full k-loop regardless of surrounding LTO register pressure.
-    ///
-    /// **Phase 2 — MaxSim**: calls `two_level_pq_maxsim_blocked` which uses blocked layout
-    /// (all PQ codes contiguous) for optimal cache performance.
-    ///
-    /// Returns the sum of per-query-token maxima as a [`DotProduct`].
+    /// Uses an internal scratchpad (created with the evaluator) to avoid per-call heap
+    /// allocations.  If the encoder has `with_norms = true`, per-token norms are read
+    /// directly from the encoded payload's third block.
+    #[inline(always)]
     fn compute_distance(&self, vector: DenseMultiVectorView<'v, u8>) -> DotProduct {
+        let mut sp = self.scratchpad.borrow_mut();
+
         let doc_n = vector.num_vecs();
         let token_dim = self.encoder.token_dim;
-
-        // Phase 1a: extract coarse centroid for each doc token into centroid_cols [doc_n × D].
-        let mut centroid_cols = vec![0f32; doc_n * token_dim];
         let doc_bytes = vector.values();
+        let codes_offset = COARSE_ID_BYTES * doc_n;
+        let norms_offset = (COARSE_ID_BYTES + M) * doc_n;
 
-        // SAFETY: Blocked layout guarantees first 4*doc_n bytes are coarse IDs
+        // Phase 1a — ensure capacity (no zeroing; buffers are completely overwritten below)
+        let alloc_start = Instant::now();
+        sp.ensure_capacity(doc_n);
+        let alloc_elapsed = alloc_start.elapsed().as_secs_f64() * 1_000_000.0;
+        self.centroid_alloc_us.set(self.centroid_alloc_us.get() + alloc_elapsed);
+
+        // Phase 1b — extract coarse centroid for each doc token
+        // SAFETY: blocked layout guarantees the first COARSE_ID_BYTES*doc_n bytes are coarse IDs.
+        //         centroid_cols is completely overwritten before any read.
+        let extract_start = Instant::now();
         unsafe {
             let doc_ptr = doc_bytes.as_ptr();
-            let centroids_data = self.encoder.coarse_centroids.values();
-            let centroids_ptr = centroids_data.as_ptr();
-            let dest_ptr = centroid_cols.as_mut_ptr();
-
+            let centroids_ptr = self.encoder.coarse_centroids.values().as_ptr();
+            let dest_ptr = sp.centroid_cols.as_mut_ptr();
             for t in 0..doc_n {
-                let byte_offset = t * 4;
-                let c0 = *doc_ptr.add(byte_offset) as u32;
-                let c1 = *doc_ptr.add(byte_offset + 1) as u32;
-                let c2 = *doc_ptr.add(byte_offset + 2) as u32;
-                let c3 = *doc_ptr.add(byte_offset + 3) as u32;
+                let bo = t * COARSE_ID_BYTES;
+                let c0 = *doc_ptr.add(bo) as u32;
+                let c1 = *doc_ptr.add(bo + 1) as u32;
+                let c2 = *doc_ptr.add(bo + 2) as u32;
+                let c3 = *doc_ptr.add(bo + 3) as u32;
                 let coarse_id = (c0 | (c1 << 8) | (c2 << 16) | (c3 << 24)) as usize;
-
-                let src = centroids_ptr.add(coarse_id * token_dim);
-                let dst = dest_ptr.add(t * token_dim);
-                std::ptr::copy_nonoverlapping(src, dst, token_dim);
+                std::ptr::copy_nonoverlapping(
+                    centroids_ptr.add(coarse_id * token_dim),
+                    dest_ptr.add(t * token_dim),
+                    token_dim,
+                );
             }
         }
+        let extract_elapsed = extract_start.elapsed().as_secs_f64() * 1_000_000.0;
+        self.centroid_extract_us.set(self.centroid_extract_us.get() + extract_elapsed);
 
-        // Phase 1b: GEMM centroid contributions → centroid_scores [doc_n × Q_TOKEN].
-        let mut centroid_scores = vec![0f32; doc_n * Q_TOKEN];
+        // Phase 1c — GEMM: centroid_scores = centroid_cols × query_flat_t^T
+        let gemm_start = Instant::now();
         unsafe {
-            matrixmultiply::sgemm(
-                doc_n,     // m: one row per doc token
-                token_dim, // k: contract over token dimensions
-                Q_TOKEN,   // n: one column per query token
-                1.0,       // alpha
-                centroid_cols.as_ptr(),
-                token_dim as isize, // rsa: row stride of A (centroid_cols is [doc_n × token_dim])
-                1,                  // csa: col stride of A
-                self.query_flat_t.as_ptr(),
-                Q_TOKEN as isize, // rsb: row stride of B (query_flat_t is [token_dim × Q_TOKEN])
-                1,                // csb: col stride of B
-                0.0,              // beta
-                centroid_scores.as_mut_ptr(),
-                Q_TOKEN as isize, // rsc: row stride of C
-                1,                // csc: col stride of C
+            let a = mat::from_raw_parts::<f32>(
+                sp.centroid_cols.as_ptr(), doc_n, token_dim, token_dim as isize, 1,
             );
+            let b = mat::from_raw_parts::<f32>(
+                self.query_flat_t.as_ptr(), token_dim, Q_TOKEN, Q_TOKEN as isize, 1,
+            );
+            let mut c = mat::from_raw_parts_mut::<f32>(
+                sp.centroid_scores.as_mut_ptr(), doc_n, Q_TOKEN, Q_TOKEN as isize, 1,
+            );
+            matmul(c.as_mut(), a, b, None, 1.0, Parallelism::None);
         }
+        let gemm_elapsed = gemm_start.elapsed().as_secs_f64() * 1_000_000.0;
+        self.centroid_gemm_us.set(self.centroid_gemm_us.get() + gemm_elapsed);
+        self.centroid_time_us.set(
+            self.centroid_time_us.get() + alloc_elapsed + extract_elapsed + gemm_elapsed,
+        );
 
-        // Phase 2: MaxSim with PQ residuals.
-        let doc_bytes = vector.values();
-        let codes_offset = 4 * doc_n;
-        let score = unsafe {
-            crate::distances::two_level_pq_maxsim_blocked::<M, Q_TOKEN>(
-                &centroid_scores,
-                &self.distance_table,
-                &doc_bytes[codes_offset..],
-                doc_n,
-            )
+        // Phase 2 — MaxSim with PQ residuals (and optional embedded norms)
+        let phase2_start = Instant::now();
+
+        // Extract norms from the payload's third block into the scratchpad norm buffer.
+        // SAFETY: ensure_capacity set norms_buf.len() >= doc_n; the loop overwrites it fully.
+        let local_norms: Option<&[f32]> = if self.encoder.with_norms {
+            for t in 0..doc_n {
+                let nb = norms_offset + t * NORM_BYTES;
+                sp.norms_buf[t] = f16::from_bits(u16::from_le_bytes([doc_bytes[nb], doc_bytes[nb + 1]])).to_f32();
+            }
+            Some(&sp.norms_buf[..doc_n])
+        } else {
+            None
         };
 
+        let score = unsafe {
+            crate::distances::two_level_pq_maxsim_blocked::<M, Q_TOKEN>(
+                &sp.centroid_scores[..doc_n * Q_TOKEN],
+                &self.distance_table,
+                &doc_bytes[codes_offset..norms_offset],
+                doc_n,
+                local_norms,
+            )
+        };
+        self.residual_time_us.set(
+            self.residual_time_us.get() + phase2_start.elapsed().as_secs_f64() * 1_000_000.0,
+        );
         DotProduct::from(score)
     }
 }
@@ -528,9 +881,10 @@ where
 
     #[inline]
     fn output_dim(&self) -> usize {
-        COARSE_ID_BYTES + M
+        COARSE_ID_BYTES + M + if self.with_norms { NORM_BYTES } else { 0 }
     }
 }
+
 
 impl<const M: usize, In> MultiVecEncoder for MultiVecTwoLevelProductQuantizer<M, In>
 where
@@ -559,18 +913,20 @@ where
         let mut token_f32 = vec![0f32; self.token_dim];
         let mut residual = vec![0f32; self.token_dim];
 
-        // Temporary buffers for blocked output
         let mut coarse_ids = Vec::with_capacity(n_tokens);
         let mut pq_codes = Vec::with_capacity(n_tokens * M);
+        // Third block: residual norms (only populated when with_norms = true).
+        let mut norm_bytes: Vec<u8> = if self.with_norms {
+            Vec::with_capacity(n_tokens * NORM_BYTES)
+        } else {
+            Vec::new()
+        };
 
         for token in input.iter_vectors() {
-            // Convert to f32.
             for (dst, &src) in token_f32.iter_mut().zip(token.values()) {
-                // SAFETY: Float::to_f32() is infallible for all Float-bounded types.
                 *dst = unsafe { src.to_f32().unwrap_unchecked() };
             }
 
-            // Find nearest coarse centroid (L2 via search_nearest).
             let token_view = DenseVectorView::new(&token_f32);
             let coarse_id = self
                 .coarse_centroids
@@ -579,16 +935,20 @@ where
                 .unwrap_or(0);
             coarse_ids.push(coarse_id);
 
-            // Compute residual = token − coarse_centroid.
             let centroid = self.coarse_centroids.get(coarse_id as VectorId);
-            for (r, (&v, &c)) in residual
-                .iter_mut()
-                .zip(token_f32.iter().zip(centroid.values()))
-            {
+            for (r, (&v, &c)) in residual.iter_mut().zip(token_f32.iter().zip(centroid.values())) {
                 *r = v - c;
             }
 
-            // PQ encode each subspace of the residual.
+            // When with_norms: normalise the residual and store the original norm.
+            if self.with_norms {
+                let sq: f32 = residual.iter().map(|x| x * x).sum();
+                let norm = sq.sqrt().max(1e-12);
+                norm_bytes.extend_from_slice(&f16::from_f32(norm).to_le_bytes());
+                let inv = 1.0 / norm;
+                residual.iter_mut().for_each(|x| *x *= inv);
+            }
+
             for m in 0..M {
                 let sub = DenseVectorView::new(&residual[m * self.dsub..(m + 1) * self.dsub]);
                 let code = self.pq_centroids[m]
@@ -599,11 +959,14 @@ where
             }
         }
 
-        // Write blocked layout: all coarse IDs first, then all PQ codes
+        // Blocked layout: [coarse_ids: 4·n][pq_codes: M·n][norms: 4·n (if with_norms)]
         for &id in &coarse_ids {
             output.extend(id.to_le_bytes());
         }
         output.extend(pq_codes);
+        if self.with_norms {
+            output.extend(norm_bytes);
+        }
     }
 
     /// Decode an encoded multivector via coarse centroid + PQ residual lookup.

@@ -38,6 +38,7 @@ rusty-perm = "0.2.0"
 rgb = { git = "https://github.com/JMMackenzie/enhanced-graph-bisection.git" } 
 rand = "0.8"
 matrixmultiply = "0.3"
+faer = "0.19"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

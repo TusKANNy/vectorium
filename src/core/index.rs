@@ -13,8 +13,12 @@ where
     /// Type for parameters used during search.
     type SearchParams;
 
-    /// Returns the number of vectors in the index.
-    fn n_vectors(&self) -> usize;
+    /// Returns the number of indexed elements.
+    ///
+    /// For single-vector datasets this equals the number of vectors. For
+    /// multivector datasets each element may contain multiple token vectors;
+    /// this returns the element count (e.g. documents), not the token count.
+    fn n_elements(&self) -> usize;
 
     /// Returns the dimensionality of the vectors in the index.
     fn dim(&self) -> usize;

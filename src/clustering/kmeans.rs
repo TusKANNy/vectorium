@@ -16,10 +16,9 @@ pub struct KMeans {
     n_iter: usize,
     n_redo: usize,
     verbose: bool,
-    // min_points_per_centroid: usize,
-    // sample_size: Option<usize>,
-    // Threshold for number of centroids above which HNSW index is used instead of flat search
-    // index_threshold: usize,
+    /// Optional fixed seed for the RNG.  `None` = `from_entropy()` (non-deterministic).
+    /// Setting a seed makes clustering fully reproducible across runs and thread counts.
+    seed: Option<u64>,
 }
 
 impl KMeans {
@@ -325,7 +324,10 @@ impl KMeans {
         let w = weights.as_deref();
 
         // HNSW logging disabled while index usage is deferred.
-        let mut rng = StdRng::from_entropy();
+        let mut rng = match self.seed {
+            Some(s) => StdRng::seed_from_u64(s),
+            None => StdRng::from_entropy(),
+        };
 
         for redo in 0..self.n_redo {
             let mut centroids_builder =
@@ -402,9 +404,8 @@ pub struct KMeansBuilder {
     n_iter: usize,
     n_redo: usize,
     verbose: bool,
-    // min_points_per_centroid: usize,
     max_points_per_centroid: usize,
-    // sample_size: Option<usize>,
+    seed: Option<u64>,
 }
 
 impl Default for KMeansBuilder {
@@ -413,9 +414,8 @@ impl Default for KMeansBuilder {
             n_iter: 25,
             n_redo: 1,
             verbose: false,
-            // min_points_per_centroid: 39,
             max_points_per_centroid: 256,
-            // sample_size: None,
+            seed: None,
         }
     }
 }
@@ -455,13 +455,20 @@ impl KMeansBuilder {
     //     self
     // }
 
+    /// Fix the RNG seed for reproducible clustering.
+    /// `None` (default) uses `from_entropy()` — different results every run.
+    /// `Some(s)` uses `seed_from_u64(s)` — identical results for the same data and seed.
+    pub fn seed(mut self, seed: Option<u64>) -> KMeansBuilder {
+        self.seed = seed;
+        self
+    }
+
     pub fn build(self) -> KMeans {
         KMeans {
             n_iter: self.n_iter,
             n_redo: self.n_redo,
             verbose: self.verbose,
-            // min_points_per_centroid: self.min_points_per_centroid,
-            // sample_size: self.sample_size,
+            seed: self.seed,
         }
     }
 }

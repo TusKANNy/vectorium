@@ -772,11 +772,30 @@ where
 /// - `distance_table.len() >= M * 256 * Q`
 /// - `pq_codes_block.len() >= doc_n * M`
 #[cfg_attr(not(test), inline)]
+/// Compute MaxSim score between a query and a document multivector using two-level PQ.
+///
+/// # Arguments
+/// * `centroid_scores` - Pre-computed centroid contributions `[doc_n × Q]`
+/// * `distance_table` - Pre-built PQ distance table `[M × KSUB × Q]`
+/// * `pq_codes_block` - Block of PQ codes for the document (all M codes per token)
+/// * `doc_n` - Number of document tokens
+/// * `token_norms` - Optional per-token normalization factors (e.g., residual norms).
+///                   If present, each token's score is multiplied by its norm before max aggregation.
+///
+/// # MaxSim Computation
+/// For each doc token:
+/// 1. Load centroid scores from `centroid_scores[t]`
+/// 2. Add PQ residual contributions via SAXPY from `distance_table`
+/// 3. Multiply by `token_norms[t]` if norms are provided
+/// 4. Update per-query-token maxima
+///
+/// Returns the sum of per-query-token maxima.
 pub unsafe fn two_level_pq_maxsim_blocked<const M: usize, const Q: usize>(
     centroid_scores: &[f32],
     distance_table: &[f32],
     pq_codes_block: &[u8],
     doc_n: usize,
+    token_norms: Option<&[f32]>,
 ) -> f32 {
     const KSUB: usize = 256;
 
@@ -787,12 +806,12 @@ pub unsafe fn two_level_pq_maxsim_blocked<const M: usize, const Q: usize>(
         let cs_ptr = centroid_scores.as_ptr();
         let dt_ptr = distance_table.as_ptr();
         let codes_ptr = pq_codes_block.as_ptr();
+        let norms_ptr = token_norms.map(|n| n.as_ptr());
 
         for t in 0..doc_n {
-            // Reset acc and load centroid scores in one pass.
-            let cs_t = cs_ptr.add(t * Q);
+            // Reset acc directly for PQ computation
             for q in 0..Q {
-                *acc.get_unchecked_mut(q) = *cs_t.add(q);
+                *acc.get_unchecked_mut(q) = 0.0;
             }
 
             // PQ residual SAXPY: M passes, each Q-wide.
@@ -803,6 +822,20 @@ pub unsafe fn two_level_pq_maxsim_blocked<const M: usize, const Q: usize>(
                 for q in 0..Q {
                     *acc.get_unchecked_mut(q) += *tbl.add(q);
                 }
+            }
+
+            // Apply token norm if provided. ONLY applies to the residual representation!
+            if let Some(norm_ptr) = norms_ptr {
+                let norm = *norm_ptr.add(t);
+                for q in 0..Q {
+                    *acc.get_unchecked_mut(q) *= norm;
+                }
+            }
+
+            // Add centroid scores.
+            let cs_t = cs_ptr.add(t * Q);
+            for q in 0..Q {
+                *acc.get_unchecked_mut(q) += *cs_t.add(q);
             }
 
             // Update per-query-token maxima.

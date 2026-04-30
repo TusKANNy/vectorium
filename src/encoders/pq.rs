@@ -43,6 +43,7 @@ impl ProductQuantizerDistance for DotProduct {
 
 /// Number of centroids per subspace (always 256 = 2^8)
 const KSUB: usize = 256;
+const DEFAULT_KMEANS_N_ITER: usize = 25;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(bound(serialize = "", deserialize = ""))]
@@ -71,11 +72,23 @@ where
 {
     #[inline]
     pub fn train(training_data: &PlainDenseDataset<f32, SquaredEuclideanDistance>) -> Self {
+        Self::train_with_kmeans_options(training_data, DEFAULT_KMEANS_N_ITER, None)
+    }
+
+    /// Train a ProductQuantizer while controlling the inner k-means seed and iteration count.
+    /// This keeps the outer PQ training API unchanged for existing callers while allowing
+    /// reproducible bin-specific runs to match older pipelines more closely.
+    #[inline]
+    pub fn train_with_kmeans_options(
+        training_data: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
+        n_iter: usize,
+        seed: Option<u64>,
+    ) -> Self {
         let d = training_data.output_dim();
         assert_eq!(M % 4, 0, "M ({}) is not divisible by 4", M);
         assert_eq!(d % M, 0, "d ({}) is not divisible by M ({})", d, M);
         let dsub = d / M;
-        let centroids = Self::train_centroids(training_data, dsub).into_boxed_slice();
+        let centroids = Self::train_centroids(training_data, dsub, n_iter, seed).into_boxed_slice();
         Self {
             d,
             dsub,
@@ -90,6 +103,8 @@ where
     fn train_centroids(
         training_data: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
         dsub: usize,
+        n_iter: usize,
+        seed: Option<u64>,
     ) -> Vec<f32> {
         use rayon::prelude::*;
 
@@ -114,7 +129,10 @@ where
                     sub_dataset.push(sub_vector);
                 }
 
-                let kmeans = KMeansBuilder::new().build();
+                let kmeans = KMeansBuilder::new()
+                    .n_iter(n_iter)
+                    .seed(seed)
+                    .build();
                 let trained = kmeans.train(&sub_dataset, KSUB, None);
                 // KMeans returns AoS: [c0_d0, c0_d1, .., c0_{dsub-1}, c1_d0, ..]
                 // Transpose to SoA: [d0_c0, d0_c1, .., d0_{KSUB-1}, d1_c0, ..]
@@ -215,6 +233,25 @@ where
             centroids: soa.into_boxed_slice(),
             _distance: PhantomData,
         }
+    }
+
+    /// Return centroids in AoS layout `[M × KSUB × dsub]`:
+    /// `aos[m * KSUB * dsub + k * dsub + d]` = centroid `k`, dimension `d`, subspace `m`.
+    ///
+    /// Transposes the internal SoA buffer. Use this to save centroids in the format
+    /// expected by `MultiVecTwoLevelProductQuantizer::from_pretrained` and the offline loaders.
+    pub fn centroids_as_aos(&self) -> Vec<f32> {
+        let dsub = self.dsub;
+        let mut aos = vec![0.0f32; M * KSUB * dsub];
+        for m in 0..M {
+            let soa = self.subspace_centroids(m); // [d * KSUB .. (d+1)*KSUB] for each d
+            for k in 0..KSUB {
+                for d in 0..dsub {
+                    aos[m * KSUB * dsub + k * dsub + d] = soa[d * KSUB + k];
+                }
+            }
+        }
+        aos
     }
 
     #[inline]
