@@ -341,16 +341,15 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
         );
 
         // Build sorted sample indices for sequential memory access.
+        // Shuffle seed is fixed at 42 to match the offline bench_encode_residuals pipeline.
+        // The `seed` parameter controls only the KMeans initialisation below.
         let sample_indices: Vec<usize> = if train_n >= n_tokens {
             (0..n_tokens).collect()
         } else {
             use rand::SeedableRng;
             use rand::seq::SliceRandom;
             use rand::rngs::StdRng;
-            let mut rng = match seed {
-                Some(s) => StdRng::seed_from_u64(s),
-                None => StdRng::from_entropy(),
-            };
+            let mut rng = StdRng::seed_from_u64(42);
             let mut indices: Vec<usize> = (0..n_tokens).collect();
             indices.shuffle(&mut rng);
             indices.truncate(train_n);
