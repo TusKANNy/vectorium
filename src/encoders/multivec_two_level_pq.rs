@@ -44,6 +44,7 @@ use crate::clustering::KMeansBuilder;
 use crate::core::vector::{DenseMultiVectorOwned, DenseMultiVectorView, DenseVectorView};
 use crate::core::vector_encoder::{MultiVecEncoder, QueryEvaluator, VectorEncoder};
 use crate::distances::{DotProduct, SquaredEuclideanDistance};
+use crate::encoders::pq::ProductQuantizer;
 use crate::{
     Dataset, DatasetGrowable, Float, PlainDenseDataset, PlainDenseDatasetGrowable,
     PlainDenseQuantizer, SpaceUsage, ValueType, VectorId,
@@ -390,20 +391,21 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
             M, KSUB, n_iter
         );
 
+        let pq = ProductQuantizer::<M, SquaredEuclideanDistance>::train_with_kmeans_options(
+            &residuals_ds,
+            n_iter,
+            seed,
+        );
+        let pq_centroids_aos = pq.centroids_as_aos(); // [M × KSUB × dsub] AoS
         let pq_centroids: Vec<PlainDenseDataset<f32, SquaredEuclideanDistance>> = (0..M)
-            .into_par_iter()
             .map(|m| {
-                let q = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(dsub);
-                let mut sub_ds =
-                    PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
-                        q, train_n,
-                    );
-                for vec in residuals_ds.iter() {
-                    sub_ds.push(DenseVectorView::new(
-                        &vec.values()[m * dsub..(m + 1) * dsub],
-                    ));
-                }
-                KMeansBuilder::new().n_iter(n_iter).build().train(&sub_ds, KSUB, None)
+                PlainDenseDataset::<f32, SquaredEuclideanDistance>::from_raw(
+                    pq_centroids_aos[m * KSUB * dsub..(m + 1) * KSUB * dsub]
+                        .to_vec()
+                        .into_boxed_slice(),
+                    KSUB,
+                    PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(dsub),
+                )
             })
             .collect();
 
