@@ -93,6 +93,7 @@ pub use encoders::uniform_quantization_sparse_scalar::{
 pub use encoders::variable_bit_uniform_quantization_sparse_scalar::{
     VariableBitUniformQuantizedSparseSupportedDistance, VariableBitUniformSparseQuantizer,
 };
+pub use encoders::per_component_variable_bit_quantization_sparse_scalar::PerComponentVariableBitUniformSparseQuantizer;
 
 pub use encoders::block8_fixedu8::{Block8FixedU8Encoder, Block8FixedU8QueryEvaluator};
 
@@ -130,6 +131,11 @@ pub type UniformSparseDatasetGrowable<C, D> = SparseDatasetGrowable<UniformSpars
 
 pub type VariableBitUniformSparseDataset<C, D> = SparseDataset<VariableBitUniformSparseQuantizer<C, D>>;
 pub type VariableBitUniformSparseDatasetGrowable<C, D> = SparseDatasetGrowable<VariableBitUniformSparseQuantizer<C, D>>;
+
+pub type PerComponentVariableBitUniformSparseDataset<C, D> =
+    SparseDataset<PerComponentVariableBitUniformSparseQuantizer<C, D>>;
+pub type PerComponentVariableBitUniformSparseDatasetGrowable<C, D> =
+    SparseDatasetGrowable<PerComponentVariableBitUniformSparseQuantizer<C, D>>;
 
 pub type ReverseExpSparseDataset<C, D> = SparseDataset<ReverseExpSparseQuantizer<C, D>>;
 pub type ReverseExpSparseDatasetGrowable<C, D> =

@@ -1,7 +1,7 @@
 use clap::Parser;
 use ndarray::Array1;
 use ndarray_npy::write_npy;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::time::Instant;
 
 use indicatif::{ParallelProgressIterator, ProgressStyle};
@@ -9,10 +9,12 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use vectorium::dataset::ScoredVector;
 use vectorium::distances::DotProduct;
+use vectorium::encoders::packed_variable_bit_uniform_quantization_sparse_scalar::PackedVariableBitUniformSparseQuantizer;
 use vectorium::readers;
 use vectorium::{
-    Dataset, DatasetGrowable, PlainSparseDataset, SpaceUsage, SparseDatasetGrowable,
-    VariableBitUniformSparseQuantizer,
+    Dataset, DatasetGrowable, PackedSparseDataset, PackedSparseDatasetGrowable,
+    PlainSparseDataset, SpaceUsage, SparseDatasetGrowable, UniformSparseDataset,
+    UniformSparseQuantizer,
 };
 
 #[derive(Parser, Debug)]
@@ -42,27 +44,56 @@ struct Args {
     #[clap(short, long, default_value = "variable_bit_quantization_results.tsv")]
     output: String,
 
-    /// Directory where per-query recall .npy files are written (recalls_Xbits.npy)
-    #[clap(long, default_value = ".")]
-    recall_dir: String,
+    /// Directory where per-query recall .npy files are written (recalls_Xbits.npy).
+    /// If omitted, per-query recall arrays are not saved.
+    #[clap(long)]
+    recall_dir: Option<String>,
+
+    /// Optional precomputed f32 ground-truth TSV (format: query_id\tdoc_id\trank\tscore).
+    /// When provided, the f32 search is skipped and recall is computed against this file.
+    #[clap(long)]
+    groundtruth_tsv: Option<String>,
 }
 
-/// Returns (mean_recall, per_query_recall).
-fn recall_at_k(
-    gt: &[Vec<ScoredVector<DotProduct>>],
-    approx: &[Vec<ScoredVector<DotProduct>>],
-    k: usize,
-) -> (f64, Vec<f32>) {
+/// Parse a ground-truth TSV (`query_id<TAB>doc_id<TAB>rank<TAB>score`) into a per-query
+/// list of doc-ids. The order in which rows appear within a query is preserved, so callers
+/// must take the first `k` entries to compare top-k.
+fn load_groundtruth_tsv(path: &str, n_queries: usize) -> std::io::Result<Vec<Vec<u64>>> {
+    let f = std::fs::File::open(path)?;
+    let reader = BufReader::new(f);
+    let mut gt: Vec<Vec<u64>> = vec![Vec::new(); n_queries];
+    for (line_no, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.is_empty() {
+            continue;
+        }
+        let mut it = line.split('\t');
+        let qid: usize = it
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| panic!("malformed query_id at line {}: {line}", line_no + 1));
+        let doc_id: u64 = it
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| panic!("malformed doc_id at line {}: {line}", line_no + 1));
+        if qid < n_queries {
+            gt[qid].push(doc_id);
+        }
+    }
+    Ok(gt)
+}
+
+/// Returns (mean_recall, per_query_recall). `gt` and `approx` are per-query top-k doc-id lists.
+fn recall_at_k(gt: &[Vec<u64>], approx: &[Vec<u64>], k: usize) -> (f64, Vec<f32>) {
     let per_query: Vec<f32> = gt
         .iter()
         .zip(approx.iter())
         .map(|(gt_row, approx_row)| {
-            let gt_ids: std::collections::HashSet<u64> =
-                gt_row.iter().take(k).map(|s| s.vector).collect();
+            let gt_ids: std::collections::HashSet<u64> = gt_row.iter().take(k).copied().collect();
             let found = approx_row
                 .iter()
                 .take(k)
-                .filter(|s| gt_ids.contains(&s.vector))
+                .filter(|d| gt_ids.contains(d))
                 .count();
             found as f32 / k as f32
         })
@@ -108,17 +139,46 @@ fn main() {
     println!("Using {n_queries} queries out of {total_n_queries}");
 
     // ── Ground truth: <u16, f32> ────────────────────────────────────
-    println!("\n=== <u16, f32> ground truth ===");
-    println!("Size: {f32_size:.3} GiB");
-    let start = Instant::now();
-    let gt: Vec<Vec<ScoredVector<DotProduct>>> = (0..n_queries)
-        .into_par_iter()
-        .progress_count(n_queries as u64)
-        .with_style(pb_style.clone())
-        .map(|qi| dataset_f32.search(queries.get(qi as u64), args.k))
-        .collect();
-    let search_time_f32 = start.elapsed().as_secs_f64();
-    println!("Search: {search_time_f32:.3}s");
+    // Either load a precomputed TSV (`--groundtruth-tsv`) or run the f32 exhaustive search.
+    let (gt, search_time_f32): (Vec<Vec<u64>>, f64) = if let Some(gt_path) = &args.groundtruth_tsv {
+        println!("\n=== Loading f32 ground truth from TSV ===");
+        println!("Path: {gt_path}");
+        let gt_full = load_groundtruth_tsv(gt_path, n_queries).expect("failed to read GT TSV");
+        let missing: Vec<usize> = gt_full
+            .iter()
+            .enumerate()
+            .filter_map(|(qi, row)| if row.len() < args.k { Some(qi) } else { None })
+            .collect();
+        if !missing.is_empty() {
+            panic!(
+                "Ground-truth TSV is short for {} queries (expected ≥ k={}). First missing: q{}",
+                missing.len(),
+                args.k,
+                missing[0]
+            );
+        }
+        println!("Loaded GT for {n_queries} queries (size: {f32_size:.3} GiB f32 index).");
+        (gt_full, f64::NAN)
+    } else {
+        println!("\n=== <u16, f32> ground truth ===");
+        println!("Size: {f32_size:.3} GiB");
+        let start = Instant::now();
+        let gt: Vec<Vec<u64>> = (0..n_queries)
+            .into_par_iter()
+            .progress_count(n_queries as u64)
+            .with_style(pb_style.clone())
+            .map(|qi| {
+                dataset_f32
+                    .search(queries.get(qi as u64), args.k)
+                    .into_iter()
+                    .map(|s: ScoredVector<DotProduct>| s.vector)
+                    .collect()
+            })
+            .collect();
+        let search_time_f32 = start.elapsed().as_secs_f64();
+        println!("Search: {search_time_f32:.3}s");
+        (gt, search_time_f32)
+    };
 
     // ── Training data ───────────────────────────────────────────────
     let training_data: PlainSparseDataset<u16, f32, vectorium::SquaredEuclideanDistance> =
@@ -127,51 +187,108 @@ fn main() {
     // ── Benchmark each nbits from 1 to 8 ───────────────────────────
     let mut results: Vec<BenchResult> = Vec::new();
 
-    for nbits in [4] {
+    for nbits in [1, 2, 3, 4, 5, 6, 7, 8] {
         println!("\n=== uniform quantization, nbits={nbits} ===");
 
-        let start = Instant::now();
-        let quantizer = VariableBitUniformSparseQuantizer::<u16, DotProduct>::train(
-            &training_data,
-            0.0,
-            1.0,
-            nbits,
-        );
-        let train_time = start.elapsed().as_secs_f64();
-        println!("Train:  {train_time:.3}s");
+        // Dispatch on bit width: nbits=8 → byte-stored UniformSparseQuantizer;
+        // nbits ∈ [1,7] → PackedVariableBitUniformSparseQuantizer (bitpacked codes).
+        let (size_gib, train_time, build_time, search_time, approx): (
+            f64,
+            f64,
+            f64,
+            f64,
+            Vec<Vec<u64>>,
+        ) = if nbits == 8 {
+            let start = Instant::now();
+            let quantizer = UniformSparseQuantizer::<u16, DotProduct>::train(
+                &training_data,
+                0.0,
+                1.0,
+            );
+            let train_time = start.elapsed().as_secs_f64();
+            println!("Train:  {train_time:.3}s");
 
-        let start = Instant::now();
-        let mut growable: SparseDatasetGrowable<
-            VariableBitUniformSparseQuantizer<u16, DotProduct>,
-        > = SparseDatasetGrowable::new(quantizer);
-        for vec in dataset_f32.iter() {
-            growable.push(vec);
-        }
-        let dataset_quantized: vectorium::VariableBitUniformSparseDataset<u16, DotProduct> =
-            growable.into();
-        let build_time = start.elapsed().as_secs_f64();
-        let size_gib = dataset_quantized.space_usage_GiB();
-        println!("Build:  {build_time:.3}s");
-        println!("Size:   {size_gib:.3} GiB");
+            let start = Instant::now();
+            let mut growable: SparseDatasetGrowable<UniformSparseQuantizer<u16, DotProduct>> =
+                SparseDatasetGrowable::new(quantizer);
+            for vec in dataset_f32.iter() {
+                growable.push(vec);
+            }
+            let dataset_quantized: UniformSparseDataset<u16, DotProduct> = growable.into();
+            let build_time = start.elapsed().as_secs_f64();
+            let size_gib = dataset_quantized.space_usage_GiB();
+            println!("Build:  {build_time:.3}s");
+            println!("Size:   {size_gib:.3} GiB");
 
-        let start = Instant::now();
-        let approx: Vec<Vec<ScoredVector<DotProduct>>> = (0..n_queries)
-            .into_par_iter()
-            .progress_count(n_queries as u64)
-            .with_style(pb_style.clone())
-            .map(|qi| dataset_quantized.search(queries.get(qi as u64), args.k))
-            .collect();
-        let search_time = start.elapsed().as_secs_f64();
-        println!("Search: {search_time:.3}s");
+            let start = Instant::now();
+            let approx: Vec<Vec<u64>> = (0..n_queries)
+                .into_par_iter()
+                .progress_count(n_queries as u64)
+                .with_style(pb_style.clone())
+                .map(|qi| {
+                    dataset_quantized
+                        .search(queries.get(qi as u64), args.k)
+                        .into_iter()
+                        .map(|s: ScoredVector<DotProduct>| s.vector)
+                        .collect()
+                })
+                .collect();
+            let search_time = start.elapsed().as_secs_f64();
+            println!("Search: {search_time:.3}s");
+            (size_gib, train_time, build_time, search_time, approx)
+        } else {
+            let start = Instant::now();
+            let quantizer = PackedVariableBitUniformSparseQuantizer::train(
+                &training_data,
+                0.0,
+                1.0,
+                nbits,
+            );
+            let train_time = start.elapsed().as_secs_f64();
+            println!("Train:  {train_time:.3}s");
+
+            let start = Instant::now();
+            let mut growable: PackedSparseDatasetGrowable<
+                PackedVariableBitUniformSparseQuantizer,
+            > = PackedSparseDatasetGrowable::new(quantizer);
+            for vec in dataset_f32.iter() {
+                growable.push(vec);
+            }
+            let dataset_quantized: PackedSparseDataset<PackedVariableBitUniformSparseQuantizer> =
+                growable.into();
+            let build_time = start.elapsed().as_secs_f64();
+            let size_gib = dataset_quantized.space_usage_GiB();
+            println!("Build:  {build_time:.3}s");
+            println!("Size:   {size_gib:.3} GiB");
+
+            let start = Instant::now();
+            let approx: Vec<Vec<u64>> = (0..n_queries)
+                .into_par_iter()
+                .progress_count(n_queries as u64)
+                .with_style(pb_style.clone())
+                .map(|qi| {
+                    dataset_quantized
+                        .search(queries.get(qi as u64), args.k)
+                        .into_iter()
+                        .map(|s: ScoredVector<DotProduct>| s.vector)
+                        .collect()
+                })
+                .collect();
+            let search_time = start.elapsed().as_secs_f64();
+            println!("Search: {search_time:.3}s");
+            (size_gib, train_time, build_time, search_time, approx)
+        };
 
         let (recall, per_query_recall) = recall_at_k(&gt, &approx, args.k);
         println!("Recall@{}: {recall:.4}", args.k);
 
-        // Save per-query recall as a numpy array.
-        let npy_path = format!("{}/recalls_{}bits.npy", args.recall_dir, nbits);
-        let arr = Array1::from(per_query_recall);
-        write_npy(&npy_path, &arr).expect("failed to write per-query recall npy");
-        println!("Per-query recall written to {npy_path}");
+        // Save per-query recall as a numpy array (only if --recall-dir is set).
+        if let Some(recall_dir) = &args.recall_dir {
+            let npy_path = format!("{}/recalls_{}bits.npy", recall_dir, nbits);
+            let arr = Array1::from(per_query_recall);
+            write_npy(&npy_path, &arr).expect("failed to write per-query recall npy");
+            println!("Per-query recall written to {npy_path}");
+        }
 
         results.push(BenchResult {
             nbits,
@@ -184,6 +301,11 @@ fn main() {
     }
 
     // ── Summary table (stdout) ──────────────────────────────────────
+    let f32_search_str = if search_time_f32.is_nan() {
+        "loaded".to_string()
+    } else {
+        format!("{:.3}", search_time_f32)
+    };
     println!("\n=== Summary ===");
     println!(
         "{:<10} {:>10} {:>12} {:>12} {:>12} {:>10}",
@@ -191,8 +313,8 @@ fn main() {
     );
     println!("{:-<68}", "");
     println!(
-        "{:<10} {:>10.3} {:>12} {:>12} {:>12.3} {:>10}",
-        "f32", f32_size, "-", "-", search_time_f32, "1.0000"
+        "{:<10} {:>10.3} {:>12} {:>12} {:>12} {:>10}",
+        "f32", f32_size, "-", "-", f32_search_str, "1.0000"
     );
     for r in &results {
         println!(
@@ -208,7 +330,12 @@ fn main() {
         "nbits\tsize_gib\ttrain_time_s\tbuild_time_s\tsearch_time_s\trecall_at_k"
     )
     .unwrap();
-    writeln!(f, "f32\t{f32_size:.6}\t\t\t{search_time_f32:.6}\t1.000000").unwrap();
+    let f32_search_tsv = if search_time_f32.is_nan() {
+        "loaded".to_string()
+    } else {
+        format!("{:.6}", search_time_f32)
+    };
+    writeln!(f, "f32\t{f32_size:.6}\t\t\t{f32_search_tsv}\t1.000000").unwrap();
     for r in &results {
         writeln!(
             f,

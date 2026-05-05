@@ -53,11 +53,6 @@ path = "src/bin/compute_groundtruth.rs"
 required-features = ["cli"]
 
 [[bin]]
-name = "bench_quantization"
-path = "src/bin/bench_quantization.rs"
-required-features = ["cli"]
-
-[[bin]]
 name = "bench_dotvbyte_u32"
 path = "src/bin/bench_dotvbyte_u32.rs"
 required-features = ["cli"]
@@ -72,15 +67,7 @@ name = "bench_variable_bit_quantization"
 path = "src/bin/bench_variable_bit_quantization.rs"
 required-features = ["cli"]
 
-[[bin]]
-name = "bench_4bit_lower_percentile"
-path = "src/bin/bench_4bit_lower_percentile.rs"
-required-features = ["cli"]
 
-[[bin]]
-name = "bench_4bit_oversample"
-path = "src/bin/bench_4bit_oversample.rs"
-required-features = ["cli"]
 
 
 [[bin]]
@@ -88,10 +75,6 @@ name = "bench_centroid_quantization"
 path = "src/bin/bench_centroid_quantization.rs"
 required-features = ["cli"]
 
-[[bin]]
-name = "export_variable_bit_centroids"
-path = "src/bin/export_variable_bit_centroids.rs"
-required-features = ["cli"]
 
 [[bin]]
 name = "dump_component_values"
@@ -108,10 +91,7 @@ name = "analyze_quantization_errors"
 path = "src/bin/analyze_quantization_errors.rs"
 required-features = ["cli"]
 
-[[bin]]
-name = "bench_hybrid_variable_bit_quantization"
-path = "src/bin/bench_hybrid_variable_bit_quantization.rs"
-required-features = ["cli"]
+
 
 [profile.release]
 opt-level = 3
