@@ -8,7 +8,7 @@ use crate::{Dataset, Float, FromF32, PlainDenseDataset, PlainDenseDatasetGrowabl
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rand::seq::SliceRandom;
+use rand::seq::index;
 use rayon::prelude::*;
 use std::time::Instant;
 
@@ -323,7 +323,7 @@ impl KMeans {
 
         let w = weights.as_deref();
 
-        // HNSW logging disabled while index usage is deferred.
+        // RNG used only for empty-cluster splitting.
         let mut rng = match self.seed {
             Some(s) => StdRng::seed_from_u64(s),
             None => StdRng::from_entropy(),
@@ -333,12 +333,13 @@ impl KMeans {
             let mut centroids_builder =
                 PlainDenseDatasetGrowable::with_capacity(ScalarDenseQuantizer::new(output_dim), k);
 
-            // Randomly select k vectors for initial centroids
-            let mut indices: Vec<usize> = (0..n).collect();
-            indices.shuffle(&mut rng);
-
-            for i in indices.iter().take(k) {
-                let vector = training_dataset.get(*i as VectorId);
+            // Initial centroid selection
+            let mut init_rng = match self.seed {
+                Some(s) => StdRng::seed_from_u64(s + 1),
+                None => StdRng::from_entropy(),
+            };
+            for i in index::sample(&mut init_rng, n, k).into_iter() {
+                let vector = training_dataset.get(i as VectorId);
                 centroids_builder.push(vector);
             }
 

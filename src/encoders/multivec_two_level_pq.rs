@@ -290,10 +290,12 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
     ///   Values are converted to f32 on-the-fly; only the sampled subset is ever materialised,
     ///   so no full f32 copy of the dataset is needed.
     /// * `assignments` – Coarse-centroid index per token (same length as `flat_input / token_dim`).
-    /// * `sample_size` – Tokens to use for PQ training (capped at `n_tokens`).
+    /// * `sample_size` – Tokens to use for PQ training (capped at `n_tokens`). Pass a value ≥
+    ///   `flat_input.len() / token_dim` to use all tokens without resampling (e.g. when the
+    ///   caller has already pre-selected a training subset via damped proportional sampling).
     /// * `n_iter` – K-means iterations for PQ subspace training.
     /// * `normalize` – Normalise residuals before PQ; embeds original norm in payload.
-    /// * `seed` – Optional RNG seed for reproducible sampling.
+    /// * `seed` – Optional RNG seed for reproducible uniform sampling and KMeans initialisation.
     pub fn train_from_coarse(
         coarse_centroids: PlainDenseDataset<f32, SquaredEuclideanDistance>,
         flat_input: &[In],
@@ -341,8 +343,8 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
         );
 
         // Build sorted sample indices for sequential memory access.
-        // Shuffle seed is fixed at 42 to match the offline bench_encode_residuals pipeline.
-        // The `seed` parameter controls only the KMeans initialisation below.
+        // `seed` controls KMeans initialisation only.
+        // Pass sample_size >= n_tokens to skip resampling (e.g. caller pre-selected the subset).
         let sample_indices: Vec<usize> = if train_n >= n_tokens {
             (0..n_tokens).collect()
         } else {
