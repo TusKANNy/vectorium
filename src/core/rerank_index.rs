@@ -90,6 +90,7 @@ where
     ///
     /// # Returns
     /// - results: Vector of scored vectors, sorted by distance using the Distance type's Ord implementation
+    #[allow(clippy::too_many_arguments)]
     pub fn search<'q>(
         &'q self,
         first_stage_query: <FirstStageDataset::Encoder as VectorEncoder>::QueryVector<'q>,

@@ -771,8 +771,6 @@ where
 /// - `centroid_scores.len() >= doc_n * Q`
 /// - `distance_table.len() >= M * 256 * Q`
 /// - `pq_codes_block.len() >= doc_n * M`
-#[cfg_attr(not(test), inline)]
-/// Compute MaxSim score between a query and a document multivector using two-level PQ.
 ///
 /// # Arguments
 /// * `centroid_scores` - Pre-computed centroid contributions `[doc_n × Q]`
@@ -780,16 +778,17 @@ where
 /// * `pq_codes_block` - Block of PQ codes for the document (all M codes per token)
 /// * `doc_n` - Number of document tokens
 /// * `token_norms` - Optional per-token normalization factors (e.g., residual norms).
-///                   If present, each token's score is multiplied by its norm before max aggregation.
+///   If present, each token's score is multiplied by its norm before max aggregation.
 ///
 /// # MaxSim Computation
 /// For each doc token:
-/// 1. Load centroid scores from `centroid_scores[t]`
-/// 2. Add PQ residual contributions via SAXPY from `distance_table`
-/// 3. Multiply by `token_norms[t]` if norms are provided
+/// 1. Compute PQ residual contributions via SAXPY from `distance_table`
+/// 2. Multiply residuals by `token_norms[t]` if norms are provided
+/// 3. Add centroid scores from `centroid_scores[t]`
 /// 4. Update per-query-token maxima
 ///
 /// Returns the sum of per-query-token maxima.
+#[cfg_attr(not(test), inline)]
 pub unsafe fn two_level_pq_maxsim_blocked<const M: usize, const Q: usize>(
     centroid_scores: &[f32],
     distance_table: &[f32],

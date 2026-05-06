@@ -129,10 +129,7 @@ where
                     sub_dataset.push(sub_vector);
                 }
 
-                let kmeans = KMeansBuilder::new()
-                    .n_iter(n_iter)
-                    .seed(seed)
-                    .build();
+                let kmeans = KMeansBuilder::new().n_iter(n_iter).seed(seed).build();
                 let trained = kmeans.train(&sub_dataset, KSUB, None);
                 // KMeans returns AoS: [c0_d0, c0_d1, .., c0_{dsub-1}, c1_d0, ..]
                 // Transpose to SoA: [d0_c0, d0_c1, .., d0_{KSUB-1}, d1_c0, ..]

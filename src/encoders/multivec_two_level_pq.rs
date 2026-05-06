@@ -28,15 +28,15 @@
 //! 2. MaxSim: for each doc token, start `acc[Q_TOKEN]` from its centroid scores, add PQ
 //!    residual contributions (from table), update per-query-token maxima.
 
-use std::marker::PhantomData;
 use std::cell::{Cell, RefCell};
+use std::marker::PhantomData;
 use std::time::Instant;
 
 use half::f16;
 
+use faer::Parallelism;
 use faer::linalg::matmul::matmul;
 use faer::mat;
-use faer::Parallelism;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -349,8 +349,8 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
             (0..n_tokens).collect()
         } else {
             use rand::SeedableRng;
-            use rand::seq::SliceRandom;
             use rand::rngs::StdRng;
+            use rand::seq::SliceRandom;
             let mut rng = StdRng::seed_from_u64(42);
             let mut indices: Vec<usize> = (0..n_tokens).collect();
             indices.shuffle(&mut rng);
@@ -488,10 +488,15 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
             // When norms are embedded, scale the residual part back by its norm.
             if self.with_norms {
                 let nb = norms_offset + t * NORM_BYTES;
-                let norm = f16::from_bits(u16::from_le_bytes([all_bytes[nb], all_bytes[nb + 1]])).to_f32();
+                let norm =
+                    f16::from_bits(u16::from_le_bytes([all_bytes[nb], all_bytes[nb + 1]])).to_f32();
                 // decoded = centroid + pq_residual_unit; we want centroid + norm * pq_residual_unit.
                 let centroid_vals = self.coarse_centroids.get(coarse_id);
-                for (d, (v, &c)) in decoded.iter_mut().zip(centroid_vals.values().iter()).enumerate() {
+                for (d, (v, &c)) in decoded
+                    .iter_mut()
+                    .zip(centroid_vals.values().iter())
+                    .enumerate()
+                {
                     let _ = d;
                     *v = c + (*v - c) * norm;
                 }
@@ -536,7 +541,10 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
                 *dst = unsafe { src.to_f32().unwrap_unchecked() };
             }
             let centroid = self.coarse_centroids.get(coarse_id as VectorId);
-            for (r, (&v, &c)) in residual.iter_mut().zip(token_f32.iter().zip(centroid.values())) {
+            for (r, (&v, &c)) in residual
+                .iter_mut()
+                .zip(token_f32.iter().zip(centroid.values()))
+            {
                 *r = v - c;
             }
             if self.with_norms {
@@ -767,7 +775,8 @@ where
         let alloc_start = Instant::now();
         sp.ensure_capacity(doc_n);
         let alloc_elapsed = alloc_start.elapsed().as_secs_f64() * 1_000_000.0;
-        self.centroid_alloc_us.set(self.centroid_alloc_us.get() + alloc_elapsed);
+        self.centroid_alloc_us
+            .set(self.centroid_alloc_us.get() + alloc_elapsed);
 
         // Phase 1b — extract coarse centroid for each doc token
         // SAFETY: blocked layout guarantees the first COARSE_ID_BYTES*doc_n bytes are coarse IDs.
@@ -792,27 +801,40 @@ where
             }
         }
         let extract_elapsed = extract_start.elapsed().as_secs_f64() * 1_000_000.0;
-        self.centroid_extract_us.set(self.centroid_extract_us.get() + extract_elapsed);
+        self.centroid_extract_us
+            .set(self.centroid_extract_us.get() + extract_elapsed);
 
         // Phase 1c — GEMM: centroid_scores = centroid_cols × query_flat_t^T
         let gemm_start = Instant::now();
         unsafe {
             let a = mat::from_raw_parts::<f32>(
-                sp.centroid_cols.as_ptr(), doc_n, token_dim, token_dim as isize, 1,
+                sp.centroid_cols.as_ptr(),
+                doc_n,
+                token_dim,
+                token_dim as isize,
+                1,
             );
             let b = mat::from_raw_parts::<f32>(
-                self.query_flat_t.as_ptr(), token_dim, Q_TOKEN, Q_TOKEN as isize, 1,
+                self.query_flat_t.as_ptr(),
+                token_dim,
+                Q_TOKEN,
+                Q_TOKEN as isize,
+                1,
             );
             let mut c = mat::from_raw_parts_mut::<f32>(
-                sp.centroid_scores.as_mut_ptr(), doc_n, Q_TOKEN, Q_TOKEN as isize, 1,
+                sp.centroid_scores.as_mut_ptr(),
+                doc_n,
+                Q_TOKEN,
+                Q_TOKEN as isize,
+                1,
             );
             matmul(c.as_mut(), a, b, None, 1.0, Parallelism::None);
         }
         let gemm_elapsed = gemm_start.elapsed().as_secs_f64() * 1_000_000.0;
-        self.centroid_gemm_us.set(self.centroid_gemm_us.get() + gemm_elapsed);
-        self.centroid_time_us.set(
-            self.centroid_time_us.get() + alloc_elapsed + extract_elapsed + gemm_elapsed,
-        );
+        self.centroid_gemm_us
+            .set(self.centroid_gemm_us.get() + gemm_elapsed);
+        self.centroid_time_us
+            .set(self.centroid_time_us.get() + alloc_elapsed + extract_elapsed + gemm_elapsed);
 
         // Phase 2 — MaxSim with PQ residuals (and optional embedded norms)
         let phase2_start = Instant::now();
@@ -822,7 +844,8 @@ where
         let local_norms: Option<&[f32]> = if self.encoder.with_norms {
             for t in 0..doc_n {
                 let nb = norms_offset + t * NORM_BYTES;
-                sp.norms_buf[t] = f16::from_bits(u16::from_le_bytes([doc_bytes[nb], doc_bytes[nb + 1]])).to_f32();
+                sp.norms_buf[t] =
+                    f16::from_bits(u16::from_le_bytes([doc_bytes[nb], doc_bytes[nb + 1]])).to_f32();
             }
             Some(&sp.norms_buf[..doc_n])
         } else {
@@ -838,9 +861,8 @@ where
                 local_norms,
             )
         };
-        self.residual_time_us.set(
-            self.residual_time_us.get() + phase2_start.elapsed().as_secs_f64() * 1_000_000.0,
-        );
+        self.residual_time_us
+            .set(self.residual_time_us.get() + phase2_start.elapsed().as_secs_f64() * 1_000_000.0);
         DotProduct::from(score)
     }
 }
@@ -887,7 +909,6 @@ where
         COARSE_ID_BYTES + M + if self.with_norms { NORM_BYTES } else { 0 }
     }
 }
-
 
 impl<const M: usize, In> MultiVecEncoder for MultiVecTwoLevelProductQuantizer<M, In>
 where
@@ -939,7 +960,10 @@ where
             coarse_ids.push(coarse_id);
 
             let centroid = self.coarse_centroids.get(coarse_id as VectorId);
-            for (r, (&v, &c)) in residual.iter_mut().zip(token_f32.iter().zip(centroid.values())) {
+            for (r, (&v, &c)) in residual
+                .iter_mut()
+                .zip(token_f32.iter().zip(centroid.values()))
+            {
                 *r = v - c;
             }
 
