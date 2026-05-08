@@ -25,3 +25,8 @@ target
 
 # Cargo lockfile
 Cargo.lock
+
+# Bench / perf artifacts and papers
+*.csv
+*.tsv
+*.pdf

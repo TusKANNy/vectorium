@@ -67,12 +67,57 @@ name = "bench_variable_bit_quantization"
 path = "src/bin/bench_variable_bit_quantization.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "bench_variable_bit_quantization_oversample"
+path = "src/bin/bench_variable_bit_quantization_oversample.rs"
+required-features = ["cli"]
+
 
 
 
 [[bin]]
 name = "bench_centroid_quantization"
 path = "src/bin/bench_centroid_quantization.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "bench_variable_bit_centroid_quantization"
+path = "src/bin/bench_variable_bit_centroid_quantization.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "bench_variable_bit_centroid_quantization_oversample"
+path = "src/bin/bench_variable_bit_centroid_quantization_oversample.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "bench_4bit_efficiency_scalar"
+path = "src/bin/bench_4bit_efficiency_scalar.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "bench_4bit_efficiency_kmeans"
+path = "src/bin/bench_4bit_efficiency_kmeans.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "bench_4bit_efficiency_kmeans_f16lut"
+path = "src/bin/bench_4bit_efficiency_kmeans_f16lut.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "bench_4bit_efficiency_kmeans_clustered"
+path = "src/bin/bench_4bit_efficiency_kmeans_clustered.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "bench_f16_efficiency"
+path = "src/bin/bench_f16_efficiency.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "dump_kmeans_centroids"
+path = "src/bin/dump_kmeans_centroids.rs"
 required-features = ["cli"]
 
 

@@ -1,7 +1,5 @@
 use std::marker::PhantomData;
 
-use rand::thread_rng;
-use rand_distr::{Distribution, Normal};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -12,64 +10,193 @@ use crate::distances::{Distance, DotProduct, SquaredEuclideanDistance};
 use crate::utils::is_strictly_sorted;
 use crate::{ComponentType, Dataset, PlainSparseDataset, SpaceUsage, SparseVectorView};
 
+/// Per-iteration diagnostics emitted by [`greedy_kmeans`]. Collected for every
+/// Lloyd pass and aggregated by callers to assess whether more iterations
+/// continue to improve the codebook.
+///
+/// - `wcss`        — within-cluster sum of squares **after the E-step** of this
+///                   iteration (i.e. with the centroids from the *previous*
+///                   M-step). For iter 0 this is the WCSS of the uniform init.
+/// - `reassignments` — number of values whose nearest-centroid index changed
+///                   since the previous E-step. For iter 0 this is the number
+///                   of values that left the (sentinel) initial bucket; the
+///                   meaningful convergence signal starts at iter 1.
+/// - `max_drift`   — `max_k |c_k_new - c_k_old|` after the M-step.
+/// - `empty_clusters` — number of clusters with zero assigned values during
+///                   this iteration's M-step (centroid kept at previous value).
+#[derive(Debug, Clone, Copy)]
+pub struct KmeansIterStats {
+    pub iter: usize,
+    pub wcss: f32,
+    pub reassignments: usize,
+    pub max_drift: f32,
+    pub empty_clusters: usize,
+}
+
 pub fn greedy_kmeans(
     values: &[f32],
     min: f32,
     max: f32,
     num_centroids: usize,
     n_iterations: usize,
-) -> Vec<f32> {
-    let mut centroids = Vec::with_capacity(num_centroids);
+) -> (Vec<f32>, Vec<KmeansIterStats>) {
+    // Uniform initialization: evenly spaced in [min, max] (matches weighted_kmeans).
+    let mut centroids: Vec<f32> = (0..num_centroids)
+        .map(|i| {
+            if num_centroids == 1 {
+                (min + max) / 2.0
+            } else {
+                min + (max - min) * (i as f32) / ((num_centroids - 1) as f32)
+            }
+        })
+        .collect();
 
-    // Gaussian initialization
-    let mean = values.iter().sum::<f32>() / values.len() as f32;
-    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32;
-    let std_dev = variance.sqrt();
+    // `usize::MAX` is a sentinel meaning "no previous assignment"; iter 0's
+    // reassignment count is therefore "values whose argmin is not the sentinel"
+    // = values.len(). Iter ≥ 1 uses the previous E-step's argmins as the
+    // baseline, which is the actual convergence signal.
+    let mut assignments = vec![usize::MAX; values.len()];
+    let mut stats: Vec<KmeansIterStats> = Vec::with_capacity(n_iterations);
 
-    let mut rng = thread_rng();
-    let normal = Normal::new(mean, std_dev).unwrap_or(Normal::new(mean, 1.0).unwrap());
+    for iter in 0..n_iterations {
+        // E-step. Track WCSS (sum of squared distances to the assigned centroid)
+        // and the count of values whose argmin changed since the previous pass.
+        let mut wcss = 0.0f32;
+        let mut reassignments = 0usize;
 
-    for _ in 0..num_centroids {
-        let mut centroid = normal.sample(&mut rng);
-        // Clamp to [min, max] range
-        centroid = centroid.clamp(min, max);
-        centroids.push(centroid);
-    }
-
-    // Sort centroids for consistency with binary search in quantization
-    centroids.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
-    let mut assignments = vec![0_usize; values.len()];
-
-    for _ in 0..n_iterations {
         for (val_index, v) in values.iter().enumerate() {
-            let distances = centroids.iter().map(|c| (c - v) * (c - v));
             let mut min_dist = f32::MAX;
             let mut argmin_index = 0_usize;
-            for (i, d) in distances.enumerate() {
+            for (i, c) in centroids.iter().enumerate() {
+                let d = (c - v) * (c - v);
                 if d < min_dist {
                     min_dist = d;
                     argmin_index = i;
                 }
             }
+            wcss += min_dist;
+            if assignments[val_index] != argmin_index {
+                reassignments += 1;
+            }
             assignments[val_index] = argmin_index;
         }
 
-        for (centroid_index, centroid) in centroids.iter_mut().enumerate() {
-            let assigned_vals: Vec<_> = values
-                .iter()
-                .zip(assignments.iter().copied())
-                .filter(|&(_, index)| index == centroid_index)
-                .map(|(val, _)| *val)
-                .collect();
+        // M-step. Track per-cluster drift and empty-cluster count.
+        let mut max_drift = 0.0f32;
+        let mut empty_clusters = 0usize;
 
-            if !assigned_vals.is_empty() {
-                *centroid = assigned_vals.iter().sum::<f32>() / (assigned_vals.len() as f32);
+        for (centroid_index, centroid) in centroids.iter_mut().enumerate() {
+            let mut sum = 0.0f32;
+            let mut count = 0usize;
+            for (&v, &a) in values.iter().zip(assignments.iter()) {
+                if a == centroid_index {
+                    sum += v;
+                    count += 1;
+                }
+            }
+
+            if count > 0 {
+                let new_c = sum / count as f32;
+                let drift = (new_c - *centroid).abs();
+                if drift > max_drift {
+                    max_drift = drift;
+                }
+                *centroid = new_c;
+            } else {
+                empty_clusters += 1;
             }
         }
+
+        stats.push(KmeansIterStats {
+            iter,
+            wcss,
+            reassignments,
+            max_drift,
+            empty_clusters,
+        });
     }
 
-    centroids
+    // Lloyd in 1D preserves the order of sorted centroids (each cluster owns a
+    // contiguous interval), so the uniform-init order survives. Sort defensively
+    // anyway — downstream `quantize` uses binary search.
+    centroids.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    (centroids, stats)
+}
+
+/// Aggregate per-dim Lloyd stats and print a per-iteration summary table.
+///
+/// Useful to answer "are extra Lloyd iterations actually doing anything?": once
+/// `total_reassignments` and `mean_max_drift` collapse, additional passes are
+/// not changing the codebook. `total_wcss` (sum across dims of Σ min_dist²) is
+/// the actual k-means objective and should be monotonically non-increasing.
+///
+/// Skips printing when `n_iterations == 0` or no dims were trained.
+pub fn print_kmeans_iter_summary(
+    per_dim_stats: &[Option<(usize, Vec<KmeansIterStats>)>],
+    n_iterations: usize,
+) {
+    if n_iterations == 0 {
+        return;
+    }
+    let active_dims: usize = per_dim_stats.iter().filter(|s| s.is_some()).count();
+    if active_dims == 0 {
+        return;
+    }
+
+    let total_values: usize = per_dim_stats
+        .iter()
+        .filter_map(|s| s.as_ref().map(|(n, _)| *n))
+        .sum();
+
+    println!(
+        "[greedy_kmeans] Lloyd-iteration summary over {active_dims} active dims, \
+         {total_values} total values:"
+    );
+    println!(
+        "  iter  total_wcss        mean_wcss/val   reassign(% of vals)   mean_max_drift   dims_w/_empty"
+    );
+
+    for t in 0..n_iterations {
+        let mut total_wcss = 0.0f64;
+        let mut total_reassign = 0u64;
+        let mut sum_drift = 0.0f64;
+        let mut dims_w_empty = 0usize;
+        let mut sampled_dims = 0usize;
+
+        for entry in per_dim_stats.iter().flatten() {
+            let (_, dim_stats) = entry;
+            if let Some(s) = dim_stats.get(t) {
+                total_wcss += s.wcss as f64;
+                total_reassign += s.reassignments as u64;
+                sum_drift += s.max_drift as f64;
+                if s.empty_clusters > 0 {
+                    dims_w_empty += 1;
+                }
+                sampled_dims += 1;
+            }
+        }
+
+        let mean_wcss_per_val = if total_values > 0 {
+            total_wcss / total_values as f64
+        } else {
+            0.0
+        };
+        let pct_reassign = if total_values > 0 {
+            100.0 * (total_reassign as f64) / (total_values as f64)
+        } else {
+            0.0
+        };
+        let mean_drift = if sampled_dims > 0 {
+            sum_drift / sampled_dims as f64
+        } else {
+            0.0
+        };
+
+        println!(
+            "  {t:>4}  {total_wcss:>14.4e}  {mean_wcss_per_val:>14.4e}  {pct_reassign:>17.4}%  {mean_drift:>14.4e}  {dims_w_empty:>13}"
+        );
+    }
 }
 
 /// K-means variant that minimizes value-weighted MSE: Σ (c_i - x_i)² · |x_i|.
@@ -236,12 +363,14 @@ impl<C, D> CentroidSparseQuantizer<C, D> {
 
         let mut centroids = vec![0.0f32; dim * num_centroids];
 
-        per_component
+        // Per-dim diagnostics: (n_values_after_clip, [stats per Lloyd iter]).
+        // None means "dim was empty, skipped". Length = dim, indexed by component.
+        let per_dim_stats: Vec<Option<(usize, Vec<KmeansIterStats>)>> = per_component
             .par_iter_mut()
             .zip(centroids.par_chunks_mut(num_centroids))
-            .for_each(|(vals, slot)| {
+            .map(|(vals, slot)| {
                 if vals.is_empty() {
-                    return;
+                    return None;
                 }
                 vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
 
@@ -264,9 +393,14 @@ impl<C, D> CentroidSparseQuantizer<C, D> {
                     *v = v.clamp(min, max);
                 }
 
-                let dim_centroids = greedy_kmeans(vals, min, max, num_centroids, n_iterations);
+                let (dim_centroids, dim_stats) =
+                    greedy_kmeans(vals, min, max, num_centroids, n_iterations);
                 slot.copy_from_slice(&dim_centroids);
-            });
+                Some((vals.len(), dim_stats))
+            })
+            .collect();
+
+        print_kmeans_iter_summary(&per_dim_stats, n_iterations);
 
         Self {
             dim,
