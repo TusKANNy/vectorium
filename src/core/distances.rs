@@ -789,17 +789,21 @@ where
 ///
 /// Returns the sum of per-query-token maxima.
 #[cfg_attr(not(test), inline)]
-pub unsafe fn two_level_pq_maxsim_blocked<const M: usize, const Q: usize>(
+pub unsafe fn two_level_pq_maxsim_blocked<const M: usize>(
     centroid_scores: &[f32],
     distance_table: &[f32],
     pq_codes_block: &[u8],
     doc_n: usize,
+    q_token: usize,
     token_norms: Option<&[f32]>,
+    acc: &mut [f32],
+    max_scores: &mut [f32],
 ) -> f32 {
     const KSUB: usize = 256;
 
-    let mut acc = [0f32; Q];
-    let mut max_scores = [f32::NEG_INFINITY; Q];
+    // Initialise per-query-token buffers for this call (reused across compute_distance calls).
+    acc[..q_token].fill(0.0);
+    max_scores[..q_token].fill(f32::NEG_INFINITY);
 
     unsafe {
         let cs_ptr = centroid_scores.as_ptr();
@@ -808,17 +812,17 @@ pub unsafe fn two_level_pq_maxsim_blocked<const M: usize, const Q: usize>(
         let norms_ptr = token_norms.map(|n| n.as_ptr());
 
         for t in 0..doc_n {
-            // Reset acc directly for PQ computation
-            for q in 0..Q {
+            // Reset acc for this doc token.
+            for q in 0..q_token {
                 *acc.get_unchecked_mut(q) = 0.0;
             }
 
-            // PQ residual SAXPY: M passes, each Q-wide.
+            // PQ residual SAXPY: M passes, each q_token-wide.
             let codes_t = codes_ptr.add(t * M);
             for m in 0..M {
                 let code = *codes_t.add(m) as usize;
-                let tbl = dt_ptr.add(m * KSUB * Q + code * Q);
-                for q in 0..Q {
+                let tbl = dt_ptr.add(m * KSUB * q_token + code * q_token);
+                for q in 0..q_token {
                     *acc.get_unchecked_mut(q) += *tbl.add(q);
                 }
             }
@@ -826,19 +830,19 @@ pub unsafe fn two_level_pq_maxsim_blocked<const M: usize, const Q: usize>(
             // Apply token norm if provided. ONLY applies to the residual representation!
             if let Some(norm_ptr) = norms_ptr {
                 let norm = *norm_ptr.add(t);
-                for q in 0..Q {
+                for q in 0..q_token {
                     *acc.get_unchecked_mut(q) *= norm;
                 }
             }
 
             // Add centroid scores.
-            let cs_t = cs_ptr.add(t * Q);
-            for q in 0..Q {
+            let cs_t = cs_ptr.add(t * q_token);
+            for q in 0..q_token {
                 *acc.get_unchecked_mut(q) += *cs_t.add(q);
             }
 
             // Update per-query-token maxima.
-            for q in 0..Q {
+            for q in 0..q_token {
                 let v = *acc.get_unchecked(q);
                 let cur = max_scores.get_unchecked_mut(q);
                 if v > *cur {
@@ -849,7 +853,7 @@ pub unsafe fn two_level_pq_maxsim_blocked<const M: usize, const Q: usize>(
     }
 
     // Sum maxima.
-    max_scores.iter().fold(0f32, |s, &x| s + x)
+    max_scores[..q_token].iter().fold(0f32, |s, &x| s + x)
 }
 
 #[cfg(test)]

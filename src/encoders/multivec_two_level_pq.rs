@@ -56,12 +56,6 @@ const KSUB: usize = 256;
 const COARSE_ID_BYTES: usize = 4;
 /// Bytes used to store a per-token residual norm when `with_norms = true` (f16 little-endian).
 const NORM_BYTES: usize = 2;
-/// Number of query tokens processed per scoring call.
-///
-/// Fixed at compile time so all inner loops over query tokens are fully unrolled by the
-/// compiler and map to 4 AVX2 `ymm` registers (32 × f32 = 128 bytes).
-/// Queries must have exactly this many tokens.
-pub const Q_TOKEN: usize = 32;
 
 /// Two-level Product Quantizer for multivector (late-interaction) data.
 ///
@@ -609,17 +603,28 @@ pub struct MultiVecTwoLevelPQScratchpad<const M: usize> {
     /// Per-token norm buffer, used only when the encoder has `with_norms = true`.
     /// Filled by decoding the norm bytes from the encoded payload before MaxSim.
     pub norms_buf: Vec<f32>,
+    /// Per-query-token accumulator passed to the distance function; reset each doc token.
+    /// Length = q_token.
+    pub acc: Vec<f32>,
+    /// Per-query-token running maxima passed to the distance function; reset each query.
+    /// Length = q_token.
+    pub max_scores: Vec<f32>,
     /// Precomputed dimensions to avoid repeated parameter passing.
     token_dim: usize,
+    /// Runtime query token count (replaces the former compile-time Q_TOKEN constant).
+    pub q_token: usize,
 }
 
 impl<const M: usize> MultiVecTwoLevelPQScratchpad<M> {
-    pub fn with_capacity(token_dim: usize, max_doc_n: usize) -> Self {
+    pub fn with_capacity(token_dim: usize, max_doc_n: usize, q_token: usize) -> Self {
         Self {
             centroid_cols: Vec::with_capacity(max_doc_n * token_dim),
-            centroid_scores: Vec::with_capacity(max_doc_n * Q_TOKEN),
+            centroid_scores: Vec::with_capacity(max_doc_n * q_token),
             norms_buf: Vec::with_capacity(max_doc_n),
+            acc: vec![0f32; q_token],
+            max_scores: vec![f32::NEG_INFINITY; q_token],
             token_dim,
+            q_token,
         }
     }
 
@@ -628,7 +633,7 @@ impl<const M: usize> MultiVecTwoLevelPQScratchpad<M> {
     #[inline]
     pub fn ensure_capacity(&mut self, doc_n: usize) {
         let needed_cols = doc_n * self.token_dim;
-        let needed_scores = doc_n * Q_TOKEN;
+        let needed_scores = doc_n * self.q_token;
 
         if self.centroid_cols.capacity() < needed_cols {
             self.centroid_cols
@@ -687,25 +692,19 @@ where
         encoder: &'e MultiVecTwoLevelProductQuantizer<M, In>,
         query: DenseMultiVectorView<'_, f32>,
     ) -> Self {
-        assert_eq!(
-            query.num_vecs(),
-            Q_TOKEN,
-            "Query must have exactly Q_TOKEN={} tokens, got {}",
-            Q_TOKEN,
-            query.num_vecs()
-        );
+        let q_token = query.num_vecs();
         let token_dim = encoder.token_dim;
         let dsub = encoder.dsub;
         let query_vals = query.values();
 
-        let mut query_flat_t = vec![0f32; token_dim * Q_TOKEN];
-        for qi in 0..Q_TOKEN {
+        let mut query_flat_t = vec![0f32; token_dim * q_token];
+        for qi in 0..q_token {
             for d in 0..token_dim {
-                query_flat_t[d * Q_TOKEN + qi] = query_vals[qi * token_dim + d];
+                query_flat_t[d * q_token + qi] = query_vals[qi * token_dim + d];
             }
         }
 
-        let mut distance_table = vec![0f32; M * KSUB * Q_TOKEN];
+        let mut distance_table = vec![0f32; M * KSUB * q_token];
         unsafe {
             let qt_ptr = query_flat_t.as_ptr();
             let dt_ptr = distance_table.as_mut_ptr();
@@ -714,15 +713,15 @@ where
                 let sub_offset = m * dsub;
                 for k in 0..KSUB {
                     let centroid = encoder.pq_centroids[m].get(k as VectorId);
-                    let entry_base = m * KSUB * Q_TOKEN + k * Q_TOKEN;
+                    let entry_base = m * KSUB * q_token + k * q_token;
                     let centroid_vals = centroid.values();
 
                     for (d_sub, &c) in centroid_vals.iter().enumerate() {
                         let d = sub_offset + d_sub;
-                        let qt_base = qt_ptr.add(d * Q_TOKEN);
+                        let qt_base = qt_ptr.add(d * q_token);
                         let out_base = dt_ptr.add(entry_base);
 
-                        for q in 0..Q_TOKEN {
+                        for q in 0..q_token {
                             let qt_val = *qt_base.add(q);
                             let current = *out_base.add(q);
                             *out_base.add(q) = current.algebraic_add(qt_val.algebraic_mul(c));
@@ -736,6 +735,7 @@ where
             scratchpad: RefCell::new(MultiVecTwoLevelPQScratchpad::with_capacity(
                 encoder.token_dim,
                 0, // grows on first call; no external max_doc_n hint needed
+                q_token,
             )),
             encoder,
             query_flat_t,
@@ -817,15 +817,15 @@ where
             let b = mat::from_raw_parts::<f32>(
                 self.query_flat_t.as_ptr(),
                 token_dim,
-                Q_TOKEN,
-                Q_TOKEN as isize,
+                sp.q_token,
+                sp.q_token as isize,
                 1,
             );
             let mut c = mat::from_raw_parts_mut::<f32>(
                 sp.centroid_scores.as_mut_ptr(),
                 doc_n,
-                Q_TOKEN,
-                Q_TOKEN as isize,
+                sp.q_token,
+                sp.q_token as isize,
                 1,
             );
             matmul(c.as_mut(), a, b, None, 1.0, Parallelism::None);
@@ -841,6 +841,13 @@ where
 
         // Extract norms from the payload's third block into the scratchpad norm buffer.
         // SAFETY: ensure_capacity set norms_buf.len() >= doc_n; the loop overwrites it fully.
+        // Extract raw pointers before local_norms borrows sp.norms_buf, so the borrow
+        // checker does not see a conflict.  acc, max_scores, norms_buf, and centroid_scores
+        // are all distinct fields — no aliasing.
+        let acc_ptr = sp.acc.as_mut_ptr();
+        let max_scores_ptr = sp.max_scores.as_mut_ptr();
+        let q_token = sp.q_token;
+
         let local_norms: Option<&[f32]> = if self.encoder.with_norms {
             for t in 0..doc_n {
                 let nb = norms_offset + t * NORM_BYTES;
@@ -853,12 +860,15 @@ where
         };
 
         let score = unsafe {
-            crate::distances::two_level_pq_maxsim_blocked::<M, Q_TOKEN>(
-                &sp.centroid_scores[..doc_n * Q_TOKEN],
+            crate::distances::two_level_pq_maxsim_blocked::<M>(
+                &sp.centroid_scores[..doc_n * q_token],
                 &self.distance_table,
                 &doc_bytes[codes_offset..norms_offset],
                 doc_n,
+                q_token,
                 local_norms,
+                std::slice::from_raw_parts_mut(acc_ptr, q_token),
+                std::slice::from_raw_parts_mut(max_scores_ptr, q_token),
             )
         };
         self.residual_time_us
@@ -1088,7 +1098,7 @@ mod tests {
         let training = make_training_set(token_dim, 512);
         let encoder = MultiVecTwoLevelProductQuantizer::<M, f32>::train(&training, 4);
 
-        let query_vals: Vec<f32> = vec![0.5f32; Q_TOKEN * token_dim]; // Q_TOKEN query tokens
+        let query_vals: Vec<f32> = vec![0.5f32; 32 * token_dim]; // Q_TOKEN query tokens
         let query = DenseMultiVectorView::new(&query_vals, token_dim);
 
         let doc_vals: Vec<f32> = vec![0.25f32; 3 * token_dim]; // 3 doc tokens
@@ -1192,7 +1202,7 @@ mod tests {
         let encoder = MultiVecTwoLevelProductQuantizer::<M, f32>::train(&training, 4);
 
         // Query with specific pattern
-        let query_vals: Vec<f32> = vec![1.0f32; Q_TOKEN * token_dim];
+        let query_vals: Vec<f32> = vec![1.0f32; 32 * token_dim];
         let query = DenseMultiVectorView::new(&query_vals, token_dim);
         let evaluator = encoder.query_evaluator(query);
 
@@ -1226,7 +1236,7 @@ mod tests {
         let encoder = MultiVecTwoLevelProductQuantizer::<M, f32>::train(&training, 4);
 
         // Query: all 1s
-        let query_vals: Vec<f32> = vec![1.0f32; Q_TOKEN * token_dim];
+        let query_vals: Vec<f32> = vec![1.0f32; 32 * token_dim];
         let query = DenseMultiVectorView::new(&query_vals, token_dim);
         let evaluator = encoder.query_evaluator(query);
 
@@ -1253,7 +1263,7 @@ mod tests {
         let training = make_training_set(token_dim, 512);
         let encoder = MultiVecTwoLevelProductQuantizer::<M, f32>::train(&training, 4);
 
-        let query_vals: Vec<f32> = vec![0.5f32; Q_TOKEN * token_dim];
+        let query_vals: Vec<f32> = vec![0.5f32; 32 * token_dim];
         let query = DenseMultiVectorView::new(&query_vals, token_dim);
 
         let doc_vals: Vec<f32> = vec![0.5f32; 1 * token_dim]; // Single token
