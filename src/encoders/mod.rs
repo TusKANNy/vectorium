@@ -1,3 +1,4 @@
+pub mod blocked_sparse;
 pub mod block8_fixedu8;
 pub mod centroid_quantization_sparse_scalar;
 pub mod dense_scalar;

@@ -116,6 +116,11 @@ path = "src/bin/bench_f16_efficiency.rs"
 required-features = ["cli"]
 
 [[bin]]
+name = "bench_blocked_sparse_vs_f16"
+path = "src/bin/bench_blocked_sparse_vs_f16.rs"
+required-features = ["cli"]
+
+[[bin]]
 name = "dump_kmeans_centroids"
 path = "src/bin/dump_kmeans_centroids.rs"
 required-features = ["cli"]

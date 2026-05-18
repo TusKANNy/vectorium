@@ -96,6 +96,10 @@ pub use encoders::variable_bit_uniform_quantization_sparse_scalar::{
 pub use encoders::per_component_variable_bit_quantization_sparse_scalar::PerComponentVariableBitUniformSparseQuantizer;
 
 pub use encoders::block8_fixedu8::{Block8FixedU8Encoder, Block8FixedU8QueryEvaluator};
+pub use encoders::blocked_sparse::{
+    BlockedSparseEncoder, BlockedSparseQueryEvaluator, SPARSE_QUERY_THRESHOLD,
+};
+pub use core::data_block::{DataBlock, BLOCK_SIZE};
 
 pub use core::dataset::{Dataset, DatasetGrowable, DenseData, SparseData, VectorId};
 pub use core::storage::{
@@ -143,6 +147,9 @@ pub type ReverseExpSparseDatasetGrowable<C, D> =
 
 pub type CentroidSparseDataset<C, D> = SparseDataset<CentroidSparseQuantizer<C, D>>;
 pub type CentroidSparseDatasetGrowable<C, D> = SparseDatasetGrowable<CentroidSparseQuantizer<C, D>>;
+
+pub type BlockedSparseDataset = PackedSparseDataset<BlockedSparseEncoder>;
+pub type BlockedSparseDatasetGrowable = PackedSparseDatasetGrowable<BlockedSparseEncoder>;
 
 pub use core::dataset::{ScoredRange, ScoredVector};
 

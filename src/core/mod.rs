@@ -1,3 +1,4 @@
+pub mod data_block;
 pub mod dataset;
 pub mod distances;
 pub mod storage;
