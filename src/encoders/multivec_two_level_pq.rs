@@ -859,17 +859,73 @@ where
             None
         };
 
+        // Dispatch to the const-generic fast path for common Q values (full SIMD unrolling),
+        // fall back to the runtime version for anything else.
+        let cs = &sp.centroid_scores[..doc_n * q_token];
+        let dt = &self.distance_table;
+        let codes = &doc_bytes[codes_offset..norms_offset];
         let score = unsafe {
-            crate::distances::two_level_pq_maxsim_blocked::<M>(
-                &sp.centroid_scores[..doc_n * q_token],
-                &self.distance_table,
-                &doc_bytes[codes_offset..norms_offset],
-                doc_n,
-                q_token,
-                local_norms,
-                std::slice::from_raw_parts_mut(acc_ptr, q_token),
-                std::slice::from_raw_parts_mut(max_scores_ptr, q_token),
-            )
+            match q_token {
+                8 => crate::distances::two_level_pq_maxsim_blocked::<M, 8>(
+                    cs,
+                    dt,
+                    codes,
+                    doc_n,
+                    local_norms,
+                ),
+                16 => crate::distances::two_level_pq_maxsim_blocked::<M, 16>(
+                    cs,
+                    dt,
+                    codes,
+                    doc_n,
+                    local_norms,
+                ),
+                32 => crate::distances::two_level_pq_maxsim_blocked::<M, 32>(
+                    cs,
+                    dt,
+                    codes,
+                    doc_n,
+                    local_norms,
+                ),
+                64 => crate::distances::two_level_pq_maxsim_blocked::<M, 64>(
+                    cs,
+                    dt,
+                    codes,
+                    doc_n,
+                    local_norms,
+                ),
+                128 => crate::distances::two_level_pq_maxsim_blocked::<M, 128>(
+                    cs,
+                    dt,
+                    codes,
+                    doc_n,
+                    local_norms,
+                ),
+                256 => crate::distances::two_level_pq_maxsim_blocked::<M, 256>(
+                    cs,
+                    dt,
+                    codes,
+                    doc_n,
+                    local_norms,
+                ),
+                512 => crate::distances::two_level_pq_maxsim_blocked::<M, 512>(
+                    cs,
+                    dt,
+                    codes,
+                    doc_n,
+                    local_norms,
+                ),
+                _ => crate::distances::two_level_pq_maxsim_blocked_runtime::<M>(
+                    cs,
+                    dt,
+                    codes,
+                    doc_n,
+                    q_token,
+                    local_norms,
+                    std::slice::from_raw_parts_mut(acc_ptr, q_token),
+                    std::slice::from_raw_parts_mut(max_scores_ptr, q_token),
+                ),
+            }
         };
         self.residual_time_us
             .set(self.residual_time_us.get() + phase2_start.elapsed().as_secs_f64() * 1_000_000.0);

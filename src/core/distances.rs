@@ -787,9 +787,83 @@ where
 /// 3. Add centroid scores from `centroid_scores[t]`
 /// 4. Update per-query-token maxima
 ///
+/// Fast path: const-generic Q allows full loop unrolling and SIMD vectorization.
+/// Called via the dispatch match in `compute_distance` for common Q values.
 /// Returns the sum of per-query-token maxima.
 #[cfg_attr(not(test), inline)]
-pub unsafe fn two_level_pq_maxsim_blocked<const M: usize>(
+pub unsafe fn two_level_pq_maxsim_blocked<const M: usize, const Q: usize>(
+    centroid_scores: &[f32],
+    distance_table: &[f32],
+    pq_codes_block: &[u8],
+    doc_n: usize,
+    token_norms: Option<&[f32]>,
+) -> f32 {
+    const KSUB: usize = 256;
+
+    let mut acc = [0f32; Q];
+    let mut max_scores = [f32::NEG_INFINITY; Q];
+
+    unsafe {
+        let cs_ptr = centroid_scores.as_ptr();
+        let dt_ptr = distance_table.as_ptr();
+        let codes_ptr = pq_codes_block.as_ptr();
+        let norms_ptr = token_norms.map(|n| n.as_ptr());
+
+        for t in 0..doc_n {
+            for q in 0..Q {
+                *acc.get_unchecked_mut(q) = 0.0;
+            }
+
+            let codes_t = codes_ptr.add(t * M);
+            for m in 0..M {
+                let code = *codes_t.add(m) as usize;
+                let tbl = dt_ptr.add(m * KSUB * Q + code * Q);
+                for q in 0..Q {
+                    *acc.get_unchecked_mut(q) += *tbl.add(q);
+                }
+            }
+
+            if let Some(norm_ptr) = norms_ptr {
+                let norm = *norm_ptr.add(t);
+                for q in 0..Q {
+                    *acc.get_unchecked_mut(q) *= norm;
+                }
+            }
+
+            let cs_t = cs_ptr.add(t * Q);
+            for q in 0..Q {
+                *acc.get_unchecked_mut(q) += *cs_t.add(q);
+            }
+
+            for q in 0..Q {
+                let v = *acc.get_unchecked(q);
+                let cur = max_scores.get_unchecked_mut(q);
+                if v > *cur {
+                    *cur = v;
+                }
+            }
+        }
+    }
+
+    max_scores.iter().fold(0f32, |s, &x| s + x)
+}
+
+/// Fallback for Q values not covered by the dispatch table.
+/// Uses scratchpad buffers instead of stack arrays; Q is a runtime value.
+/// Returns the sum of per-query-token maxima.
+///
+/// # Safety
+///
+/// Same preconditions as [`two_level_pq_maxsim_blocked`]:
+/// - `centroid_scores` must have length `>= doc_n * q_token`.
+/// - `distance_table` must have length `>= M * 256 * q_token`.
+/// - `pq_codes_block` must have length `>= doc_n * M`.
+/// - `token_norms`, if `Some`, must have length `>= doc_n`.
+/// - `acc` and `max_scores` must each have length `>= q_token`.
+/// - All pointer arithmetic stays within the supplied slices.
+#[cfg_attr(not(test), inline)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn two_level_pq_maxsim_blocked_runtime<const M: usize>(
     centroid_scores: &[f32],
     distance_table: &[f32],
     pq_codes_block: &[u8],
