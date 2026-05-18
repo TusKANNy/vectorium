@@ -250,59 +250,6 @@ fn main() {
                 }
                 return;
             }
-            if encoder == "block8" {
-                if component_type != "u16" {
-                    eprintln!(
-                        "Block8 encoder requires component_type='u16' (found '{}').",
-                        component_type
-                    );
-                    return;
-                }
-                if distance != "dotproduct" {
-                    eprintln!("Block8 encoder supports only distance='dotproduct'.");
-                    return;
-                }
-                match value_type.as_str() {
-                    "f32" => compute_sparse_groundtruth_block8::<f32>(
-                        input_path,
-                        query_path,
-                        output_path,
-                        k,
-                    ),
-                    "f16" => compute_sparse_groundtruth_block8::<f16>(
-                        input_path,
-                        query_path,
-                        output_path,
-                        k,
-                    ),
-                    "bf16" => compute_sparse_groundtruth_block8::<bf16>(
-                        input_path,
-                        query_path,
-                        output_path,
-                        k,
-                    ),
-                    "fixedu8" => compute_sparse_groundtruth_block8::<FixedU8Q>(
-                        input_path,
-                        query_path,
-                        output_path,
-                        k,
-                    ),
-                    "fixedu16" => compute_sparse_groundtruth_block8::<FixedU16Q>(
-                        input_path,
-                        query_path,
-                        output_path,
-                        k,
-                    ),
-                    _ => {
-                        eprintln!(
-                            "Unknown value_type='{}'. Use value_type='f32'|'f16'|'bf16'|'fixedu8'|'fixedu16'.",
-                            value_type
-                        );
-                    }
-                }
-                return;
-            }
-
             match (
                 component_type.as_str(),
                 distance.as_str(),
@@ -815,75 +762,6 @@ fn compute_sparse_groundtruth_dotvbyte<V>(
         readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
 
     let dataset: PackedSparseDataset<DotVByteFixedU8Encoder> = dataset_plain.into();
-
-    let dataset_gib = dataset.space_usage_GiB();
-
-    println!("N documents: {}", dataset.len());
-    println!("N dims: {}", dataset.input_dim());
-    println!("N packed words: {}", dataset.nnz());
-    println!("N queries: {}", queries.len());
-    println!("N dims: {}", queries.input_dim());
-
-    println!("Dataset size: {:.3} GiB", dataset_gib);
-    println!(
-        "Bits per entry: {:.3}",
-        (dataset.space_usage_bytes() * 8) as f32 / dataset.nnz() as f32
-    );
-    println!("Computing ground truth for {} queries...", queries.len());
-
-    let start_time = Instant::now();
-
-    let pb_style = ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec}, ETA: {eta})")
-        .unwrap()
-        .progress_chars("=>-");
-
-    let results: Vec<Vec<(f32, u64)>> = queries
-        .par_iter()
-        .progress_count(queries.len() as u64)
-        .with_style(pb_style)
-        .map(|qvec| {
-            let res: Vec<DatasetResult<distances::DotProduct>> = dataset.search(qvec, k);
-            res.into_iter()
-                .map(|r| (r.distance.distance(), r.vector))
-                .collect()
-        })
-        .collect();
-
-    let elapsed = start_time.elapsed();
-    println!("Computation completed in {:.3}s", elapsed.as_secs_f64());
-
-    let mut output_file = File::create(output_path).expect("failed to create output file");
-
-    for (query_id, result) in results.iter().enumerate() {
-        for (idx, (score, doc_id)) in result.iter().enumerate() {
-            writeln!(
-                &mut output_file,
-                "{query_id}\t{doc_id}\t{}\t{score}",
-                idx + 1
-            )
-            .expect("failed to write result");
-        }
-    }
-}
-
-fn compute_sparse_groundtruth_block8<V>(
-    input_path: String,
-    query_path: String,
-    output_path: String,
-    k: usize,
-) where
-    V: vectorium::ValueType + Float + vectorium::FromF32 + vectorium::SpaceUsage,
-{
-    use vectorium::Block8FixedU8Encoder;
-    use vectorium::PackedSparseDataset;
-
-    let dataset_plain: PlainSparseDataset<u16, V, distances::DotProduct> =
-        readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
-    let queries: PlainSparseDataset<u16, f32, distances::DotProduct> =
-        readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
-
-    let dataset: PackedSparseDataset<Block8FixedU8Encoder> = dataset_plain.into();
 
     let dataset_gib = dataset.space_usage_GiB();
 

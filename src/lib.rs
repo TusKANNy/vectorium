@@ -79,6 +79,7 @@ pub use encoders::multivec_two_level_pq::{
     MultiVecTwoLevelPQQueryEvaluator, MultiVecTwoLevelProductQuantizer, print_phase_timings,
     reset_phase_timings,
 };
+pub use encoders::per_component_variable_bit_quantization_sparse_scalar::PerComponentVariableBitUniformSparseQuantizer;
 pub use encoders::pq::ProductQuantizer;
 pub use encoders::reverse_exp_quantization_sparse_scalar::{
     ReverseExpQuantizedSparseSupportedDistance, ReverseExpSparseQuantizer,
@@ -93,13 +94,28 @@ pub use encoders::uniform_quantization_sparse_scalar::{
 pub use encoders::variable_bit_uniform_quantization_sparse_scalar::{
     VariableBitUniformQuantizedSparseSupportedDistance, VariableBitUniformSparseQuantizer,
 };
-pub use encoders::per_component_variable_bit_quantization_sparse_scalar::PerComponentVariableBitUniformSparseQuantizer;
 
-pub use encoders::block8_fixedu8::{Block8FixedU8Encoder, Block8FixedU8QueryEvaluator};
+pub use encoders::dotpacking8_fixedu8::{
+    DotPacking8FixedU8Encoder, DotPacking8Fixedu8QueryEvaluator,
+};
+pub use encoders::dotpackingdp_fixedu8::{
+    DotPackingDp8FixedU8Encoder, DotPackingDp16FixedU8Encoder,
+};
+
+pub use encoders::cdotpacking8_fixedu8::{
+    CDotPacking8FixedU8Encoder, CDotPacking8Fixedu8QueryEvaluator,
+};
+pub use encoders::cdotpackingdp_fixedu8::{
+    CDotPackingDp8FixedU8Encoder, CDotPackingDp16FixedU8Encoder,
+};
+
+pub use encoders::ceg_fixedu8::{CegFixedU8Encoder, CegFixedU8QueryEvaluator};
+pub use encoders::eg_fixedu8::{EgFixedU8Encoder, EgFixedU8QueryEvaluator};
+
+pub use core::data_block::{BLOCK_SIZE, DataBlock};
 pub use encoders::blocked_sparse::{
     BlockedSparseEncoder, BlockedSparseQueryEvaluator, SPARSE_QUERY_THRESHOLD,
 };
-pub use core::data_block::{DataBlock, BLOCK_SIZE};
 
 pub use core::dataset::{Dataset, DatasetGrowable, DenseData, SparseData, VectorId};
 pub use core::storage::{
@@ -133,8 +149,10 @@ pub type PlainSparseDatasetGrowable<C, V, D> = SparseDatasetGrowable<PlainSparse
 pub type UniformSparseDataset<C, D> = SparseDataset<UniformSparseQuantizer<C, D>>;
 pub type UniformSparseDatasetGrowable<C, D> = SparseDatasetGrowable<UniformSparseQuantizer<C, D>>;
 
-pub type VariableBitUniformSparseDataset<C, D> = SparseDataset<VariableBitUniformSparseQuantizer<C, D>>;
-pub type VariableBitUniformSparseDatasetGrowable<C, D> = SparseDatasetGrowable<VariableBitUniformSparseQuantizer<C, D>>;
+pub type VariableBitUniformSparseDataset<C, D> =
+    SparseDataset<VariableBitUniformSparseQuantizer<C, D>>;
+pub type VariableBitUniformSparseDatasetGrowable<C, D> =
+    SparseDatasetGrowable<VariableBitUniformSparseQuantizer<C, D>>;
 
 pub type PerComponentVariableBitUniformSparseDataset<C, D> =
     SparseDataset<PerComponentVariableBitUniformSparseQuantizer<C, D>>;

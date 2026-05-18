@@ -1,5 +1,4 @@
 pub mod blocked_sparse;
-pub mod block8_fixedu8;
 pub mod centroid_quantization_sparse_scalar;
 pub mod dense_scalar;
 pub mod dotvbyte_fixedu8;
@@ -18,3 +17,11 @@ pub mod packed_variable_bit_uniform_quantization_sparse_scalar;
 pub mod packed_centroid_based_quantization_sparse_scalar;
 pub mod per_component_variable_bit_quantization_sparse_scalar;
 pub mod bitpacker;
+pub mod dotpacking8;
+pub mod dotpackingdp;
+pub mod dotpacking8_fixedu8;
+pub mod eg_fixedu8;
+pub mod dotpackingdp_fixedu8;
+pub mod cdotpacking8_fixedu8;
+pub mod cdotpackingdp_fixedu8;
+pub mod ceg_fixedu8;

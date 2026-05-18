@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::hash::Hash;
+use std::simd::Simd;
 
 use crate::{ComponentType, Dataset, PlainSparseDataset, SquaredEuclideanDistance};
 
@@ -286,6 +287,29 @@ where
 
     quants
 }
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[inline(always)]
+pub fn load128_and_broadcast_to_256(ptr: *const u8) -> Simd<u8, 32> {
+    use std::arch::x86_64::{_mm_loadu_si128, _mm256_broadcastsi128_si256};
+    unsafe {
+        let m128_val = _mm_loadu_si128(ptr.cast());
+        std::mem::transmute(_mm256_broadcastsi128_si256(m128_val))
+    }
+}
+
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+#[inline(always)]
+pub fn load128_and_broadcast_to_256(ptr: *const u8) -> Simd<u8, 32> {
+    use std::simd::simd_swizzle;
+    const BROADCAST_MASK: [usize; 32] = [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+        12, 13, 14, 15,
+    ];
+    let raw = unsafe { ptr.cast::<Simd<u8, 16>>().read_unaligned() };
+    simd_swizzle!(raw, BROADCAST_MASK)
+}
+
 
 #[cfg(test)]
 mod tests {

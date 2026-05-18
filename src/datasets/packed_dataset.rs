@@ -1,13 +1,29 @@
 //! Packed sparse dataset helpers keep the encodings in a single concatenated buffer and expose growable/immutable APIs.
 //! The module reuses `PackedSparseVectorEncoder` implementations so conversions and queries stay efficient.
+use std::fs::File;
+use std::io;
+use std::io::BufRead;
+use std::io::BufReader;
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
+use crate::CDotPacking8FixedU8Encoder;
+use crate::CDotPackingDp8FixedU8Encoder;
+use crate::CDotPackingDp16FixedU8Encoder;
+use crate::CegFixedU8Encoder;
+use crate::DotPacking8FixedU8Encoder;
+use crate::DotPackingDp8FixedU8Encoder;
+use crate::DotPackingDp16FixedU8Encoder;
+use crate::EgFixedU8Encoder;
 use crate::PackedSparseVectorEncoder;
 use crate::SpaceUsage;
 use crate::core::sealed;
 use crate::dataset::ConvertFrom;
 use crate::utils::prefetch_read_slice;
 use crate::{Dataset, DatasetGrowable, PackedVectorView, SparseData, VectorId};
+use crate::{Float, SparseVectorEncoder, ValueType, VectorView};
+use crate::core::storage::SparseStorage;
 
 use rayon::prelude::*;
 
@@ -827,7 +843,9 @@ where
 }
 
 impl<EIn, S> From<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
-    for PackedSparseDataset<crate::encoders::dotvbyte_u32_scalaru8::OptimisticDotVByteScalarU8Encoder>
+    for PackedSparseDataset<
+        crate::encoders::dotvbyte_u32_scalaru8::OptimisticDotVByteScalarU8Encoder,
+    >
 where
     EIn: crate::SparseVectorEncoder<OutputComponentType = u32>,
     EIn::OutputValueType: crate::ValueType + crate::Float,
@@ -887,7 +905,9 @@ where
 }
 
 impl<EIn, S> ConvertFrom<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
-    for PackedSparseDataset<crate::encoders::dotvbyte_u32_scalaru8::OptimisticDotVByteScalarU8Encoder>
+    for PackedSparseDataset<
+        crate::encoders::dotvbyte_u32_scalaru8::OptimisticDotVByteScalarU8Encoder,
+    >
 where
     EIn: crate::SparseVectorEncoder<OutputComponentType = u32>,
     EIn::OutputValueType: crate::ValueType + crate::Float,
@@ -902,65 +922,6 @@ where
 }
 
 use crate::datasets::sparse_dataset::SparseDatasetGeneric;
-use crate::encoders::block8_fixedu8::Block8FixedU8Encoder;
-
-impl<EIn, S> From<SparseDatasetGeneric<EIn, S>> for PackedSparseDataset<Block8FixedU8Encoder>
-where
-    EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
-    EIn::OutputValueType: crate::ValueType + crate::Float,
-    for<'a> EIn::EncodedVector<'a>: crate::VectorView,
-    S: crate::core::storage::SparseStorage<EIn>,
-{
-    fn from(dataset: SparseDatasetGeneric<EIn, S>) -> Self {
-        use crate::SparseVectorEncoder;
-        use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
-        use crate::{DotProduct, FixedU8Q};
-
-        let dim = dataset.output_dim();
-        let scalar =
-            ScalarSparseQuantizer::<u16, EIn::OutputValueType, FixedU8Q, DotProduct>::new(dim, dim);
-
-        let mut encoder = crate::Block8FixedU8Encoder::new(dim);
-
-        const SAMPLE_RATE: usize = 20;
-        let sample_size = if dataset.len() / SAMPLE_RATE < 50_000 {
-            dataset.len()
-        } else {
-            dataset.len() / SAMPLE_RATE
-        };
-
-        encoder.train(dataset.iter().take(sample_size));
-
-        let mut offsets = Vec::with_capacity(dataset.len() + 1);
-        offsets.push(0);
-        let mut data = Vec::new();
-
-        for v in dataset.iter() {
-            let q_vec = scalar.encode_vector(v);
-            encoder.push_encoded(q_vec.as_view(), &mut data);
-            offsets.push(data.len());
-        }
-
-        PackedSparseDatasetGeneric {
-            offsets: offsets.into_boxed_slice(),
-            data: data.into_boxed_slice(),
-            encoder,
-            nnz: dataset.nnz(),
-        }
-    }
-}
-
-impl<EIn, S> ConvertFrom<SparseDatasetGeneric<EIn, S>> for PackedSparseDataset<Block8FixedU8Encoder>
-where
-    EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
-    EIn::OutputValueType: crate::ValueType + crate::Float,
-    for<'a> EIn::EncodedVector<'a>: crate::VectorView,
-    S: crate::core::storage::SparseStorage<EIn>,
-{
-    fn convert_from(dataset: SparseDatasetGeneric<EIn, S>) -> Self {
-        dataset.into()
-    }
-}
 
 impl<EIn, S> From<SparseDatasetGeneric<EIn, S>>
     for PackedSparseDataset<crate::encoders::blocked_sparse::BlockedSparseEncoder>
@@ -971,10 +932,10 @@ where
     S: crate::core::storage::SparseStorage<EIn>,
 {
     fn from(dataset: SparseDatasetGeneric<EIn, S>) -> Self {
+        use crate::DotProduct;
         use crate::SparseVectorEncoder;
         use crate::encoders::blocked_sparse::BlockedSparseEncoder;
         use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
-        use crate::DotProduct;
         use half::f16;
 
         let dim = dataset.output_dim();
@@ -1001,6 +962,174 @@ where
     }
 }
 
+fn invalid_data_error(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+pub fn read_cluster_assignments(path: &Path, n_docs: usize) -> io::Result<Vec<usize>> {
+    let clusters = BufReader::new(File::open(path)?);
+    let initial = (vec![usize::MAX; n_docs], 0usize);
+
+    let parsed_lines = clusters
+        .lines()
+        .enumerate()
+        .filter_map(|(line_no, line_result)| match line_result {
+            Err(err) => Some(Err(err)),
+            Ok(line) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                let values = trimmed
+                    .split_whitespace()
+                    .map(|token| {
+                        token.parse::<usize>().map_err(|_| {
+                            invalid_data_error(format!(
+                                "Cluster file {} contains non-integer token '{}' at line {}",
+                                path.display(),
+                                token,
+                                line_no + 1
+                            ))
+                        })
+                    })
+                    .collect::<io::Result<Vec<usize>>>();
+
+                Some(values)
+            }
+        });
+
+    let (assignments, assigned) = parsed_lines.enumerate().try_fold(
+        initial,
+        |(mut assignments, mut assigned), (cluster_id, values)| {
+            let values = values?;
+            let expected_cluster_len = values[0];
+            let members = &values[1..];
+            if members.len() != expected_cluster_len {
+                return Err(invalid_data_error(format!(
+                    "Cluster line {} has declared len {} but {} ids provided",
+                    cluster_id + 1,
+                    expected_cluster_len,
+                    members.len()
+                )));
+            }
+
+            members.iter().try_for_each(|&doc_id| {
+                if doc_id >= n_docs {
+                    return Err(invalid_data_error(format!(
+                        "Cluster line {} references doc_id {} but dataset has {} docs",
+                        cluster_id + 1,
+                        doc_id,
+                        n_docs
+                    )));
+                }
+                if assignments[doc_id] != usize::MAX {
+                    return Err(invalid_data_error(format!(
+                        "doc_id {} appears in multiple clusters (line {})",
+                        doc_id,
+                        cluster_id + 1
+                    )));
+                }
+
+                assignments[doc_id] = cluster_id;
+                assigned += 1;
+                Ok(())
+            })?;
+
+            Ok((assignments, assigned))
+        },
+    )?;
+
+    if assigned != n_docs {
+        return Err(invalid_data_error(format!(
+            "Cluster file assignment incomplete: assigned {} docs but dataset has {} docs",
+            assigned, n_docs
+        )));
+    }
+
+    Ok(assignments)
+}
+
+pub fn build_cluster_references_from_dataset<EIn, S>(
+    dataset: &SparseDatasetGeneric<EIn, S>,
+    assignments: &[usize],
+    dim: usize,
+    max_ref_size: usize,
+) -> io::Result<Vec<Vec<u16>>>
+where
+    EIn: SparseVectorEncoder<OutputComponentType = u16>,
+    EIn::OutputValueType: ValueType + Float,
+    for<'a> EIn::EncodedVector<'a>: VectorView,
+    S: crate::core::storage::SparseStorage<EIn>,
+{
+    if assignments.len() != dataset.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "assignments len {} does not match dataset len {}",
+                assignments.len(),
+                dataset.len()
+            ),
+        ));
+    }
+
+    let n_clusters = assignments.iter().max().map_or(0usize, |value| value + 1);
+    if n_clusters == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "No clusters found in assignments",
+        ));
+    }
+
+    let mut occs = vec![vec![0u32; dim]; n_clusters];
+    for (doc_id, vector) in dataset.iter().enumerate() {
+        let cluster_id = assignments[doc_id];
+        for &component in vector.components() {
+            let idx = component as usize;
+            if idx >= dim {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Component {} exceeds output dim {} for doc {}",
+                        idx, dim, doc_id
+                    ),
+                ));
+            }
+            occs[cluster_id][idx] = occs[cluster_id][idx].saturating_add(1);
+        }
+    }
+
+    let mut references = Vec::with_capacity(n_clusters);
+    for cluster_occs in occs.into_iter() {
+        let mut by_freq: Vec<(u16, u32)> = cluster_occs
+            .iter()
+            .enumerate()
+            .filter_map(|(component, &freq)| {
+                if freq > 0 {
+                    Some((component as u16, freq))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if by_freq.is_empty() {
+            references.push(vec![0u16]);
+            continue;
+        }
+
+        by_freq.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let mut reference: Vec<u16> = by_freq
+            .into_iter()
+            .take(max_ref_size)
+            .map(|(component, _)| component)
+            .collect();
+        reference.sort_unstable();
+        references.push(reference);
+    }
+
+    Ok(references)
+}
+
 impl<EIn, S> crate::dataset::ConvertFrom<SparseDatasetGeneric<EIn, S>>
     for PackedSparseDataset<crate::encoders::blocked_sparse::BlockedSparseEncoder>
 where
@@ -1013,6 +1142,215 @@ where
         dataset.into()
     }
 }
+
+macro_rules! impl_from_packed_sparse_dataset_clustered {
+    ($ClusteredEncoderType:ty) => {
+        impl PackedSparseDataset<$ClusteredEncoderType> {
+            pub fn from_sparse_with_cluster_file<EIn, S>(
+                dataset: &SparseDatasetGeneric<EIn, S>,
+                cluster_file: impl AsRef<Path>,
+                max_ref_size: usize,
+            ) -> io::Result<Self>
+            where
+                EIn: SparseVectorEncoder<OutputComponentType = u16>,
+                EIn::OutputValueType: ValueType + Float,
+                for<'a> EIn::EncodedVector<'a>: VectorView,
+                S: SparseStorage<EIn>,
+            {
+                use crate::SparseVectorEncoder;
+                use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
+                use crate::{DotProduct, FixedU8Q};
+                println!("Creating {} packed dataset from cluster file '{}'", stringify!($ClusteredEncoderType), cluster_file.as_ref().display());
+                let dim = dataset.output_dim();
+                let assignments = read_cluster_assignments(cluster_file.as_ref(), dataset.len())?;
+
+                let references = build_cluster_references_from_dataset(
+                    dataset,
+                    &assignments,
+                    dim,
+                    max_ref_size,
+                )?;
+
+                let scalar =
+                    ScalarSparseQuantizer::<u16, EIn::OutputValueType, FixedU8Q, DotProduct>::new(dim, dim);
+                let mut encoder = <$ClusteredEncoderType>::new_with_references(dim, references, max_ref_size);
+
+                const SAMPLE_RATE: usize = 20;
+                let sample_size = if dataset.len() / SAMPLE_RATE < 50_000 {
+                    dataset.len()
+                } else {
+                    dataset.len() / SAMPLE_RATE
+                };
+
+                encoder.train(dataset.iter().take(sample_size));
+
+                let mut offsets = Vec::with_capacity(dataset.len() + 1);
+                offsets.push(0);
+                let mut data = Vec::new();
+
+                for (doc_id, vector) in dataset.iter().enumerate() {
+                    let q_vec = scalar.encode_vector(vector);
+                    let cluster_idx = assignments[doc_id];
+                    encoder.push_vector(q_vec.as_view(), cluster_idx as u16, &mut data);
+                    offsets.push(data.len());
+                }
+
+                Ok(PackedSparseDatasetGeneric {
+                    offsets: offsets.into_boxed_slice(),
+                    data: data.into_boxed_slice(),
+                    encoder,
+                    nnz: dataset.nnz(),
+                })
+            }
+        }
+
+        impl<EIn, S> From<SparseDatasetGeneric<EIn, S>> for PackedSparseDataset<$ClusteredEncoderType>
+        where
+            EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
+            EIn::OutputValueType: crate::ValueType + crate::Float,
+            for<'a> EIn::EncodedVector<'a>: crate::VectorView,
+            S: crate::core::storage::SparseStorage<EIn>,
+        {
+            fn from(dataset: SparseDatasetGeneric<EIn, S>) -> Self {
+                crate::dataset::ConvertFrom::convert_from(&dataset)
+            }
+        }
+
+        impl<'ds, EIn, S> ConvertFrom<&'ds SparseDatasetGeneric<EIn, S>> for PackedSparseDataset<$ClusteredEncoderType>
+        where
+            EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
+            EIn::OutputValueType: crate::ValueType + crate::Float,
+            for<'a> EIn::EncodedVector<'a>: crate::VectorView,
+            S: crate::core::storage::SparseStorage<EIn>,
+        {
+            fn convert_from(dataset: &'ds SparseDatasetGeneric<EIn, S>) -> Self {
+                let cluster_file = std::env::var("CLUSTER_FILE").unwrap_or_else(|_| {
+                    panic!(
+                        "CLUSTER_FILE environment variable must be set to the path of the cluster assignments file when converting to PackedSparseDataset<{}>",
+                        stringify!($ClusteredEncoderType)
+                    )
+                });
+                let max_ref_size = std::env::var("MAX_REF_SIZE")
+                    .ok()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(256);
+
+                PackedSparseDataset::<$ClusteredEncoderType>::from_sparse_with_cluster_file(
+                    dataset,
+                    &cluster_file,
+                    max_ref_size,
+                )
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to build {} packed dataset from cluster file '{}': {}",
+                        stringify!($ClusteredEncoderType),
+                        cluster_file,
+                        e
+                    )
+                })
+            }
+        }
+
+        impl<EIn, S> ConvertFrom<SparseDatasetGeneric<EIn, S>> for PackedSparseDataset<$ClusteredEncoderType>
+        where
+            EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
+            EIn::OutputValueType: crate::ValueType + crate::Float,
+            for<'a> EIn::EncodedVector<'a>: crate::VectorView,
+            S: crate::core::storage::SparseStorage<EIn>,
+        {
+            fn convert_from(dataset: SparseDatasetGeneric<EIn, S>) -> Self {
+                dataset.into()
+            }
+        }
+
+    };
+}
+
+impl_from_packed_sparse_dataset_clustered!(CDotPacking8FixedU8Encoder);
+impl_from_packed_sparse_dataset_clustered!(CDotPackingDp8FixedU8Encoder);
+impl_from_packed_sparse_dataset_clustered!(CDotPackingDp16FixedU8Encoder);
+impl_from_packed_sparse_dataset_clustered!(CegFixedU8Encoder);
+
+macro_rules! impl_from_packed_sparse_dataset {
+    ($EncoderType:ty) => {
+        impl<EIn, S> From<SparseDatasetGeneric<EIn, S>> for PackedSparseDataset<$EncoderType>
+        where
+            EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
+            EIn::OutputValueType: crate::ValueType + crate::Float,
+            for<'a> EIn::EncodedVector<'a>: crate::VectorView,
+            S: crate::core::storage::SparseStorage<EIn>,
+        {
+            fn from(dataset: SparseDatasetGeneric<EIn, S>) -> Self {
+                crate::dataset::ConvertFrom::convert_from(&dataset)
+            }
+        }
+
+        impl<EIn, S> ConvertFrom<SparseDatasetGeneric<EIn, S>> for PackedSparseDataset<$EncoderType>
+        where
+            EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
+            EIn::OutputValueType: crate::ValueType + crate::Float,
+            for<'a> EIn::EncodedVector<'a>: crate::VectorView,
+            S: crate::core::storage::SparseStorage<EIn>,
+        {
+            fn convert_from(dataset: SparseDatasetGeneric<EIn, S>) -> Self {
+                dataset.into()
+            }
+        }
+
+        impl<'ds, EIn, S> ConvertFrom<&'ds SparseDatasetGeneric<EIn, S>>
+            for PackedSparseDataset<$EncoderType>
+        where
+            EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
+            EIn::OutputValueType: crate::ValueType + crate::Float,
+            for<'a> EIn::EncodedVector<'a>: crate::VectorView,
+            S: crate::core::storage::SparseStorage<EIn>,
+        {
+            fn convert_from(dataset: &'ds SparseDatasetGeneric<EIn, S>) -> Self {
+                use crate::SparseVectorEncoder;
+                use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
+                use crate::{DotProduct, FixedU8Q};
+
+                let dim = dataset.output_dim();
+                let scalar =
+                    ScalarSparseQuantizer::<u16, EIn::OutputValueType, FixedU8Q, DotProduct>::new(
+                        dim, dim,
+                    );
+
+                let mut encoder = <$EncoderType>::new(dim);
+
+                const SAMPLE_RATE: usize = 20;
+                let sample_size = if dataset.len() / SAMPLE_RATE < 50_000 {
+                    dataset.len()
+                } else {
+                    dataset.len() / SAMPLE_RATE
+                };
+
+                encoder.train(dataset.iter().take(sample_size));
+
+                let mut offsets = Vec::with_capacity(dataset.len() + 1);
+                offsets.push(0);
+                let mut data = Vec::new();
+
+                for v in dataset.iter() {
+                    let q_vec = scalar.encode_vector(v);
+                    encoder.push_encoded(q_vec.as_view(), &mut data);
+                    offsets.push(data.len());
+                }
+
+                PackedSparseDatasetGeneric {
+                    offsets: offsets.into_boxed_slice(),
+                    data: data.into_boxed_slice(),
+                    encoder,
+                    nnz: dataset.nnz(),
+                }
+            }
+        }
+    };
+}
+impl_from_packed_sparse_dataset!(DotPacking8FixedU8Encoder);
+impl_from_packed_sparse_dataset!(DotPackingDp8FixedU8Encoder);
+impl_from_packed_sparse_dataset!(DotPackingDp16FixedU8Encoder);
+impl_from_packed_sparse_dataset!(EgFixedU8Encoder);
 
 #[cfg(test)]
 mod tests {
@@ -1069,91 +1407,6 @@ mod tests {
 
         assert_eq!(d0, expected0);
         assert_eq!(d1, expected1);
-    }
-
-    #[test]
-    fn conversion_and_dotproduct_block8() {
-        use crate::DatasetGrowable;
-        use crate::QueryEvaluator as _;
-        use crate::VectorEncoder as _;
-        use crate::core::vector::SparseVectorView;
-        use crate::distances::Distance as _;
-        use crate::{
-            Block8FixedU8Encoder, DotProduct, FixedU8Q, FromF32 as _, PlainSparseDataset,
-            PlainSparseDatasetGrowable,
-        };
-        use num_traits::ToPrimitive as _;
-
-        let dim = 505;
-
-        let mut growable: PlainSparseDatasetGrowable<u16, f32, DotProduct> =
-            PlainSparseDatasetGrowable::new(
-                crate::PlainSparseQuantizer::<u16, f32, DotProduct>::new(dim, dim),
-            );
-
-        let v0_components = vec![1_u16, 10, 100];
-        let v0_values = vec![1.5_f32, 2.0, 2.5];
-
-        growable.push(SparseVectorView::new(&v0_components, &v0_values));
-
-        let v1_components = vec![2_u16, 11];
-        let v1_values = vec![0.5_f32, 1.0];
-
-        growable.push(SparseVectorView::new(&v1_components, &v1_values));
-
-        let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
-
-        let dataset: PackedSparseDataset<Block8FixedU8Encoder> = frozen.into();
-
-        let query = SparseVectorView::new(&[1_u16, 10, 11][..], &[2.0_f32, 3.0, 4.0][..]);
-        let evaluator = dataset.encoder().query_evaluator(query);
-
-        let d0 = evaluator.compute_distance(dataset.get(0)).distance();
-        let d1 = evaluator.compute_distance(dataset.get(1)).distance();
-
-        let expected0 = FixedU8Q::from_f32_saturating(1.5).to_f32().unwrap() * 2.0
-            + FixedU8Q::from_f32_saturating(2.0).to_f32().unwrap() * 3.0;
-        let expected1 = FixedU8Q::from_f32_saturating(1.0).to_f32().unwrap() * 4.0;
-
-        assert_eq!(d0, expected0);
-        assert_eq!(d1, expected1);
-    }
-
-    #[test]
-    fn conversion_and_search_block8() {
-        use crate::DatasetGrowable;
-        use crate::core::vector::SparseVectorView;
-        use crate::{
-            Block8FixedU8Encoder, DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable,
-        };
-
-        let dim = 505;
-
-        let mut growable: PlainSparseDatasetGrowable<u16, f32, DotProduct> =
-            PlainSparseDatasetGrowable::new(
-                crate::PlainSparseQuantizer::<u16, f32, DotProduct>::new(dim, dim),
-            );
-
-        let v0_components = vec![2_u16, 11];
-        let v0_values = vec![0.5_f32, 1.0];
-
-        let v1_components = vec![1_u16, 10, 100];
-        let v1_values = vec![1.5_f32, 2.0, 2.5];
-
-        growable.push(SparseVectorView::new(&v0_components, &v0_values));
-        growable.push(SparseVectorView::new(&v1_components, &v1_values));
-
-        let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
-
-        let dataset: PackedSparseDataset<Block8FixedU8Encoder> = frozen.into();
-
-        let query = SparseVectorView::new(&[1_u16, 10, 11][..], &[2.0_f32, 3.0, 4.0][..]);
-        let results = dataset.search(query, 2);
-        assert_eq!(results.len(), 2);
-        let first_result = results[0];
-        assert_eq!(first_result.vector, 1);
-        let second_result = results[1];
-        assert_eq!(second_result.vector, 0);
     }
 
     #[test]
@@ -1300,4 +1553,255 @@ mod tests {
         let frozen: PackedSparseDataset<DotVByteFixedU8Encoder> = growable.into();
         assert_eq!(frozen.len(), 2);
     }
+
+    macro_rules! packed_dataset_plain_tests {
+        ($dot_test:ident, $search_test:ident, $Encoder:ty) => {
+            #[test]
+            fn $dot_test() {
+                use crate::DatasetGrowable;
+                use crate::QueryEvaluator as _;
+                use crate::VectorEncoder as _;
+                use crate::core::vector::SparseVectorView;
+                use crate::distances::Distance as _;
+                use crate::{
+                    DotProduct, FixedU8Q, FromF32 as _, PlainSparseDataset,
+                    PlainSparseDatasetGrowable,
+                };
+                use num_traits::ToPrimitive as _;
+
+                let dim = 505;
+
+                let mut growable: PlainSparseDatasetGrowable<u16, f32, DotProduct> =
+                    PlainSparseDatasetGrowable::new(
+                        crate::PlainSparseQuantizer::<u16, f32, DotProduct>::new(dim, dim),
+                    );
+
+                let v0_components = vec![1_u16, 10, 100];
+                let v0_values = vec![1.5_f32, 2.0, 2.5];
+
+                growable.push(SparseVectorView::new(&v0_components, &v0_values));
+
+                let v1_components = vec![2_u16, 11];
+                let v1_values = vec![0.5_f32, 1.0];
+
+                growable.push(SparseVectorView::new(&v1_components, &v1_values));
+
+                let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
+
+                let dataset: PackedSparseDataset<$Encoder> = frozen.into();
+
+                let query =
+                    SparseVectorView::new(&[1_u16, 10, 11][..], &[2.0_f32, 3.0, 4.0][..]);
+                let evaluator = dataset.encoder().query_evaluator(query);
+
+                let d0 = evaluator.compute_distance(dataset.get(0)).distance();
+                let d1 = evaluator.compute_distance(dataset.get(1)).distance();
+
+                let expected0 = FixedU8Q::from_f32_saturating(1.5).to_f32().unwrap() * 2.0
+                    + FixedU8Q::from_f32_saturating(2.0).to_f32().unwrap() * 3.0;
+                let expected1 = FixedU8Q::from_f32_saturating(1.0).to_f32().unwrap() * 4.0;
+
+                assert_eq!(d0, expected0);
+                assert_eq!(d1, expected1);
+            }
+
+            #[test]
+            fn $search_test() {
+                use crate::DatasetGrowable;
+                use crate::core::vector::SparseVectorView;
+                use crate::{
+                    DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable,
+                };
+
+                let dim = 505;
+
+                let mut growable: PlainSparseDatasetGrowable<u16, f32, DotProduct> =
+                    PlainSparseDatasetGrowable::new(
+                        crate::PlainSparseQuantizer::<u16, f32, DotProduct>::new(dim, dim),
+                    );
+
+                let v0_components = vec![2_u16, 11];
+                let v0_values = vec![0.5_f32, 1.0];
+
+                let v1_components = vec![1_u16, 10, 100];
+                let v1_values = vec![1.5_f32, 2.0, 2.5];
+
+                growable.push(SparseVectorView::new(&v0_components, &v0_values));
+                growable.push(SparseVectorView::new(&v1_components, &v1_values));
+
+                let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
+
+                let dataset: PackedSparseDataset<$Encoder> = frozen.into();
+
+                let query =
+                    SparseVectorView::new(&[1_u16, 10, 11][..], &[2.0_f32, 3.0, 4.0][..]);
+                let results = dataset.search(query, 2);
+                assert_eq!(results.len(), 2);
+                let first_result = results[0];
+                assert_eq!(first_result.vector, 1);
+                let second_result = results[1];
+                assert_eq!(second_result.vector, 0);
+            }
+        };
+    }
+
+    macro_rules! packed_dataset_clustered_tests {
+        ($dot_test:ident, $search_test:ident, $Encoder:ty) => {
+            #[test]
+            fn $dot_test() {
+                use crate::DatasetGrowable;
+                use crate::QueryEvaluator as _;
+                use crate::VectorEncoder as _;
+                use crate::core::vector::SparseVectorView;
+                use crate::distances::Distance as _;
+                use crate::{
+                    DotProduct, FixedU8Q, FromF32 as _, PlainSparseDataset,
+                    PlainSparseDatasetGrowable,
+                };
+                use num_traits::ToPrimitive as _;
+                use std::time::{SystemTime, UNIX_EPOCH};
+
+                let dim = 505;
+
+                let mut growable: PlainSparseDatasetGrowable<u16, f32, DotProduct> =
+                    PlainSparseDatasetGrowable::new(
+                        crate::PlainSparseQuantizer::<u16, f32, DotProduct>::new(dim, dim),
+                    );
+
+                let v0_components = vec![1_u16, 10, 100];
+                let v0_values = vec![1.5_f32, 2.0, 2.5];
+
+                growable.push(SparseVectorView::new(&v0_components, &v0_values));
+
+                let v1_components = vec![2_u16, 11];
+                let v1_values = vec![0.5_f32, 1.0];
+
+                growable.push(SparseVectorView::new(&v1_components, &v1_values));
+
+                let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
+
+                let nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos();
+                let cluster_path = std::env::temp_dir()
+                    .join(format!("vectorium_cluster_{}.txt", nanos));
+                std::fs::write(&cluster_path, "1 0\n1 1\n").unwrap();
+
+                let dataset = PackedSparseDataset::<$Encoder>::from_sparse_with_cluster_file(
+                    &frozen,
+                    &cluster_path,
+                    5,
+                )
+                .unwrap();
+
+                let query =
+                    SparseVectorView::new(&[1_u16, 10, 11][..], &[2.0_f32, 3.0, 4.0][..]);
+                let evaluator = dataset.encoder().query_evaluator(query);
+
+                let d0 = evaluator.compute_distance(dataset.get(0)).distance();
+                let d1 = evaluator.compute_distance(dataset.get(1)).distance();
+
+                let expected0 = FixedU8Q::from_f32_saturating(1.5).to_f32().unwrap() * 2.0
+                    + FixedU8Q::from_f32_saturating(2.0).to_f32().unwrap() * 3.0;
+                let expected1 = FixedU8Q::from_f32_saturating(1.0).to_f32().unwrap() * 4.0;
+
+                assert_eq!(d0, expected0);
+                assert_eq!(d1, expected1);
+
+                let _ = std::fs::remove_file(cluster_path);
+            }
+
+            #[test]
+            fn $search_test() {
+                use crate::DatasetGrowable;
+                use crate::core::vector::SparseVectorView;
+                use crate::{
+                    DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable,
+                };
+                use std::time::{SystemTime, UNIX_EPOCH};
+
+                let dim = 505;
+
+                let mut growable: PlainSparseDatasetGrowable<u16, f32, DotProduct> =
+                    PlainSparseDatasetGrowable::new(
+                        crate::PlainSparseQuantizer::<u16, f32, DotProduct>::new(dim, dim),
+                    );
+
+                let v0_components = vec![2_u16, 11];
+                let v0_values = vec![0.5_f32, 1.0];
+
+                let v1_components = vec![1_u16, 10, 100];
+                let v1_values = vec![1.5_f32, 2.0, 2.5];
+
+                growable.push(SparseVectorView::new(&v0_components, &v0_values));
+                growable.push(SparseVectorView::new(&v1_components, &v1_values));
+
+                let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
+
+                let nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos();
+                let cluster_path = std::env::temp_dir()
+                    .join(format!("vectorium_cluster_{}.txt", nanos));
+                std::fs::write(&cluster_path, "1 0\n1 1\n").unwrap();
+
+                let dataset = PackedSparseDataset::<$Encoder>::from_sparse_with_cluster_file(
+                    &frozen,
+                    &cluster_path,
+                    5,
+                )
+                .unwrap();
+
+                let query =
+                    SparseVectorView::new(&[1_u16, 10, 11][..], &[2.0_f32, 3.0, 4.0][..]);
+                let results = dataset.search(query, 2);
+                assert_eq!(results.len(), 2);
+                let first_result = results[0];
+                assert_eq!(first_result.vector, 1);
+                let second_result = results[1];
+                assert_eq!(second_result.vector, 0);
+
+                let _ = std::fs::remove_file(cluster_path);
+            }
+        };
+    }
+
+    packed_dataset_clustered_tests!(
+        conversion_and_dot_product_ceg,
+        conversion_and_search_ceg,
+        CegFixedU8Encoder
+    );
+    packed_dataset_clustered_tests!(
+        conversion_and_dot_product_cdot8,
+        conversion_and_search_cdot8,
+        CDotPacking8FixedU8Encoder
+    );
+    packed_dataset_clustered_tests!(
+        conversion_and_dot_product_cdotdp8,
+        conversion_and_search_cdotdp8,
+        CDotPackingDp8FixedU8Encoder
+    );
+    packed_dataset_clustered_tests!(
+        conversion_and_dot_product_cdotdp16,
+        conversion_and_search_cdotdp16,
+        CDotPackingDp16FixedU8Encoder
+    );
+    packed_dataset_plain_tests!(
+        conversion_and_dot_product_bpdp8,
+        conversion_and_search_bpdp8,
+        DotPackingDp8FixedU8Encoder
+    );
+    packed_dataset_plain_tests!(
+        conversion_and_dot_product_bpdp16,
+        conversion_and_search_bpdp16,
+        DotPackingDp16FixedU8Encoder
+    );
+    packed_dataset_plain_tests!(
+        conversion_and_dot_product_bp8,
+        conversion_and_search_bp8,
+        DotPacking8FixedU8Encoder
+    );
+
 }

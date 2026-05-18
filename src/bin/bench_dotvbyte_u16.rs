@@ -9,7 +9,7 @@ use vectorium::distances::DotProduct;
 use vectorium::encoders::dotvbyte_scalaru8::DotVByteScalarU8Encoder;
 use vectorium::readers;
 use vectorium::{
-    Block8FixedU8Encoder, Dataset, DatasetGrowable, DotVByteFixedU8Encoder, FixedU8Q,
+    Dataset, DatasetGrowable, DotVByteFixedU8Encoder, FixedU8Q,
     PackedSparseDataset, PackedSparseDatasetGrowable, PlainSparseDataset, ScalarSparseDataset,
     SpaceUsage, SparseDatasetGrowable, UniformSparseQuantizer,
 };
@@ -154,44 +154,6 @@ fn main() {
     let search_time_scalar = start.elapsed().as_secs_f64();
     println!("Search: {search_time_scalar:.3}s");
 
-    // ── 4. Block8 <packed, fixedu8> ─────────────────────────────────
-    let (block8_size, build_time_block8, search_time_block8, results_block8) = if run_dvb_u16 {
-        println!("\n=== Block8 <packed, fixedu8> ===");
-        let dataset_for_block8: PlainSparseDataset<u16, f32, DotProduct> =
-            readers::read_seismic_format(&args.input_file).expect("failed to read dataset");
-
-        let start = Instant::now();
-        let dataset_block8: PackedSparseDataset<Block8FixedU8Encoder> =
-            dataset_for_block8.convert_into();
-        let build_time = start.elapsed().as_secs_f64();
-        let size = dataset_block8.space_usage_GiB();
-        println!("Build:  {build_time:.3}s");
-        println!("Size:   {size:.3} GiB");
-
-        let start = Instant::now();
-        let results: Vec<Vec<ScoredVector<DotProduct>>> = (0..n_queries)
-            .into_par_iter()
-            .progress_count(n_queries as u64)
-            .with_style(pb_style.clone())
-            .map(|qi| dataset_block8.search(queries.get(qi as u64), args.k))
-            .collect();
-        let search_time = start.elapsed().as_secs_f64();
-        println!("Search: {search_time:.3}s");
-        (
-            Some(size),
-            Some(build_time),
-            Some(search_time),
-            Some(results),
-        )
-    } else {
-        println!(
-            "\n=== Block8 <packed, fixedu8> ===\nSkipping: dim {} exceeds u16 max {}",
-            dim,
-            u16::MAX
-        );
-        (None, None, None, None)
-    };
-
     // ── 5. DotVByte <packed, fixedu8> ───────────────────────────────
     let (dvb_size, build_time_dvb, search_time_dvb, results_dvb) = if run_dvb_u16 {
         println!("\n=== DotVByte <packed, fixedu8> ===");
@@ -295,9 +257,6 @@ fn main() {
     // ── Results ────────────────────────────────────────────────────
     let recall_fixedu8 = recall_at_k(&gt, &results_fixedu8, args.k);
     let recall_scalar = recall_at_k(&gt, &results_scalar, args.k);
-    let recall_block8 = results_block8
-        .as_ref()
-        .map(|results| recall_at_k(&gt, results, args.k));
     let recall_dvb = results_dvb
         .as_ref()
         .map(|results| recall_at_k(&gt, results, args.k));
@@ -323,22 +282,6 @@ fn main() {
         "{:<25} {:>10.3} {:>12.3} {:>12.3} {:>10.4}",
         "<u16, scalar>", scalar_size, build_time_scalar, search_time_scalar, recall_scalar
     );
-    if let (Some(size), Some(build), Some(search), Some(recall)) = (
-        block8_size,
-        build_time_block8,
-        search_time_block8,
-        recall_block8,
-    ) {
-        println!(
-            "{:<25} {:>10.3} {:>12.3} {:>12.3} {:>10.4}",
-            "Block8 <packed, fixedu8>", size, build, search, recall
-        );
-    } else {
-        println!(
-            "{:<25} {:>10} {:>12} {:>12} {:>10}",
-            "Block8 <packed, fixedu8>", "skipped", "-", "-", "-"
-        );
-    }
     if let (Some(size), Some(build), Some(search), Some(recall)) =
         (dvb_size, build_time_dvb, search_time_dvb, recall_dvb)
     {
