@@ -20,6 +20,7 @@ pub mod bitpacker;
 pub mod dotpacking8;
 pub mod dotpackingdp;
 pub mod dotpacking8_fixedu8;
+pub mod dotpacking8_scalaru8;
 pub mod eg_fixedu8;
 pub mod dotpackingdp_fixedu8;
 pub mod cdotpacking8_fixedu8;

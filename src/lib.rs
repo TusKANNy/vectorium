@@ -98,6 +98,9 @@ pub use encoders::variable_bit_uniform_quantization_sparse_scalar::{
 pub use encoders::dotpacking8_fixedu8::{
     DotPacking8FixedU8Encoder, DotPacking8Fixedu8QueryEvaluator,
 };
+pub use encoders::dotpacking8_scalaru8::{
+    DotPacking8ScalarU8Encoder, DotPacking8Scalaru8QueryEvaluator,
+};
 pub use encoders::dotpackingdp_fixedu8::{
     DotPackingDp8FixedU8Encoder, DotPackingDp16FixedU8Encoder,
 };
