@@ -281,15 +281,19 @@ where
                 *c = inverse[*c as usize];
             }
 
-            let mut values: Vec<f32> = decoded_comp
+            // For per-component quantizers (e.g., ScalarU8Quantizer), we must decode AFTER
+            // inverse mapping and permutation to ensure each raw byte is decoded with its
+            // original component's scale. Permuting raw bytes along with their components
+            // ensures proper alignment.
+            let permutation = rusty_perm::PermD::from_sort(decoded_comp.as_slice());
+            permutation.apply(values_raw.as_mut_slice()).unwrap();
+            permutation.apply(decoded_comp.as_mut_slice()).unwrap();
+
+            let values: Vec<f32> = decoded_comp
                 .iter()
                 .zip(values_raw.iter())
                 .map(|(&c, &v)| self.quantizer.decode_value(c, v))
                 .collect();
-
-            let permutation = rusty_perm::PermD::from_sort(decoded_comp.as_slice());
-            permutation.apply(values.as_mut_slice()).unwrap();
-            permutation.apply(decoded_comp.as_mut_slice()).unwrap();
 
             SparseVectorOwned::new(decoded_comp, values)
         } else {

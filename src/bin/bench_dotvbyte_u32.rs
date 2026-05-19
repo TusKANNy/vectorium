@@ -9,7 +9,7 @@ use vectorium::distances::DotProduct;
 use vectorium::encoders::sparse_scalar::ScalarSparseQuantizer;
 use vectorium::readers;
 use vectorium::{
-    Block8FixedU8Encoder, Dataset, DatasetGrowable, DotVByteFixedU8Encoder,
+    Dataset, DatasetGrowable, DotPacking8FixedU8Encoder, DotVByteFixedU8Encoder,
     DotVByteU32FixedU8Encoder, DotVByteU32ScalarU8Encoder, FixedU8Q,
     OptimisticDotVByteFixedU8Encoder, OptimisticDotVByteScalarU8Encoder, PackedSparseDataset,
     PackedSparseDatasetGrowable, PlainSparseDataset, SpaceUsage, SparseVectorEncoder,
@@ -321,10 +321,10 @@ fn main() {
     let search_time_opt_u32_scalaru8 = start.elapsed().as_secs_f64();
     println!("Search: {search_time_opt_u32_scalaru8:.3}s");
 
-    // ── Block8 FixedU8 ─────────────────────────────────────────────
+    // ── DotPacking8 FixedU8 ─────────────────────────────────────────────
     let (dataset_block8_size, build_time_block8, search_time_block8, results_block8) =
         if run_dvb_u16 {
-            println!("\n=== Block8 FixedU8 ===");
+            println!("\n=== DotPacking8 FixedU8 ===");
             println!("Loading dataset (u16 components)...");
             let dataset_u16: PlainSparseDataset<u16, f32, DotProduct> =
                 readers::read_seismic_format(&args.input_file).expect("failed to read dataset");
@@ -333,7 +333,7 @@ fn main() {
                 readers::read_seismic_format(&args.query_file).expect("failed to read queries");
 
             let start = Instant::now();
-            let dataset_block8: PackedSparseDataset<Block8FixedU8Encoder> =
+            let dataset_block8: PackedSparseDataset<DotPacking8FixedU8Encoder> =
                 dataset_u16.convert_into();
             let build_time_block8 = start.elapsed().as_secs_f64();
             let dataset_block8_size = dataset_block8.space_usage_GiB();

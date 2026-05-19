@@ -104,16 +104,29 @@ pub use encoders::dotpacking8_scalaru8::{
 pub use encoders::dotpackingdp_fixedu8::{
     DotPackingDp8FixedU8Encoder, DotPackingDp16FixedU8Encoder,
 };
+pub use encoders::dotpackingdp_scalaru8::{
+    DotPackingDp8ScalarU8Encoder, DotPackingDp16ScalarU8Encoder,
+};
 
 pub use encoders::cdotpacking8_fixedu8::{
     CDotPacking8FixedU8Encoder, CDotPacking8Fixedu8QueryEvaluator,
 };
+pub use encoders::cdotpacking8_scalaru8::{
+    CDotPacking8ScalarU8Encoder, CDotPacking8Scalaru8QueryEvaluator,
+};
 pub use encoders::cdotpackingdp_fixedu8::{
-    CDotPackingDp8FixedU8Encoder, CDotPackingDp16FixedU8Encoder,
+    CDotPackingDp16FixedU8Encoder, CDotPackingDp8FixedU8Encoder,
+    CDotPackingDpFixedu8QueryEvaluator,
+};
+pub use encoders::cdotpackingdp_scalaru8::{
+    CDotPackingDp16ScalarU8Encoder, CDotPackingDp8ScalarU8Encoder,
+    CDotPackingDpScalaru8QueryEvaluator,
 };
 
 pub use encoders::ceg_fixedu8::{CegFixedU8Encoder, CegFixedU8QueryEvaluator};
+pub use encoders::ceg_scalaru8::{CegScalarU8Encoder, CegScalarU8QueryEvaluator};
 pub use encoders::eg_fixedu8::{EgFixedU8Encoder, EgFixedU8QueryEvaluator};
+pub use encoders::eg_scalaru8::{EgScalarU8Encoder, EgScalarU8QueryEvaluator};
 
 pub use core::data_block::{BLOCK_SIZE, DataBlock};
 pub use encoders::blocked_sparse::{

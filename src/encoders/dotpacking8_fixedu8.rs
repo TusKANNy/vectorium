@@ -31,9 +31,36 @@ mod tests {
     use crate::core::vector::{PackedVectorView, SparseVectorView};
     use crate::vector_encoder::SparseDataEncoder;
     use crate::{
-        DatasetGrowable, FixedU8Q, FromF32, PackedSparseVectorEncoder, PlainSparseDatasetGrowable, PlainSparseQuantizer, QueryEvaluator, VectorEncoder
+        DatasetGrowable, FixedU8Q, FromF32, PackedSparseVectorEncoder, PlainSparseDatasetGrowable,
+        PlainSparseQuantizer, QueryEvaluator, VectorEncoder,
     };
     use num_traits::ToPrimitive;
+
+    fn calculate_expected_distance(
+        vector: &SparseVectorView<u16, f32>,
+        query: &SparseVectorView<u16, f32>,
+    ) -> f32 {
+        let mut expected = 0.0f32;
+        let mut vec_iter = vector.iter().peekable(); // Usiamo peekable per non "perdere" l'elemento
+
+        for (comp, val) in query.iter() {
+            while let Some(&(vec_comp, _)) = vec_iter.peek() {
+                if vec_comp < comp {
+                    vec_iter.next(); // Salta questo elemento del vettore, è troppo indietro
+                } else {
+                    break;
+                }
+            }
+
+            if let Some(&(vec_comp, vec_val)) = vec_iter.peek() {
+                if vec_comp == comp {
+                    expected += FixedU8Q::from_f32_saturating(vec_val).to_f32().unwrap() * val;
+                    vec_iter.next();
+                }
+            }
+        }
+        expected
+    }
 
     #[test]
     fn compute_distance_only_bulk() {
@@ -57,13 +84,7 @@ mod tests {
         let evaluator = encoder.query_evaluator(query);
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
 
-        // 2. Il calcolo dell'atteso rispecchia la quantizzazione a punto fisso di FixedU8Q
-        let expected = FixedU8Q::from_f32_saturating(1.0).to_f32().unwrap() * 0.5
-            + FixedU8Q::from_f32_saturating(3.0).to_f32().unwrap() * 1.5
-            + FixedU8Q::from_f32_saturating(2.0).to_f32().unwrap() * 1.0
-            + FixedU8Q::from_f32_saturating(3.5).to_f32().unwrap() * 2.0
-            + FixedU8Q::from_f32_saturating(2.0).to_f32().unwrap() * 2.0;
-
+        let expected = calculate_expected_distance(&input, &query);
         assert!((dist.distance() - expected).abs() < 1e-5);
     }
 
@@ -88,13 +109,7 @@ mod tests {
         let evaluator = encoder.query_evaluator(query);
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
 
-        let expected = FixedU8Q::from_f32_saturating(1.0).to_f32().unwrap() * 0.5
-            + FixedU8Q::from_f32_saturating(3.0).to_f32().unwrap() * 1.5
-            + FixedU8Q::from_f32_saturating(2.0).to_f32().unwrap() * 2.5
-            + FixedU8Q::from_f32_saturating(3.5).to_f32().unwrap() * 1.0
-            + FixedU8Q::from_f32_saturating(1.5).to_f32().unwrap() * 2.0
-            + FixedU8Q::from_f32_saturating(3.0).to_f32().unwrap() * 1.0
-            + FixedU8Q::from_f32_saturating(2.5).to_f32().unwrap() * 2.0;
+        let expected = calculate_expected_distance(&input, &query);
 
         assert!((dist.distance() - expected).abs() < 1e-5);
     }
@@ -127,11 +142,7 @@ mod tests {
         let evaluator = encoder.query_evaluator(query);
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
 
-        let mut expected = 0.0f32;
-        for i in 0..num_vals {
-            let quantized_val = FixedU8Q::from_f32_saturating(values[i]).to_f32().unwrap();
-            expected += quantized_val * query_vals[i];
-        }
+        let expected = calculate_expected_distance(&input, &query);
 
         assert!(
             (dist.distance() - expected).abs() < 1e-3,
@@ -172,6 +183,18 @@ mod tests {
         verify_gaps(&gaps);
     }
 
+    fn same_when_quantized(
+        before: &SparseVectorView<u16, f32>,
+        after: &SparseVectorView<u16, f32>,
+    ) {
+        assert_eq!(before.components(), after.components());
+        for (v1, v2) in before.values().iter().zip(after.values().iter()) {
+            let q1 = FixedU8Q::from_f32_saturating(*v1).to_f32().unwrap();
+            let q2 = FixedU8Q::from_f32_saturating(*v2).to_f32().unwrap();
+            assert_eq!(q1, q2);
+        }
+    }
+
     #[test]
     fn block8_decode_roundtrip() {
         let mut encoder = DotPacking8Encoder {
@@ -209,21 +232,7 @@ mod tests {
         let decoded0 = encoder.decode_vector(PackedVectorView::new(&buffer0));
         let decoded1 = encoder.decode_vector(PackedVectorView::new(&buffer1));
 
-        assert_eq!(decoded0.components(), &input_components);
-        let decoded_vals0 = decoded0.values();
-        assert_eq!(decoded_vals0.len(), 4);
-
-        // Usiamo una tolleranza di 1e-3 perché FixedU8Q introduce piccoli scostamenti di precisione decimale
-        assert!((decoded_vals0[0] - 1.0).abs() < 1e-3);
-        assert!((decoded_vals0[1] - 3.0).abs() < 1e-3);
-        assert!((decoded_vals0[2] - 2.0).abs() < 1e-3);
-        assert!((decoded_vals0[3] - 3.5).abs() < 1e-3);
-
-        assert_eq!(decoded1.components(), &[4, 8, 24]);
-        let decoded_vals1 = decoded1.values();
-        assert_eq!(decoded_vals1.len(), 3);
-        assert!((decoded_vals1[0] - 3.0).abs() < 1e-3);
-        assert!((decoded_vals1[1] - 2.0).abs() < 1e-3);
-        assert!((decoded_vals1[2] - 3.5).abs() < 1e-3);
+        same_when_quantized(&input0, &decoded0.as_view());
+        same_when_quantized(&input1, &decoded1.as_view());
     }
 }
