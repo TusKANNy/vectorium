@@ -288,17 +288,6 @@ where
     quants
 }
 
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-#[inline(always)]
-pub fn load128_and_broadcast_to_256(ptr: *const u8) -> Simd<u8, 32> {
-    use std::arch::x86_64::{_mm_loadu_si128, _mm256_broadcastsi128_si256};
-    unsafe {
-        let m128_val = _mm_loadu_si128(ptr.cast());
-        std::mem::transmute(_mm256_broadcastsi128_si256(m128_val))
-    }
-}
-
-#[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
 #[inline(always)]
 pub fn load128_and_broadcast_to_256(ptr: *const u8) -> Simd<u8, 32> {
     use std::simd::simd_swizzle;

@@ -1,7 +1,7 @@
 use std::simd::{Simd};
 
 
-use crate::{encoders::dotpacking8::swizzle::fast_lane_swizzle, utils::load128_and_broadcast_to_256};
+use crate::{encoders::dotpacking8::swizzle::swizzle, utils::load128_and_broadcast_to_256};
 
 const N: usize = 8;
 
@@ -179,7 +179,7 @@ impl<'a> DotPacking8Iter<'a> {
     fn decode_lane_with_b(&mut self, b: usize, advance_bytes: usize) -> Simd<u32, 8> {
         let comps = load128_and_broadcast_to_256(self.payload_ptr);
         let table = unsafe { BLOCK8_TABLE.get_unchecked(b - 1) };
-        let shuffled = fast_lane_swizzle(comps, table.shuffle);
+        let shuffled = swizzle(comps, table.shuffle);
         let gaps: Simd<u32, 8> = unsafe { std::mem::transmute(shuffled) };
         self.payload_ptr = unsafe { self.payload_ptr.add(advance_bytes) };
         (gaps >> table.shifts) & table.masks

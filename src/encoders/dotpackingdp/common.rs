@@ -1,6 +1,6 @@
 use std::simd::{Mask, Simd};
 
-use crate::{encoders::dotpacking8::swizzle::fast_lane_swizzle, utils::load128_and_broadcast_to_256};
+use crate::{encoders::dotpacking8::swizzle::swizzle, utils::load128_and_broadcast_to_256};
 use std::simd::Select;
 
 const N: usize = 8;
@@ -151,7 +151,7 @@ impl<'a, const MAX_BLOCK_LEN: usize> DotPackingDpIter<'a, MAX_BLOCK_LEN> {
         let table_idx = (self.b - 1) * 8 + bit_off;
         let table_ptr = unsafe { BLOCK_DP_TABLE.get_unchecked(table_idx) };
         let comps = load128_and_broadcast_to_256(ptr);
-        let shuffled_simd_u8 = fast_lane_swizzle(comps, table_ptr.shuffle);
+        let shuffled_simd_u8 = swizzle(comps, table_ptr.shuffle);
         let shuffled: Simd<u32, N> = unsafe { std::mem::transmute(shuffled_simd_u8) };
         let gaps_zero_aligned = (shuffled >> table_ptr.shifts) & table_ptr.masks;
         let reg = unsafe { vpermd_u32x8(gaps_zero_aligned, overflow_entry.rotate_left) };
