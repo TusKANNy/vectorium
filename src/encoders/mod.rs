@@ -21,6 +21,7 @@ pub mod dotpacking8;
 pub mod dotpackingdp;
 pub mod dotpacking8_fixedu8;
 pub mod dotpacking8_scalaru8;
+pub mod dotpacking8_u32_scalaru8;
 pub mod eg;
 pub mod eg_fixedu8;
 pub mod eg_scalaru8;

@@ -1,13 +1,18 @@
-//! Single-thread search-efficiency benchmark for the **`<u16, f16>` plain sparse**
-//! baseline (no quantization beyond f32 → f16 narrowing). Same instrumentation as
-//! the 4-bit scalar/k-means efficiency bins, so numbers are directly comparable.
+//! Single-thread search-efficiency benchmark for the **blocked sparse** dot-product
+//! kernel introduced in `src/encoders/blocked_sparse.rs`.
 //!
-//! Encoder: [`ScalarSparseQuantizer<u16, f32, f16, DotProduct>`] — f32 inputs are
-//! narrowed to f16 at build time; queries stay f32. All search work runs on the
-//! calling thread (no rayon).
+//! Mirrors `bench_f16_efficiency.rs` (same warmup / repeats / recall TSV schema) so
+//! numbers are directly comparable to the plain `<u16, f16>` baseline (which itself
+//! has two internal paths: dense gather vs merge, gated by `small_dim` in
+//! `sparse_scalar.rs`).
+//!
+//! Encoder: [`BlockedSparseEncoder`] — values narrowed to `f16` and packed into
+//! cache-line-aligned `DataBlock`s of 16 (component, value) pairs. At query time
+//! the evaluator picks one of two paths based on `SPARSE_QUERY_THRESHOLD`:
+//!   - dense block-gather  (query nnz ≥ threshold; query densified to `Vec<f32>`)
+//!   - v1 AVX2 block-skip (query nnz < threshold; sorted-merge over blocks)
 
 use clap::Parser;
-use half::f16;
 use std::io::{BufRead, BufReader, Write};
 use std::time::Instant;
 
@@ -15,18 +20,14 @@ use vectorium::dataset::ScoredVector;
 use vectorium::distances::DotProduct;
 use vectorium::readers;
 use vectorium::{
-    Dataset, DatasetGrowable, PlainSparseDataset, ScalarSparseQuantizer, SpaceUsage, SparseDataset,
-    SparseDatasetGrowable,
+    BlockedSparseDataset, Dataset, PlainSparseDataset, SpaceUsage, SPARSE_QUERY_THRESHOLD,
 };
-
-type F16Encoder = ScalarSparseQuantizer<u16, f32, f16, DotProduct>;
-type F16Dataset = SparseDataset<F16Encoder>;
 
 #[derive(Parser, Debug)]
 #[clap(
     author,
     version,
-    about = "<u16, f16> plain sparse search efficiency (single-thread)"
+    about = "Blocked sparse <u16, f16> search efficiency (single-thread)"
 )]
 struct Args {
     /// Sparse dataset in Seismic binary format
@@ -54,7 +55,7 @@ struct Args {
     repeats: usize,
 
     /// Output TSV file path
-    #[clap(short, long, default_value = "f16_efficiency.tsv")]
+    #[clap(short, long, default_value = "blocked_sparse_efficiency.tsv")]
     output: String,
 
     /// Precomputed f32 ground-truth TSV (format: query_id\tdoc_id\trank\tscore).
@@ -110,7 +111,7 @@ fn recall_at_k(gt: &[Vec<u64>], approx: &[Vec<u64>], k: usize) -> f64 {
 
 /// Sequential timed search over `n_queries` consecutive queries.
 fn time_search_serial(
-    dataset: &F16Dataset,
+    dataset: &BlockedSparseDataset,
     queries: &PlainSparseDataset<u16, f32, DotProduct>,
     n_queries: usize,
     k: usize,
@@ -154,19 +155,22 @@ fn main() {
     println!(
         "Queries: timed={n_queries}, warmup={warmup} (of {total_n_queries} available, total nnz={q_nnz}, mean {mean_q_nnz:.2} nnz/query)"
     );
+    println!(
+        "SPARSE_QUERY_THRESHOLD={SPARSE_QUERY_THRESHOLD} → mean-query path: {path}",
+        path = if mean_q_nnz < SPARSE_QUERY_THRESHOLD as f64 {
+            "v1 (block-skip, AVX2)"
+        } else {
+            "dense gather"
+        }
+    );
     println!("Repeats: {} | single-threaded", args.repeats);
 
-    // ── Build <u16, f16> dataset ────────────────────────────────────
-    println!("\n=== Building <u16, f16> plain sparse dataset ===");
+    // ── Build blocked dataset ──────────────────────────────────────
+    println!("\n=== Building blocked sparse dataset ===");
     let build_t = Instant::now();
-    let encoder = F16Encoder::new(dim, dim);
-    let mut growable: SparseDatasetGrowable<F16Encoder> = SparseDatasetGrowable::new(encoder);
-    for vec in dataset_f32.iter() {
-        growable.push(vec);
-    }
-    let dataset_f16: F16Dataset = growable.into();
+    let dataset_blocked: BlockedSparseDataset = dataset_f32.into();
     let build_time = build_t.elapsed().as_secs_f64();
-    let size_gib = dataset_f16.space_usage_GiB();
+    let size_gib = dataset_blocked.space_usage_GiB();
     println!("Build: {build_time:.3}s | Index size: {size_gib:.3} GiB");
 
     // ── Load ground truth ──────────────────────────────────────────
@@ -176,15 +180,18 @@ fn main() {
     // ── Warmup ─────────────────────────────────────────────────────
     if warmup > 0 {
         println!("\n=== Warmup ({warmup} queries) ===");
-        let _ = time_search_serial(&dataset_f16, &queries, warmup, args.k);
+        let _ = time_search_serial(&dataset_blocked, &queries, warmup, args.k);
     }
 
     // ── Timed loop ─────────────────────────────────────────────────
-    println!("\n=== Timing (search top-{}, repeats={}) ===", args.k, args.repeats);
+    println!(
+        "\n=== Timing (search top-{}, repeats={}) ===",
+        args.k, args.repeats
+    );
     let mut best_total: Option<f64> = None;
     let mut best_approx: Option<Vec<Vec<u64>>> = None;
     for r in 0..args.repeats {
-        let (total_s, approx) = time_search_serial(&dataset_f16, &queries, n_queries, args.k);
+        let (total_s, approx) = time_search_serial(&dataset_blocked, &queries, n_queries, args.k);
         println!(
             "  repeat {r}: total={total_s:.3}s  mean={mean:.1}µs  QPS={qps:.1}",
             mean = (total_s / n_queries as f64) * 1e6,
@@ -204,7 +211,10 @@ fn main() {
     let recall = recall_at_k(&gt, &best_approx, args.k);
 
     // ── Summary ────────────────────────────────────────────────────
-    println!("\n=== Summary (best of {} repeats, single-thread) ===", args.repeats);
+    println!(
+        "\n=== Summary (best of {} repeats, single-thread) ===",
+        args.repeats
+    );
     println!("  total          {best_total:.3} s");
     println!("  mean latency   {mean_us:.1} µs / query");
     println!("  QPS            {qps:.1}");
@@ -220,7 +230,7 @@ fn main() {
     .unwrap();
     writeln!(
         f,
-        "plain_f16\t{n}\t{dim}\t{nnz}\t{size_gib:.6}\t{build_time:.6}\t\
+        "blocked_sparse_f16\t{n}\t{dim}\t{nnz}\t{size_gib:.6}\t{build_time:.6}\t\
          {nq}\t{warmup}\t{rep}\t{k}\t{best_total:.6}\t{mean_us:.3}\t{qps:.3}\t{recall:.6}",
         nq = n_queries,
         rep = args.repeats,

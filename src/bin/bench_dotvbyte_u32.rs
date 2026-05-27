@@ -11,8 +11,9 @@ use vectorium::readers;
 use vectorium::{
     Dataset, DatasetGrowable, DotPacking8FixedU8Encoder, DotVByteFixedU8Encoder,
     DotVByteU32FixedU8Encoder, DotVByteU32ScalarU8Encoder, FixedU8Q,
-    OptimisticDotVByteFixedU8Encoder, OptimisticDotVByteScalarU8Encoder, PackedSparseDataset,
-    PackedSparseDatasetGrowable, PlainSparseDataset, SpaceUsage, SparseVectorEncoder,
+    OptimisticDotPacking8U32ScalarU8Encoder, OptimisticDotVByteFixedU8Encoder,
+    OptimisticDotVByteScalarU8Encoder, PackedSparseDataset, PackedSparseDatasetGrowable,
+    PlainSparseDataset, SpaceUsage, SparseVectorEncoder,
 };
 
 #[derive(Parser, Debug)]
@@ -147,6 +148,26 @@ fn build_dotvbyte_optimistic_u32_scalaru8(
     encoder.train::<f32>(training_data);
 
     let mut growable: PackedSparseDatasetGrowable<OptimisticDotVByteScalarU8Encoder> =
+        PackedSparseDatasetGrowable::new(encoder);
+
+    for v in dataset.iter() {
+        growable.push(v);
+    }
+
+    growable.into()
+}
+
+/// Build a PackedSparseDataset with the optimistic u32 DotPacking8 scalaru8 encoder.
+fn build_dotpacking8_optimistic_u32_scalaru8(
+    dataset: &PlainSparseDataset<u32, f32, DotProduct>,
+    training_data: &PlainSparseDataset<u32, f32, vectorium::SquaredEuclideanDistance>,
+) -> PackedSparseDataset<OptimisticDotPacking8U32ScalarU8Encoder> {
+    let dim = dataset.output_dim();
+
+    let mut encoder = OptimisticDotPacking8U32ScalarU8Encoder::new(dim);
+    encoder.train(training_data);
+
+    let mut growable: PackedSparseDatasetGrowable<OptimisticDotPacking8U32ScalarU8Encoder> =
         PackedSparseDatasetGrowable::new(encoder);
 
     for v in dataset.iter() {
@@ -321,6 +342,28 @@ fn main() {
     let search_time_opt_u32_scalaru8 = start.elapsed().as_secs_f64();
     println!("Search: {search_time_opt_u32_scalaru8:.3}s");
 
+    // ── DotPacking8 optimistic u32 scalaru8 ─────────────────────────
+    println!("\n=== DotPacking8 optimistic u32 scalaru8 ===");
+    let start = Instant::now();
+    let dataset_block8_opt_u32_scalaru8 =
+        build_dotpacking8_optimistic_u32_scalaru8(&dataset_u32, &training_data_u32);
+    let build_time_block8_opt_u32_scalaru8 = start.elapsed().as_secs_f64();
+    println!("Build:  {build_time_block8_opt_u32_scalaru8:.3}s");
+    println!(
+        "Size:   {:.3} GiB",
+        dataset_block8_opt_u32_scalaru8.space_usage_GiB()
+    );
+
+    let start = Instant::now();
+    let results_block8_opt_u32_scalaru8: Vec<Vec<ScoredVector<DotProduct>>> = (0..n_queries)
+        .into_par_iter()
+        .progress_count(n_queries as u64)
+        .with_style(pb_style.clone())
+        .map(|qi| dataset_block8_opt_u32_scalaru8.search(queries_u32.get(qi as u64), args.k))
+        .collect();
+    let search_time_block8_opt_u32_scalaru8 = start.elapsed().as_secs_f64();
+    println!("Search: {search_time_block8_opt_u32_scalaru8:.3}s");
+
     // ── DotPacking8 FixedU8 ─────────────────────────────────────────────
     let (dataset_block8_size, build_time_block8, search_time_block8, results_block8) =
         if run_dvb_u16 {
@@ -372,6 +415,8 @@ fn main() {
     let recall_opt_u32 = recall_at_k(&gt, &results_opt_u32, args.k);
     let recall_u32_scalaru8 = recall_at_k(&gt, &results_u32_scalaru8, args.k);
     let recall_opt_u32_scalaru8 = recall_at_k(&gt, &results_opt_u32_scalaru8, args.k);
+    let recall_block8_opt_u32_scalaru8 =
+        recall_at_k(&gt, &results_block8_opt_u32_scalaru8, args.k);
     let recall_block8 = results_block8
         .as_ref()
         .map(|results| recall_at_k(&gt, results, args.k));
@@ -433,6 +478,14 @@ fn main() {
         build_time_opt_u32_scalaru8,
         search_time_opt_u32_scalaru8,
         recall_opt_u32_scalaru8
+    );
+    println!(
+        "{:<20} {:>10.3} {:>12.3} {:>12.3} {:>10.4}",
+        "Block8 opt u32 s",
+        dataset_block8_opt_u32_scalaru8.space_usage_GiB(),
+        build_time_block8_opt_u32_scalaru8,
+        search_time_block8_opt_u32_scalaru8,
+        recall_block8_opt_u32_scalaru8
     );
     if let (Some(size), Some(build), Some(search), Some(recall)) = (
         dataset_block8_size,

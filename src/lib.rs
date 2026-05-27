@@ -101,6 +101,9 @@ pub use encoders::dotpacking8_fixedu8::{
 pub use encoders::dotpacking8_scalaru8::{
     DotPacking8ScalarU8Encoder, DotPacking8Scalaru8QueryEvaluator,
 };
+pub use encoders::dotpacking8_u32_scalaru8::{
+    OptimisticDotPacking8U32ScalarU8Encoder, OptimisticDotPacking8U32ScalarU8QueryEvaluator,
+};
 pub use encoders::dotpackingdp_fixedu8::{
     DotPackingDp8FixedU8Encoder, DotPackingDp16FixedU8Encoder,
 };
