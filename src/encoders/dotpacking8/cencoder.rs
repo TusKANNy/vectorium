@@ -4,7 +4,7 @@ use crate::core::vector_encoder::{
 };
 use crate::distances::DotProduct;
 use crate::encoders::dotpacking8::common::{
-    compute_safe_simd_padding, encode_blocks, simd_prefix_sum, DotPacking8Iter,
+    compute_safe_simd_padding, encode_blocks, simd_prefix_sum, DotPacking8Iter, fast_lane_gather
 };
 use crate::encoders::dotpacking8::quantizer::DotPacking8Quantizer;
 use crate::SpaceUsage;
@@ -519,14 +519,7 @@ where
                     Simd::splat(0),
                 )
             };
-            let q_vals = unsafe {
-                Simd::gather_select_unchecked(
-                    query,
-                    Mask::splat(true),
-                    comps.cast(),
-                    Simd::splat(0.0),
-                )
-            };
+            let q_vals = fast_lane_gather(query, comps.cast());
             acc = q_vals.mul_add(values.cast(), acc);
             ref_indices_m = unsafe { ref_indices_m.get_unchecked(pos_in_ref[N - 1] as usize..) };
         }
@@ -547,14 +540,7 @@ where
 
         for (gaps, values) in &mut residual_iter {
             let comps = simd_prefix_sum(gaps);
-            let q_vals = unsafe {
-                Simd::gather_select_unchecked(
-                    query_r,
-                    Mask::splat(true),
-                    comps.cast(),
-                    Simd::splat(0.0),
-                )
-            };
+            let q_vals = fast_lane_gather(query_r, comps);
             acc = q_vals.mul_add(values.cast(), acc);
             query_r = unsafe { query_r.get_unchecked(comps[N - 1] as usize..) };
         }
