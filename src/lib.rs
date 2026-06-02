@@ -39,16 +39,20 @@ pub use utils::space_usage;
 pub use utils::numeric_markers::{Float, FromF32};
 pub use utils::space_usage::SpaceUsage;
 
+#[cfg(feature = "multivec")]
+pub use core::vector::{DenseMultiVectorOwned, DenseMultiVectorView};
 pub use core::vector::{
-    DenseMultiVectorOwned, DenseMultiVectorView, DenseVectorOwned, DenseVectorView,
-    PackedVectorOwned, PackedVectorView, SparseVectorOwned, SparseVectorView, VectorView,
+    DenseVectorOwned, DenseVectorView, PackedVectorOwned, PackedVectorView, SparseVectorOwned,
+    SparseVectorView, VectorView,
 };
 
 pub use core::distances::{Distance, DotProduct, SquaredEuclideanDistance};
 
+#[cfg(feature = "multivec")]
+pub use core::vector_encoder::MultiVecEncoder;
 pub use core::vector_encoder::{
-    DenseVectorEncoder, MultiVecEncoder, PackedSparseVectorEncoder, QueryEvaluator,
-    SparseVectorEncoder, VectorEncoder,
+    DenseVectorEncoder, PackedSparseVectorEncoder, QueryEvaluator, SparseVectorEncoder,
+    VectorEncoder,
 };
 
 pub use clustering::{KMeans, KMeansBuilder};
@@ -59,10 +63,13 @@ pub use encoders::dense_scalar::{
     ScalarDenseQuantizerSquaredEuclidean, ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
 };
 pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Encoder, DotVByteFixedU8QueryEvaluator};
+#[cfg(feature = "multivec")]
 pub use encoders::multivec_pq::{MultiVecPQQueryEvaluator, MultiVecProductQuantizer};
+#[cfg(feature = "multivec")]
 pub use encoders::multivec_scalar::{
     PlainMultiVecQuantizer, ScalarMultiVecQuantizer, ScalarMultiVecQueryEvaluator,
 };
+#[cfg(feature = "multivec")]
 pub use encoders::multivec_two_level_pq::{
     MultiVecTwoLevelPQQueryEvaluator, MultiVecTwoLevelProductQuantizer,
 };
@@ -77,6 +84,7 @@ pub use core::storage::{
     GrowableSparseStorage, ImmutableSparseStorage, SparseStorage, SparseStorageMut,
 };
 pub use datasets::dense_dataset::{DenseDataset, DenseDatasetGeneric, DenseDatasetGrowable};
+#[cfg(feature = "multivec")]
 pub use datasets::multivec_dataset::{
     MultiVecData, MultiVectorDataset, MultiVectorDatasetGeneric, MultiVectorDatasetGrowable,
 };

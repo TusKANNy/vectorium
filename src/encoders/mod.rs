@@ -1,7 +1,10 @@
 pub mod dense_scalar;
 pub mod dotvbyte_fixedu8;
+#[cfg(feature = "multivec")]
 pub mod multivec_pq;
+#[cfg(feature = "multivec")]
 pub mod multivec_scalar;
+#[cfg(feature = "multivec")]
 pub mod multivec_two_level_pq;
 pub mod pq;
 pub mod sparse_scalar;

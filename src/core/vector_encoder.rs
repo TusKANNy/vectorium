@@ -1,6 +1,8 @@
+#[cfg(feature = "multivec")]
+pub use crate::core::vector::{DenseMultiVectorOwned, DenseMultiVectorView};
 pub use crate::core::vector::{
-    DenseMultiVectorOwned, DenseMultiVectorView, DenseVectorOwned, DenseVectorView,
-    PackedVectorOwned, PackedVectorView, SparseVectorOwned, SparseVectorView, VectorView,
+    DenseVectorOwned, DenseVectorView, PackedVectorOwned, PackedVectorView, SparseVectorOwned,
+    SparseVectorView, VectorView,
 };
 use crate::{ComponentType, SpaceUsage, ValueType};
 
@@ -132,6 +134,7 @@ pub trait DenseVectorEncoder:
     }
 }
 
+#[cfg(feature = "multivec")]
 /// Encoder contract for multivector (late-interaction) encoders.
 ///
 /// Each encoded "vector" is a [`DenseMultiVectorView`] carrying `token_dim` and `num_vecs`

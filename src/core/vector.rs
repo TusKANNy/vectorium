@@ -198,6 +198,7 @@ impl<'a, V: ValueType> From<&'a DenseVectorOwned<V>> for DenseVectorView<'a, V> 
     }
 }
 
+#[cfg(feature = "multivec")]
 /// A view over a multivector: a contiguous flat buffer of `dim * num_vecs` values
 /// representing `num_vecs` dense token vectors each of dimensionality `dim`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -207,6 +208,7 @@ pub struct DenseMultiVectorView<'a, V: ValueType> {
     num_vecs: usize,
 }
 
+#[cfg(feature = "multivec")]
 impl<'a, V: ValueType> DenseMultiVectorView<'a, V> {
     /// Build a view from a flat slice.
     ///
@@ -272,8 +274,10 @@ impl<'a, V: ValueType> DenseMultiVectorView<'a, V> {
     }
 }
 
+#[cfg(feature = "multivec")]
 impl<'a, V: ValueType> VectorView for DenseMultiVectorView<'a, V> {}
 
+#[cfg(feature = "multivec")]
 /// Owned multivector storage: a flat buffer of `dim * num_vecs` values representing
 /// `num_vecs` dense token vectors each of dimensionality `dim`.
 #[derive(Debug, Clone, PartialEq)]
@@ -283,6 +287,7 @@ pub struct DenseMultiVectorOwned<V: ValueType> {
     num_vecs: usize,
 }
 
+#[cfg(feature = "multivec")]
 impl<V: ValueType> DenseMultiVectorOwned<V> {
     /// Build from owned values.
     ///
@@ -348,8 +353,10 @@ impl<V: ValueType> DenseMultiVectorOwned<V> {
     }
 }
 
+#[cfg(feature = "multivec")]
 impl<V: ValueType> VectorView for DenseMultiVectorOwned<V> {}
 
+#[cfg(feature = "multivec")]
 impl<'a, V: ValueType> From<&'a DenseMultiVectorOwned<V>> for DenseMultiVectorView<'a, V> {
     fn from(owned: &'a DenseMultiVectorOwned<V>) -> Self {
         owned.as_view()

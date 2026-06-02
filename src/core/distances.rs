@@ -12,7 +12,9 @@
 //!
 //! `DotProduct` implements reversed ordering: larger values are considered better.
 
-use crate::core::vector::{DenseMultiVectorView, DenseVectorView, SparseVectorView};
+#[cfg(feature = "multivec")]
+use crate::core::vector::DenseMultiVectorView;
+use crate::core::vector::{DenseVectorView, SparseVectorView};
 use crate::utils::is_strictly_sorted;
 use crate::{ComponentType, ValueType};
 
@@ -698,6 +700,7 @@ where
     SquaredEuclideanDistance::from(dist)
 }
 
+#[cfg(feature = "multivec")]
 /// Compute the MaxSim score between a query multivector and a document multivector.
 ///
 /// For each query token, finds the maximum dot product with any document token, then sums

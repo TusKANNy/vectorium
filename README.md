@@ -4,7 +4,8 @@
     <img width="300px" src="/imgs/vectorium_logo.png" />
 </p>
 
-Vectorium is a Rust library for storing, accessing, and compressing dense, sparse and multivector embedding datasets.
+Vectorium is a Rust library for storing, accessing, and compressing dense and sparse embedding datasets.
+Multivector support (ColBERT-style late-interaction) is available as an optional feature.
 The main goal is to provide a unified dataset/encoder interface that can be shared by indexing/search crates such as
 [Seismic](https://github.com/TusKANNy/seismic) and [kANNolo](https://github.com/TusKANNy/kannolo).
 
@@ -13,28 +14,59 @@ That is accurate but slow at scale. ANN indexes (HNSW, IVF, Seismic, etc.) trade
 
 Vectorium includes an exhaustive search API (`Dataset::search`) and a binary executable for ground-truth computation on CPU. For state‑of‑the‑art ANN indexing, use these tools: [Seismic](https://github.com/TusKANNy/seismic) and [kANNolo](https://github.com/TusKANNy/kannolo).
 
-## Command-line tool
-Vectorium ships a binary `compute_groundtruth` (feature `cli`) under `src/bin/` to exhaustive top‑k for a set of queries, writes a TSV file.
+## Cargo features
 
-### Build and run
+| Feature | What it enables | Default |
+|---------|-----------------|:-------:|
+| `multivec` | `DenseMultiVectorView/Owned`, `MultiVectorDataset`, `RerankIndex`, and all multivec encoders (`PlainMultiVecQuantizer`, `MultiVecProductQuantizer`, `MultiVecTwoLevelProductQuantizer`) | No |
+| `cli` | The `compute_groundtruth` binary | No |
 
-This repository currently targets nightly Rust (`rust-toolchain.toml` pins it). For performance‑oriented builds, prefer
-`--release` and (optionally) native CPU tuning:
+### Building
 
+This repository targets nightly Rust (`rust-toolchain.toml` pins it).
+
+If you want to compile the **library only** (dense and sparse datasets, no multivec, no binary):
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
+If you want the **`compute_groundtruth` CLI binary** (dense and sparse):
 ```bash
 RUSTFLAGS="-C target-cpu=native" cargo build --release --features cli
 ```
 
-After building, you will find binary `compute_groundtruth` in `target/release/`.
+If you want **multivector support** in the library (adds `MultiVectorDataset`, `RerankIndex`, all multivec encoders):
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release --features multivec
+```
 
+If you want **both** the CLI binary and multivector support:
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release --features "cli,multivec"
+```
 
-You can also run via Cargo directly:
+### Using as a dependency
+
+If you only need dense and sparse datasets:
+```toml
+[dependencies]
+vectorium = { git = "https://github.com/TusKANNy/vectorium.git" }
+```
+
+If you also need multivector support:
+```toml
+[dependencies]
+vectorium = { git = "https://github.com/TusKANNy/vectorium.git", features = ["multivec"] }
+```
+
+## Command-line tool
+Vectorium ships a binary `compute_groundtruth` (feature `cli`) under `src/bin/` to exhaustive top‑k for a set of queries, writes a TSV file.
+
+After building with `--features cli`, you will find `compute_groundtruth` in `target/release/`. You can also run it directly via Cargo:
 
 ```bash
 RUSTFLAGS="-C target-cpu=native" cargo run --release --features cli --bin compute_groundtruth -- --help
 ```
-
-> Note: `compute_groundtruth` depends on optional CLI dependencies and requires `--features cli`.
 
 
 This tool computes exhaustive top‑k neighbors for each query and writes the results as a TSV file. It is designed for
@@ -233,7 +265,34 @@ let results: Vec<_> = queries
 assert_eq!(results.len(), 2);
 ```
 
-### 6) Range-based access and prefetch
+### 6) Multivector datasets (requires `multivec` feature)
+
+Multivector datasets store variable-length sequences of token vectors — the representation used by late-interaction models such as ColBERT.
+Enable the feature in your `Cargo.toml` first (see [Cargo features](#cargo-features)).
+
+```rust
+# #[cfg(feature = "multivec")]
+# {
+use vectorium::{
+    Dataset, DatasetGrowable, DenseMultiVectorView, MultiVectorDatasetGrowable,
+    PlainMultiVecQuantizer,
+};
+
+// Each document is a sequence of token vectors.  Here dim=2 and each doc has 2 tokens.
+let encoder = PlainMultiVecQuantizer::<f32>::new(2);
+let mut dataset = MultiVectorDatasetGrowable::new(encoder);
+
+// Doc 0: two tokens [1.0, 0.0] and [0.0, 1.0]
+dataset.push(DenseMultiVectorView::new(&[1.0_f32, 0.0, 0.0, 1.0], 2));
+// Doc 1: two tokens [0.5, 0.5] and [1.0, 1.0]
+dataset.push(DenseMultiVectorView::new(&[0.5_f32, 0.5, 1.0, 1.0], 2));
+
+let frozen = dataset.into_immutable();
+assert_eq!(frozen.len(), 2);
+# }
+```
+
+### 7) Range-based access and prefetch
 
 Datasets expose `range_from_id`/`id_from_range` so callers can keep lightweight handles to the underlying storage ranges.
 This is mainly useful for sparse/packed layouts, where range lookups can be a cache miss and prefetching can help.

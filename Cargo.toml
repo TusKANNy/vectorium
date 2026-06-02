@@ -1,6 +1,6 @@
 [package]
 name = "vectorium"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = [
     "Rossano Venturini <rossano.venturini@unipi.it>"]
@@ -35,7 +35,7 @@ bytemuck = { version = "1.23", features = [
     "min_const_generics",
 ] }
 rusty-perm = "0.2.0"
-rgb = { git = "https://github.com/JMMackenzie/enhanced-graph-bisection.git" } 
+rgb = { git = "https://github.com/JMMackenzie/enhanced-graph-bisection.git", package = "rgbisect" }
 rand = "0.8"
 matrixmultiply = "0.3"
 faer = "0.19"
@@ -45,6 +45,8 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 [features]
 default = []
+# Enables multivector types (DenseMultiVectorView/Owned, MultiVectorDataset, rerank index, multivec encoders).
+multivec = []
 # Enables the optional command-line utilities under `src/bin/` that depend on clap/indicatif.
 cli = ["dep:clap", "dep:indicatif"]
 
