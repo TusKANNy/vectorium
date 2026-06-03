@@ -5,6 +5,7 @@ use crate::core::vector_encoder::{
 };
 use crate::distances::DotProduct;
 use crate::encoders::dotpackingdp::common::simd_prefix_sum;
+use crate::encoders::dotpacking8::common::fast_lane_gather;
 use crate::encoders::dotpackingdp::common::{
     DotPackingDpIter, compute_safe_simd_padding, encode_blocks_dp,
 };
@@ -349,14 +350,7 @@ where
         let mut iter = view.iter_raw::<MAX_BLOCK_LEN>();
         for (gaps, values) in &mut iter {
             let relative_positions = simd_prefix_sum(gaps);
-            let q_vals = unsafe {
-                Simd::gather_select_unchecked(
-                    query_slice,
-                    Mask::splat(true),
-                    relative_positions.cast(),
-                    Simd::splat(0.0),
-                )
-            };
+            let q_vals = fast_lane_gather(query_slice, relative_positions);
             acc = q_vals.mul_add(values.cast(), acc);
             let step = relative_positions[N - 1] as usize;
             query_slice = unsafe { query_slice.split_at_unchecked(step).1 };

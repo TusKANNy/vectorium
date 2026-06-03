@@ -1,7 +1,7 @@
 use bytemuck::{cast_slice, from_bytes};
 use rusty_perm::{PermApply as _, PermFromSorting as _};
 use std::borrow::Cow;
-use std::simd::{Mask, Simd, StdFloat, prelude::*};
+use std::simd::{Simd, StdFloat, prelude::*};
 
 use crate::SpaceUsage;
 use crate::core::vector::{PackedVectorView, SparseVectorView};
@@ -10,7 +10,7 @@ use crate::core::vector_encoder::{
 };
 use crate::distances::DotProduct;
 use crate::encoders::dotpacking8::common::{
-    DotPacking8Iter, compute_safe_simd_padding, encode_blocks, simd_prefix_sum,
+    DotPacking8Iter, compute_safe_simd_padding, encode_blocks, simd_prefix_sum, fast_lane_gather
 };
 use crate::encoders::dotpacking8::quantizer::DotPacking8Quantizer;
 
@@ -173,15 +173,7 @@ where
         let mut iter = view.iter_raw();
         for (gaps, values) in &mut iter {
             let components = simd_prefix_sum(gaps);
-            let query_values = unsafe {
-                Simd::gather_select_unchecked(
-                    query_ptr,
-                    Mask::splat(true),
-                    components.cast(),
-                    Simd::splat(0.0),
-                )
-            };
-
+            let query_values = fast_lane_gather(query_ptr, components);
             acc = query_values.mul_add(values.cast(), acc);
             let last_component = components[N - 1];
             query_ptr = unsafe { query_ptr.split_at_unchecked(last_component as usize).1 };

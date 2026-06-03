@@ -97,6 +97,31 @@ pub fn simd_prefix_sum(mut n: Simd<u32, N>) -> Simd<u32, N> {
 }
 
 #[inline(always)]
+pub fn fast_lane_gather(query_ptr: &[f32], components: Simd<u32, N>) -> Simd<f32, N> {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        use std::arch::x86_64::*;
+        let q_vals: __m256 = _mm256_i32gather_ps(
+            query_ptr.as_ptr() as *const f32,
+            components.into(),
+            4,
+        );
+        Simd::<f32, N>::from(q_vals)
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    unsafe {
+        use std::simd::Mask;
+        Simd::gather_select_unchecked(
+            query_ptr,
+            Mask::splat(true),
+            components.cast(),
+            Simd::splat(0.0),
+        )
+    }
+}
+
+#[inline(always)]
 pub fn compute_safe_simd_padding(
     n_elem: usize,
     selectors: &[u8],
