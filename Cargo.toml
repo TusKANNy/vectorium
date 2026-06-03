@@ -36,11 +36,17 @@ bytemuck = { version = "1.23", features = [
     "min_const_generics",
 ] }
 rusty-perm = "0.2.0"
-rgb = { git = "https://github.com/JMMackenzie/enhanced-graph-bisection.git" } 
+# Pinned: upstream renamed the package `rgb` -> `rgbisect` on `main` HEAD, so an unpinned
+# dep fails to resolve downstream ("no matching package named `rgb`"). 490205b is the last
+# rev exposing the `rgb` crate (rgb::forward::Doc, rgb::recursive_graph_bisection). Do not
+# unpin without porting src/utils/utils.rs to the renamed crate's API.
+rgb = { git = "https://github.com/JMMackenzie/enhanced-graph-bisection.git", rev = "490205b23869ddbb2d52f0929058da04be3d643d" }
 rand = "0.8"
 rand_distr = "0.4"
 matrixmultiply = "0.3"
-ckmeans = {git="https://github.com/urschrei/ckmeans.git"}
+# Pinned to the resolved rev for reproducible downstream resolution (avoids floating to the
+# repo's default-branch HEAD on `cargo update` -- the failure mode the `rgb` rename caused above).
+ckmeans = { git = "https://github.com/urschrei/ckmeans.git", rev = "bad83c763b9db5de7d60cdd66e2f4d2a82026374" }
 dsi-bitstream = "0.9.1"
 
 [features]
