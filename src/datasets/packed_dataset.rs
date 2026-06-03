@@ -1388,6 +1388,151 @@ impl_from_packed_sparse_dataset_f32!(DotPackingDp16ScalarU8Encoder);
 impl_from_packed_sparse_dataset_f32!(EgFixedU8Encoder);
 impl_from_packed_sparse_dataset_f32!(EgScalarU8Encoder);
 
+/// Parse an environment variable into `T`, falling back to `default` when unset or unparseable.
+///
+/// Used by the Seismic-facing `From`/`ConvertFrom` conversions below to receive quantizer
+/// training hyperparameters that the parameterless `From<dataset>` signature cannot carry.
+/// Mirrors the `CLUSTER_FILE` / `MAX_REF_SIZE` env convention used by the clustered encoders.
+fn quant_env<T: std::str::FromStr>(key: &str, default: T) -> T {
+    std::env::var(key)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
+}
+
+/// Wire a bitpacked 4-bit sparse quantizer into the packed-dataset conversion surface that
+/// Seismic consumes (`From`/`ConvertFrom<SparseDatasetGeneric>` → `PackedSparseDataset<E>`).
+///
+/// Unlike [`impl_from_packed_sparse_dataset_f32!`], these encoders are constructed via a static
+/// `train(&training_data, lower_pct, upper_pct, extra)` that needs hyperparameters, so the macro
+/// takes a `build` closure of type
+/// `fn(&PlainSparseDataset<u16, f32, SquaredEuclideanDistance>, f32, f32) -> $EncoderType` that
+/// supplies the trained encoder. Percentiles come from `QUANT_LOWER_PCT` / `QUANT_UPPER_PCT`; any
+/// further hyperparameter (nbits, k-means iterations) is read from env inside the closure.
+macro_rules! impl_from_packed_4bit_sparse_dataset {
+    ($EncoderType:ty, $build:expr) => {
+        impl<EIn, S> From<SparseDatasetGeneric<EIn, S>> for PackedSparseDataset<$EncoderType>
+        where
+            EIn: SparseVectorEncoder<
+                    OutputComponentType = u16,
+                    InputValueType = f32,
+                    OutputValueType = f32,
+                >,
+            EIn::OutputValueType: ValueType + Float,
+            for<'a> EIn::EncodedVector<'a>: VectorView,
+            S: SparseStorage<EIn>,
+        {
+            fn from(dataset: SparseDatasetGeneric<EIn, S>) -> Self {
+                crate::dataset::ConvertFrom::convert_from(&dataset)
+            }
+        }
+
+        impl<'ds, EIn, S> ConvertFrom<&'ds SparseDatasetGeneric<EIn, S>>
+            for PackedSparseDataset<$EncoderType>
+        where
+            EIn: SparseVectorEncoder<
+                    OutputComponentType = u16,
+                    InputValueType = f32,
+                    OutputValueType = f32,
+                >,
+            EIn::OutputValueType: ValueType + Float,
+            for<'a> EIn::EncodedVector<'a>: VectorView,
+            S: SparseStorage<EIn>,
+        {
+            fn convert_from(dataset: &'ds SparseDatasetGeneric<EIn, S>) -> Self {
+                use crate::SquaredEuclideanDistance;
+                use crate::core::vector::SparseVectorView;
+                use crate::encoders::sparse_scalar::PlainSparseQuantizer;
+                use num_traits::ToPrimitive as _;
+
+                let dim = dataset.output_dim();
+
+                // The trainers require a concrete f32 / SquaredEuclidean dataset; rebuild one.
+                let plain_quantizer =
+                    PlainSparseQuantizer::<u16, f32, SquaredEuclideanDistance>::new(dim, dim);
+                let mut growable = crate::PlainSparseDatasetGrowable::new(plain_quantizer);
+                for v in dataset.iter() {
+                    let components: Vec<u16> = v.components().to_vec();
+                    let values: Vec<f32> = v
+                        .values()
+                        .iter()
+                        .map(|x| x.to_f32().unwrap_or(0.0))
+                        .collect();
+                    growable.push(SparseVectorView::new(&components, &values));
+                }
+                let training_data: crate::PlainSparseDataset<u16, f32, SquaredEuclideanDistance> =
+                    growable.into();
+
+                let lower = quant_env("QUANT_LOWER_PCT", 0.0_f32);
+                let upper = quant_env("QUANT_UPPER_PCT", 1.0_f32);
+                let build: fn(
+                    &crate::PlainSparseDataset<u16, f32, SquaredEuclideanDistance>,
+                    f32,
+                    f32,
+                ) -> $EncoderType = $build;
+                let encoder = build(&training_data, lower, upper);
+
+                let mut offsets = Vec::with_capacity(dataset.len() + 1);
+                offsets.push(0);
+                let mut data = Vec::new();
+                for v in dataset.iter() {
+                    let components: Vec<u16> = v.components().to_vec();
+                    let values: Vec<f32> = v
+                        .values()
+                        .iter()
+                        .map(|x| x.to_f32().unwrap_or(0.0))
+                        .collect();
+                    encoder.push_encoded(SparseVectorView::new(&components, &values), &mut data);
+                    offsets.push(data.len());
+                }
+
+                PackedSparseDatasetGeneric {
+                    offsets: offsets.into_boxed_slice(),
+                    data: data.into_boxed_slice(),
+                    encoder,
+                    nnz: dataset.nnz(),
+                }
+            }
+        }
+
+        impl<EIn, S> ConvertFrom<SparseDatasetGeneric<EIn, S>> for PackedSparseDataset<$EncoderType>
+        where
+            EIn: SparseVectorEncoder<
+                    OutputComponentType = u16,
+                    InputValueType = f32,
+                    OutputValueType = f32,
+                >,
+            EIn::OutputValueType: ValueType + Float,
+            for<'a> EIn::EncodedVector<'a>: VectorView,
+            S: SparseStorage<EIn>,
+        {
+            fn convert_from(dataset: SparseDatasetGeneric<EIn, S>) -> Self {
+                crate::dataset::ConvertFrom::convert_from(&dataset)
+            }
+        }
+    };
+}
+
+impl_from_packed_4bit_sparse_dataset!(
+    crate::encoders::packed_variable_bit_uniform_quantization_sparse_scalar::PackedVariableBitUniformSparseQuantizer,
+    |td, lower, upper| {
+        let nbits = quant_env("QUANT_NBITS", 4_u8);
+        crate::encoders::packed_variable_bit_uniform_quantization_sparse_scalar::PackedVariableBitUniformSparseQuantizer::train(
+            td, lower, upper, nbits,
+        )
+    }
+);
+
+impl_from_packed_4bit_sparse_dataset!(
+    crate::encoders::packed_centroid_based_quantization_sparse_scalar::PackedCentroidSparseQuantizer,
+    |td, lower, upper| {
+        let n_iterations = quant_env("QUANT_KMEANS_ITERS", 10_usize);
+        crate::encoders::packed_centroid_based_quantization_sparse_scalar::PackedCentroidSparseQuantizer::train(
+            td, lower, upper, n_iterations,
+        )
+    }
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1443,6 +1588,53 @@ mod tests {
 
         assert_eq!(d0, expected0);
         assert_eq!(d1, expected1);
+    }
+
+    #[test]
+    fn seismic_conversion_4bit_packed_quantizers() {
+        // Exercises the Seismic-facing `From<SparseDatasetGeneric>` wiring for the two
+        // bitpacked 4-bit quantizers: build an f32 sparse dataset, convert via `.into()`
+        // (which trains + packs in one shot), and check the query path produces a sane,
+        // quantization-tolerant score that preserves doc ordering.
+        use crate::QueryEvaluator as _;
+        use crate::distances::Distance as _;
+        use crate::{
+            DatasetGrowable, DotProduct, PackedCentroidSparseQuantizer,
+            PackedVariableBitUniformSparseQuantizer, PlainSparseDataset, PlainSparseDatasetGrowable,
+        };
+
+        let dim = 64;
+        let mut growable: PlainSparseDatasetGrowable<u16, f32, DotProduct> =
+            PlainSparseDatasetGrowable::new(
+                crate::PlainSparseQuantizer::<u16, f32, DotProduct>::new(dim, dim),
+            );
+        // doc 0 overlaps the query heavily; doc 1 barely.
+        growable.push(SparseVectorView::new(&[1_u16, 5, 9][..], &[2.0_f32, 3.0, 4.0][..]));
+        growable.push(SparseVectorView::new(&[2_u16, 30][..], &[1.0_f32, 0.5][..]));
+        let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
+
+        let query = SparseVectorView::new(&[1_u16, 5, 9][..], &[2.0_f32, 3.0, 4.0][..]);
+
+        // --- uniform 4-bit ---
+        let packed_u: PackedSparseDataset<PackedVariableBitUniformSparseQuantizer> =
+            frozen.clone().into();
+        assert_eq!(packed_u.len(), 2);
+        assert_eq!(packed_u.nnz(), 5);
+        let eval_u = packed_u.encoder().query_evaluator(query);
+        let u0 = eval_u.compute_distance(packed_u.get(0)).distance();
+        let u1 = eval_u.compute_distance(packed_u.get(1)).distance();
+        assert!(u0.is_finite() && u1.is_finite());
+        assert!(u0 > u1, "uniform: overlapping doc should score higher ({u0} vs {u1})");
+
+        // --- centroid 4-bit ---
+        let packed_c: PackedSparseDataset<PackedCentroidSparseQuantizer> = frozen.into();
+        assert_eq!(packed_c.len(), 2);
+        assert_eq!(packed_c.nnz(), 5);
+        let eval_c = packed_c.encoder().query_evaluator(query);
+        let c0 = eval_c.compute_distance(packed_c.get(0)).distance();
+        let c1 = eval_c.compute_distance(packed_c.get(1)).distance();
+        assert!(c0.is_finite() && c1.is_finite());
+        assert!(c0 > c1, "centroid: overlapping doc should score higher ({c0} vs {c1})");
     }
 
     #[test]

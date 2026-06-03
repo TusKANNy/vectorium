@@ -80,6 +80,12 @@ pub use encoders::multivec_two_level_pq::{
     reset_phase_timings,
 };
 pub use encoders::per_component_variable_bit_quantization_sparse_scalar::PerComponentVariableBitUniformSparseQuantizer;
+pub use encoders::packed_centroid_based_quantization_sparse_scalar::{
+    PackedCentroidSparseQuantizer, PackedCentroidSparseQueryEvaluator,
+};
+pub use encoders::packed_variable_bit_uniform_quantization_sparse_scalar::{
+    PackedVariableBitUniformSparseQuantizer, PackedVariableBitUniformSparseQueryEvaluator,
+};
 pub use encoders::pq::ProductQuantizer;
 pub use encoders::reverse_exp_quantization_sparse_scalar::{
     ReverseExpQuantizedSparseSupportedDistance, ReverseExpSparseQuantizer,
@@ -187,6 +193,15 @@ pub type CentroidSparseDatasetGrowable<C, D> = SparseDatasetGrowable<CentroidSpa
 
 pub type BlockedSparseDataset = PackedSparseDataset<BlockedSparseEncoder>;
 pub type BlockedSparseDatasetGrowable = PackedSparseDatasetGrowable<BlockedSparseEncoder>;
+
+pub type PackedCentroidSparseDataset = PackedSparseDataset<PackedCentroidSparseQuantizer>;
+pub type PackedCentroidSparseDatasetGrowable =
+    PackedSparseDatasetGrowable<PackedCentroidSparseQuantizer>;
+
+pub type PackedVariableBitUniformSparseDataset =
+    PackedSparseDataset<PackedVariableBitUniformSparseQuantizer>;
+pub type PackedVariableBitUniformSparseDatasetGrowable =
+    PackedSparseDatasetGrowable<PackedVariableBitUniformSparseQuantizer>;
 
 pub use core::dataset::{ScoredRange, ScoredVector};
 
