@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::CDotPacking8FixedU8Encoder;
 use crate::CDotPacking8ScalarU8Encoder;
+use crate::CDotPacking8Scalar4BitEncoder;
+use crate::CDotPacking8Centroid4BitEncoder;
 use crate::CDotPackingDp8FixedU8Encoder;
 use crate::CDotPackingDp8ScalarU8Encoder;
 use crate::CDotPackingDp16FixedU8Encoder;
@@ -1358,6 +1360,8 @@ macro_rules! impl_from_packed_sparse_dataset_clustered_f32 {
 
 impl_from_packed_sparse_dataset_clustered_f32!(CDotPacking8FixedU8Encoder);
 impl_from_packed_sparse_dataset_clustered_f32!(CDotPacking8ScalarU8Encoder);
+impl_from_packed_sparse_dataset_clustered_f32!(CDotPacking8Scalar4BitEncoder);
+impl_from_packed_sparse_dataset_clustered_f32!(CDotPacking8Centroid4BitEncoder);
 impl_from_packed_sparse_dataset_clustered_f32!(CDotPackingDp8FixedU8Encoder);
 impl_from_packed_sparse_dataset_clustered_f32!(CDotPackingDp8ScalarU8Encoder);
 impl_from_packed_sparse_dataset_clustered_f32!(CDotPackingDp16FixedU8Encoder);

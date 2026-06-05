@@ -29,6 +29,8 @@ pub mod dotpackingdp_fixedu8;
 pub mod dotpackingdp_scalaru8;
 pub mod cdotpacking8_fixedu8;
 pub mod cdotpacking8_scalaru8;
+pub mod cdotpacking8_scalar4bit;
+pub mod cdotpacking8_centroid4bit;
 pub mod cdotpackingdp_fixedu8;
 pub mod cdotpackingdp_scalaru8;
 pub mod ceg_fixedu8;

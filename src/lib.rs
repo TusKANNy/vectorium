@@ -123,6 +123,12 @@ pub use encoders::cdotpacking8_fixedu8::{
 pub use encoders::cdotpacking8_scalaru8::{
     CDotPacking8ScalarU8Encoder, CDotPacking8Scalaru8QueryEvaluator,
 };
+pub use encoders::cdotpacking8_scalar4bit::{
+    CDotPacking8Scalar4BitEncoder, CDotPacking8Scalar4BitQueryEvaluator,
+};
+pub use encoders::cdotpacking8_centroid4bit::{
+    CDotPacking8Centroid4BitEncoder, CDotPacking8Centroid4BitQueryEvaluator,
+};
 pub use encoders::cdotpackingdp_fixedu8::{
     CDotPackingDp16FixedU8Encoder, CDotPackingDp8FixedU8Encoder,
     CDotPackingDpFixedu8QueryEvaluator,
