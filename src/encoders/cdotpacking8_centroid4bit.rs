@@ -53,23 +53,12 @@ const N: usize = 8;
 /// 4-bit codes index a codebook of `2^4 == 16` centroids per component.
 const NUM_CENTROIDS: usize = 16;
 
-// ---------------------------------------------------------------------------
-// Small env helpers (mirror the standalone centroid path's `quant_env`).
-// ---------------------------------------------------------------------------
-
-fn env_f32(key: &str, default: f32) -> f32 {
-    std::env::var(key)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(default)
-}
-
-fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(default)
-}
+/// Centroid k-means defaults used by the parameterless [`CDotPacking8Centroid4BitEncoder::train`]
+/// (the entry point the clustered-dataset `From` macro calls). Callers that want to tune the
+/// codebook fit use [`CDotPacking8Centroid4BitEncoder::train_with_params`] instead.
+const DEFAULT_LOWER_PCT: f32 = 0.0;
+const DEFAULT_UPPER_PCT: f32 = 1.0;
+const DEFAULT_KMEANS_ITERS: usize = 10;
 
 // ---------------------------------------------------------------------------
 // Nibble packing helpers (identical to `cdotpacking8_scalar4bit`).
@@ -320,18 +309,21 @@ impl CDotPacking8Centroid4BitEncoder {
         }
     }
 
-    /// Train the component permutation (bisection) and the per-component 4-bit codebook.
-    /// Centroid k-means knobs come from the environment, matching the standalone centroid
-    /// path: `QUANT_LOWER_PCT` (0.0), `QUANT_UPPER_PCT` (1.0), `QUANT_KMEANS_ITERS` (10).
+    /// Train the component permutation (bisection) and the per-component 4-bit codebook,
+    /// using the default centroid k-means knobs ([`DEFAULT_LOWER_PCT`], [`DEFAULT_UPPER_PCT`],
+    /// [`DEFAULT_KMEANS_ITERS`]). This is the entry point the clustered-dataset `From` macro
+    /// calls; to tune the codebook fit, call [`Self::train_with_params`] directly.
     pub fn train(&mut self, training_data: &PlainSparseDataset<u16, f32, SquaredEuclideanDistance>) {
-        let lower = env_f32("QUANT_LOWER_PCT", 0.0);
-        let upper = env_f32("QUANT_UPPER_PCT", 1.0);
-        let n_iter = env_usize("QUANT_KMEANS_ITERS", 10);
-        self.train_with_params(training_data, lower, upper, n_iter);
+        self.train_with_params(
+            training_data,
+            DEFAULT_LOWER_PCT,
+            DEFAULT_UPPER_PCT,
+            DEFAULT_KMEANS_ITERS,
+        );
     }
 
-    /// Deterministic training entry point (no env reads) — used by tests and by callers
-    /// that want to set the centroid k-means knobs programmatically.
+    /// Training entry point with explicit centroid k-means knobs — the real API for tuning
+    /// (benchmarks, programmatic callers). [`Self::train`] delegates here with defaults.
     pub fn train_with_params(
         &mut self,
         training_data: &PlainSparseDataset<u16, f32, SquaredEuclideanDistance>,
