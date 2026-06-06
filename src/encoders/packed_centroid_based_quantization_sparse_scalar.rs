@@ -135,7 +135,7 @@ impl PackedCentroidSparseQuantizer {
         upper_percentile: f32,
         n_iterations: usize,
     ) -> Self {
-        let dim = training_data.output_dim();
+    let dim = training_data.output_dim();
         assert!(
             dim < MAX_DIM,
             "PackedCentroidSparseQuantizer requires dim < 2^20 (got {dim})."

@@ -107,6 +107,12 @@ pub use encoders::dotpacking8_fixedu8::{
 pub use encoders::dotpacking8_scalaru8::{
     DotPacking8ScalarU8Encoder, DotPacking8Scalaru8QueryEvaluator,
 };
+pub use encoders::dotpacking8_scalar4bit::{
+    DotPacking8Scalar4BitEncoder, DotPacking8Scalar4BitQueryEvaluator,
+};
+pub use encoders::dotpacking8_centroid4bit::{
+    DotPacking8Centroid4BitEncoder, DotPacking8Centroid4BitQueryEvaluator,
+};
 pub use encoders::dotpacking8_u32_scalaru8::{
     OptimisticDotPacking8U32ScalarU8Encoder, OptimisticDotPacking8U32ScalarU8QueryEvaluator,
 };

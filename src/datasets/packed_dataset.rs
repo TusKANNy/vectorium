@@ -19,6 +19,8 @@ use crate::CDotPackingDp16ScalarU8Encoder;
 use crate::CegFixedU8Encoder;
 use crate::DotPacking8FixedU8Encoder;
 use crate::DotPacking8ScalarU8Encoder;
+use crate::DotPacking8Scalar4BitEncoder;
+use crate::DotPacking8Centroid4BitEncoder;
 use crate::DotPackingDp8FixedU8Encoder;
 use crate::DotPackingDp8ScalarU8Encoder;
 use crate::DotPackingDp16FixedU8Encoder;
@@ -1464,6 +1466,8 @@ macro_rules! impl_from_packed_sparse_dataset_f32 {
 
 impl_from_packed_sparse_dataset_f32!(DotPacking8FixedU8Encoder);
 impl_from_packed_sparse_dataset_f32!(DotPacking8ScalarU8Encoder);
+impl_from_packed_sparse_dataset_f32!(DotPacking8Scalar4BitEncoder);
+impl_from_packed_sparse_dataset_f32!(DotPacking8Centroid4BitEncoder);
 impl_from_packed_sparse_dataset_f32!(DotPackingDp8FixedU8Encoder);
 impl_from_packed_sparse_dataset_f32!(DotPackingDp8ScalarU8Encoder);
 impl_from_packed_sparse_dataset_f32!(DotPackingDp16FixedU8Encoder);
