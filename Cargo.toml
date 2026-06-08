@@ -51,6 +51,10 @@ dsi-bitstream = "0.9.1"
 
 [features]
 default = []
+# Enables multivector types (DenseMultiVectorView/Owned, MultiVectorDataset, rerank index, multivec
+# encoders). These types are always compiled in this crate; the feature exists for API compatibility
+# with upstream `vectorium`, which gates them (e.g. kannolo requests `vectorium/multivec`).
+multivec = []
 # Enables the optional command-line utilities under `src/bin/` that depend on clap/indicatif.
 cli = ["dep:clap", "dep:indicatif"]
 
