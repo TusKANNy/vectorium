@@ -14,7 +14,7 @@ where
     type SearchParams;
 
     /// Returns the number of vectors in the index.
-    fn n_vectors(&self) -> usize;
+    fn n_elements(&self) -> usize;
 
     /// Returns the dimensionality of the vectors in the index.
     fn dim(&self) -> usize;
