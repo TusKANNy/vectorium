@@ -128,6 +128,11 @@ path = "src/bin/bench_blocked_sparse_vs_f16.rs"
 required-features = ["cli"]
 
 [[bin]]
+name = "bench_all_4_bits"
+path = "src/bin/bench_all_4_bits.rs"
+required-features = ["cli"]
+
+[[bin]]
 name = "dump_kmeans_centroids"
 path = "src/bin/dump_kmeans_centroids.rs"
 required-features = ["cli"]
