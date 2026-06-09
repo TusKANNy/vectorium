@@ -37,3 +37,5 @@ pub mod cdotpackingdp_fixedu8;
 pub mod cdotpackingdp_scalaru8;
 pub mod ceg_fixedu8;
 pub mod ceg_scalaru8;
+pub mod dotpackingsparse_scalaru8;
+pub mod dotpackingsparse_fixedu8;

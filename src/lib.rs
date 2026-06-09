@@ -143,6 +143,9 @@ pub use encoders::cdotpackingdp_scalaru8::{
     CDotPackingDp16ScalarU8Encoder, CDotPackingDp8ScalarU8Encoder,
     CDotPackingDpScalaru8QueryEvaluator,
 };
+pub use encoders::dotpackingsparse_scalaru8::{
+    DotPackingSparseScalarU8Encoder, DotPackingSparseScalarU8QueryEvaluator,
+};
 
 pub use encoders::ceg_fixedu8::{CegFixedU8Encoder, CegFixedU8QueryEvaluator};
 pub use encoders::ceg_scalaru8::{CegScalarU8Encoder, CegScalarU8QueryEvaluator};

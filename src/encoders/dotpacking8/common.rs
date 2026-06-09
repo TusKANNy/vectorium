@@ -7,13 +7,13 @@ const N: usize = 8;
 
 #[repr(C, align(32))]
 #[derive(Copy, Clone)]
-struct Block8Constants {
-    shuffle: Simd<u8, 32>, // 32 byte
-    shifts: Simd<u32, 8>,  // 32 byte
-    masks: Simd<u32, 8>,   // 32 byte
+pub struct Block8Constants {
+    pub shuffle: Simd<u8, 32>, // 32 byte
+    pub shifts: Simd<u32, 8>,  // 32 byte
+    pub masks: Simd<u32, 8>,   // 32 byte
 }
 
-static BLOCK8_TABLE: [Block8Constants; 16] = gen_block8_table();
+pub static BLOCK8_TABLE: [Block8Constants; 16] = gen_block8_table();
 
 const fn gen_block8_table() -> [Block8Constants; 16] {
     let mut all = [Block8Constants {

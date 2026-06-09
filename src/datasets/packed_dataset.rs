@@ -32,6 +32,8 @@ use crate::core::sealed;
 use crate::core::storage::SparseStorage;
 use crate::dataset::ConvertFrom;
 use crate::encoders::ceg_scalaru8::CegScalarU8Encoder;
+use crate::encoders::dotpackingsparse_fixedu8::DotPackingSparseFixedU8Encoder;
+use crate::encoders::dotpackingsparse_scalaru8::DotPackingSparseScalarU8Encoder;
 use crate::encoders::eg_scalaru8::EgScalarU8Encoder;
 use crate::utils::prefetch_read_slice;
 use crate::{Dataset, DatasetGrowable, PackedVectorView, SparseData, VectorId};
@@ -1474,6 +1476,9 @@ impl_from_packed_sparse_dataset_f32!(DotPackingDp16FixedU8Encoder);
 impl_from_packed_sparse_dataset_f32!(DotPackingDp16ScalarU8Encoder);
 impl_from_packed_sparse_dataset_f32!(EgFixedU8Encoder);
 impl_from_packed_sparse_dataset_f32!(EgScalarU8Encoder);
+impl_from_packed_sparse_dataset_f32!(DotPackingSparseScalarU8Encoder);
+impl_from_packed_sparse_dataset_f32!(DotPackingSparseFixedU8Encoder);
+
 
 /// Parse an environment variable into `T`, falling back to `default` when unset or unparseable.
 ///
@@ -2042,3 +2047,4 @@ mod tests {
     );
 
 }
+
