@@ -165,7 +165,6 @@ pub(crate) unsafe fn match_and_fma_8(
     *acc = _mm256_fmadd_ps(vbits_masked, scale, *acc);
 }
 
-
 #[derive(Clone)]
 pub struct DotPackingSparseQueryEvaluator<'a, Q>
 where
@@ -282,11 +281,12 @@ where
             let query_values = query.values();
 
             let view = unsafe { DotPackingSparseView::from_unchecked_slice(vector.data()) };
-            
+
             #[cfg(not(target_arch = "x86_64"))]
             let mut acc = Simd::<f32, N>::splat(0.0);
             #[cfg(target_arch = "x86_64")]
-            let mut acc_m256: core::arch::x86_64::__m256 = unsafe { core::arch::x86_64::_mm256_setzero_ps() };
+            let mut acc_m256: core::arch::x86_64::__m256 =
+                unsafe { core::arch::x86_64::_mm256_setzero_ps() };
 
             let mut cur_q = 0;
             let mut last_component = 0u32;
@@ -295,68 +295,66 @@ where
             'block_loop: while iter.block_idx < iter.bulk_blocks {
                 let query_c = query_components[cur_q] as u32;
 
-                while iter.block_idx < iter.bulk_blocks && query_c > view.get_max_component(iter.block_idx) {
-                    last_component = view.get_max_component(iter.block_idx) as u32;
-                    let sel_byte = *unsafe { iter.selectors.get_unchecked(iter.block_idx / 2) };
+                let mut block_last = view.get_max_component(iter.block_idx);
+                while query_c > block_last {
+                    last_component = block_last;
+                    // SAFETY: block_idx < bulk_blocks
+                    let sel_byte = unsafe { *iter.selectors.get_unchecked(iter.block_idx / 2) };
                     let b = (((sel_byte >> ((iter.block_idx & 1) << 2)) & 0x0F) as usize) + 1;
-                    iter.payload_ptr = unsafe { iter.payload_ptr.add(b) };
-                    iter.val_ptr = unsafe { iter.val_ptr.add(N) };
+                    unsafe {
+                        iter.payload_ptr = iter.payload_ptr.add(b);
+                        iter.val_ptr = iter.val_ptr.add(N);
+                    }
                     iter.block_idx += 1;
+                    if iter.block_idx >= iter.bulk_blocks {
+                        break 'block_loop;
+                    }
+                    block_last = view.get_max_component(iter.block_idx);
                 }
 
-                if iter.block_idx >= iter.bulk_blocks {
-                    break 'block_loop;
-                }
-
-                let block_last = view.get_max_component(iter.block_idx);
-
+                // block_last is now valid for the current block_idx, no second call needed
                 let (gaps, values) = iter.next().unwrap();
                 let components = simd_prefix_sum(gaps);
                 let absolute_components = components + Simd::splat(last_component);
-                
+
                 let block_vals = values.cast::<f32>();
 
                 #[cfg(target_arch = "x86_64")]
                 unsafe {
-                        let comps_m256i: core::arch::x86_64::__m256i =
-                            std::mem::transmute(absolute_components);
-                        let vbits_m256: core::arch::x86_64::__m256 =
-                            std::mem::transmute(block_vals);
-                        
-                        while (query_components[cur_q] as u32) <= block_last {
-                            match_and_fma_8(
-                                query_components[cur_q] as u32,
-                                query_values[cur_q],
-                                comps_m256i,
-                                vbits_m256,
-                                &mut acc_m256,
-                            );
+                    use std::arch::x86_64::{__m256, __m256i};
 
-                            cur_q += 1;
-                            if cur_q >= query_components.len() {
-                                break 'block_loop;
-                            }
-                        }
-                    }
-
-                    #[cfg(not(target_arch = "x86_64"))]
+                    let comps_m256i: __m256i = std::mem::transmute(absolute_components);
+                    let vbits_m256: __m256 = std::mem::transmute(block_vals);
                     while (query_components[cur_q] as u32) <= block_last {
-                        let qc = query_components[cur_q] as u32;
-                        let qv = query_values[cur_q];
-
-                        let match_mask = absolute_components.simd_eq(Simd::splat(qc));
-                        let masked_vals = match_mask.select(block_vals, Simd::splat(0.0));
-                        acc = Simd::splat(qv).mul_add(masked_vals, acc);
-
+                        match_and_fma_8(
+                            query_components[cur_q] as u32,
+                            query_values[cur_q],
+                            comps_m256i,
+                            vbits_m256,
+                            &mut acc_m256,
+                        );
                         cur_q += 1;
                         if cur_q >= query_components.len() {
                             break 'block_loop;
                         }
                     }
-                
+                }
+
+                #[cfg(not(target_arch = "x86_64"))]
+                while (query_components[cur_q] as u32) <= block_last {
+                    let qc = query_components[cur_q] as u32;
+                    let qv = query_values[cur_q];
+                    let match_mask = absolute_components.simd_eq(Simd::splat(qc));
+                    let masked_vals = match_mask.select(block_vals, Simd::splat(0.0));
+                    acc = Simd::splat(qv).mul_add(masked_vals, acc);
+                    cur_q += 1;
+                    if cur_q >= query_components.len() {
+                        break 'block_loop;
+                    }
+                }
+
                 last_component = block_last;
             }
-
             #[cfg(target_arch = "x86_64")]
             let mut total_unscaled = unsafe { crate::core::data_block::hsum256_ps(acc_m256) };
             #[cfg(not(target_arch = "x86_64"))]
