@@ -17,6 +17,7 @@ use crate::CDotPackingDp8ScalarU8Encoder;
 use crate::CDotPackingDp16FixedU8Encoder;
 use crate::CDotPackingDp16ScalarU8Encoder;
 use crate::CegFixedU8Encoder;
+use crate::DotPacking8f16Encoder;
 use crate::DotPacking8FixedU8Encoder;
 use crate::DotPacking8ScalarU8Encoder;
 use crate::DotPacking8Scalar4BitEncoder;
@@ -25,6 +26,7 @@ use crate::DotPackingDp8FixedU8Encoder;
 use crate::DotPackingDp8ScalarU8Encoder;
 use crate::DotPackingDp16FixedU8Encoder;
 use crate::DotPackingDp16ScalarU8Encoder;
+use crate::DotPackingSparsef16Encoder;
 use crate::EgFixedU8Encoder;
 use crate::PackedSparseVectorEncoder;
 use crate::SpaceUsage;
@@ -1478,6 +1480,8 @@ impl_from_packed_sparse_dataset_f32!(EgFixedU8Encoder);
 impl_from_packed_sparse_dataset_f32!(EgScalarU8Encoder);
 impl_from_packed_sparse_dataset_f32!(DotPackingSparseScalarU8Encoder);
 impl_from_packed_sparse_dataset_f32!(DotPackingSparseFixedU8Encoder);
+impl_from_packed_sparse_dataset_f32!(DotPacking8f16Encoder);
+impl_from_packed_sparse_dataset_f32!(DotPackingSparsef16Encoder);
 
 
 /// Parse an environment variable into `T`, falling back to `default` when unset or unparseable.

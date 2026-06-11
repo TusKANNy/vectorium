@@ -1,7 +1,12 @@
-use std::simd::{Simd};
+use half::f16;
+use std::simd::Simd;
 
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::{__m256, __m256i};
 
-use crate::{encoders::dotpacking8::swizzle::fast_lane_swizzle, utils::load128_and_broadcast_to_256};
+use crate::{
+    encoders::dotpacking8::swizzle::fast_lane_swizzle, utils::load128_and_broadcast_to_256,
+};
 
 const N: usize = 8;
 
@@ -101,11 +106,8 @@ pub fn fast_lane_gather(query_ptr: &[f32], components: Simd<u32, N>) -> Simd<f32
     #[cfg(target_arch = "x86_64")]
     unsafe {
         use std::arch::x86_64::*;
-        let q_vals: __m256 = _mm256_i32gather_ps(
-            query_ptr.as_ptr() as *const f32,
-            components.into(),
-            4,
-        );
+        let q_vals: __m256 =
+            _mm256_i32gather_ps(query_ptr.as_ptr() as *const f32, components.into(), 4);
         Simd::<f32, N>::from(q_vals)
     }
 
@@ -125,11 +127,11 @@ pub fn fast_lane_gather(query_ptr: &[f32], components: Simd<u32, N>) -> Simd<f32
 pub fn compute_safe_simd_padding(
     n_elem: usize,
     selectors: &[u8],
-    padding_before: usize,
-    trailing_bytes: usize,
+    alignment_padding: usize,
+    bytes_after_components: usize,
 ) -> usize {
     if n_elem == 0 {
-        return padding_before;
+        return alignment_padding;
     }
     let n_blocks = (n_elem + N - 1) / N;
     let idx = n_blocks - 1;
@@ -148,14 +150,14 @@ pub fn compute_safe_simd_padding(
     // The decoder performs 128-bit (16 bytes) unaligned loads.
     // To prevent Out-of-Bounds (OOB) access, we must ensure that the distance between
     // the start of the last SIMD read and the end of the allocated buffer is at least 16 bytes.
-    // [last_read_bytes] = bytes belonging to the last block in the bitstream
-    // [padding_before]  = existing alignment padding (64-bit)
-    // [trailing_bytes]  = subsequent data present after the gap bitstream
-    let mut space_after = padding_before + trailing_bytes;
+    // [last_read_bytes]    = bytes belonging to the last block in the bitstream
+    // [alignment_padding] = existing alignment padding (64-bit)
+    // [bytes_after]        = subsequent data present after the gap bitstream
+    let mut space_after = alignment_padding + bytes_after_components;
     while last_read_bytes + space_after < 16 {
         space_after += 8;
     }
-    space_after - trailing_bytes
+    space_after - bytes_after_components
 }
 
 pub struct DotPacking8Iter<'a> {
@@ -229,4 +231,117 @@ impl<'a> DotPacking8Iter<'a> {
         self.val_ptr = unsafe { self.val_ptr.add(remaining) };
         (gaps, tail_vals, remaining)
     }
+}
+
+#[inline(always)]
+pub unsafe fn f16_ptr_to_f32x8(ptr: *const f16) -> Simd<f32, 8> {
+    #[cfg(all(target_arch = "x86_64", target_feature = "f16c"))]
+    {
+        use std::arch::x86_64::*;
+        unsafe {
+            let m128 = _mm_loadu_si128(ptr.cast());
+            let m256 = _mm256_cvtph_ps(m128);
+            std::mem::transmute(m256)
+        }
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "f16c")))]
+    {
+        let mut val_f32 = [0.0f32; 8];
+        for i in 0..8 {
+            val_f32[i] = (unsafe { *ptr.add(i) }).to_f32();
+        }
+        Simd::<f32, 8>::from_array(val_f32)
+    }
+}
+
+pub struct DotPacking8f16Iter<'a> {
+    pub bulk_blocks: usize,
+    pub block_idx: usize,
+    pub n: usize,
+    pub selectors: &'a [u8],
+    pub payload_ptr: *const u8,
+    pub val_ptr: *const f16,
+}
+
+impl<'a> Iterator for DotPacking8f16Iter<'a> {
+    type Item = (Simd<u32, 8>, Simd<f32, 8>);
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.block_idx >= self.bulk_blocks {
+            return None;
+        }
+
+        let gaps = self.decode_lane();
+
+        let vals = unsafe { f16_ptr_to_f32x8(self.val_ptr) };
+        self.val_ptr = unsafe { self.val_ptr.add(8) };
+        self.block_idx += 1;
+        Some((gaps, vals))
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remain = self.bulk_blocks - self.block_idx;
+        (remain, Some(remain))
+    }
+}
+
+impl<'a> ExactSizeIterator for DotPacking8f16Iter<'a> {}
+
+impl<'a> DotPacking8f16Iter<'a> {
+    #[inline(always)]
+    fn extract_block_b(&self) -> usize {
+        let sel_byte = *unsafe { self.selectors.get_unchecked(self.block_idx / 2) };
+        (((sel_byte >> ((self.block_idx & 1) << 2)) & 0x0F) as usize) + 1
+    }
+
+    #[inline(always)]
+    fn decode_lane_with_b(&mut self, b: usize, advance_bytes: usize) -> Simd<u32, 8> {
+        let comps = load128_and_broadcast_to_256(self.payload_ptr);
+        let table = unsafe { BLOCK8_TABLE.get_unchecked(b - 1) };
+        let shuffled = fast_lane_swizzle(comps, table.shuffle);
+        let gaps: Simd<u32, 8> = unsafe { std::mem::transmute(shuffled) };
+        self.payload_ptr = unsafe { self.payload_ptr.add(advance_bytes) };
+        (gaps >> table.shifts) & table.masks
+    }
+
+    #[inline(always)]
+    pub fn decode_lane(&mut self) -> Simd<u32, 8> {
+        let b = self.extract_block_b();
+        self.decode_lane_with_b(b, b)
+    }
+
+    #[inline(always)]
+    pub fn decode_tail(&mut self) -> (Simd<u32, 8>, &'a [f16], usize) {
+        let remaining = self.n % 8;
+        if remaining == 0 {
+            return (Simd::splat(0), &[], 0);
+        }
+        let b = self.extract_block_b();
+        let bytes_to_advance = (remaining * b + 7) / 8;
+        let gaps = self.decode_lane_with_b(b, bytes_to_advance);
+        let tail_vals = unsafe { std::slice::from_raw_parts(self.val_ptr, remaining) };
+        self.val_ptr = unsafe { self.val_ptr.add(remaining) };
+        (gaps, tail_vals, remaining)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[target_feature(enable = "fma")]
+#[inline]
+pub unsafe fn match_and_fma_8(
+    query_component: u32,
+    query_value: f32,
+    comps: __m256i,
+    vbits: __m256,
+    acc: &mut __m256,
+) {
+    use std::arch::x86_64::*;
+    let q32: __m256i = _mm256_set1_epi32(query_component as i32);
+    let cmp: __m256i = _mm256_cmpeq_epi32(comps, q32);
+    let vbits_masked: __m256 = _mm256_and_ps(vbits, _mm256_castsi256_ps(cmp));
+    let scale: __m256 = _mm256_set1_ps(query_value);
+    *acc = _mm256_fmadd_ps(vbits_masked, scale, *acc);
 }
