@@ -1,7 +1,6 @@
 pub mod dataset;
 pub mod distances;
 pub mod index;
-#[cfg(feature = "multivec")]
 pub mod rerank_index;
 pub mod storage;
 pub mod vector;

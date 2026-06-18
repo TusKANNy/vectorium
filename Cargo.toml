@@ -45,7 +45,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 [features]
 default = []
-# Enables multivector types (DenseMultiVectorView/Owned, MultiVectorDataset, rerank index, multivec encoders).
+# Enables multivector types (DenseMultiVectorView/Owned, MultiVectorDataset, multivec encoders).
 multivec = []
 # Enables the optional command-line utilities under `src/bin/` that depend on clap/indicatif.
 cli = ["dep:clap", "dep:indicatif"]
