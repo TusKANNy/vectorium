@@ -1,10 +1,8 @@
 #![feature(portable_simd)]
 #![allow(internal_features)]
 #![feature(core_intrinsics)]
-#![feature(float_algebraic)]
 #![feature(gen_blocks)]
 #![feature(yield_expr)]
-#![feature(associated_type_defaults)]
 #![doc = include_str!("../README.md")]
 #![allow(non_snake_case)]
 
@@ -80,6 +78,8 @@ pub use encoders::sparse_scalar::{
 };
 
 pub use core::dataset::{Dataset, DatasetGrowable, DenseData, SparseData, VectorId};
+pub use core::flat_index::FlatIndex;
+pub use core::index::Index;
 pub use core::storage::{
     GrowableSparseStorage, ImmutableSparseStorage, SparseStorage, SparseStorageMut,
 };

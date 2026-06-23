@@ -46,7 +46,7 @@ use crate::core::vector_encoder::{MultiVecEncoder, QueryEvaluator, VectorEncoder
 use crate::distances::{DotProduct, SquaredEuclideanDistance};
 use crate::encoders::pq::ProductQuantizer;
 use crate::{
-    Dataset, DatasetGrowable, Float, PlainDenseDataset, PlainDenseDatasetGrowable,
+    Dataset, DatasetGrowable, FlatIndex, Float, PlainDenseDataset, PlainDenseDatasetGrowable,
     PlainDenseQuantizer, SpaceUsage, ValueType, VectorId,
 };
 
@@ -215,7 +215,7 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
                 .enumerate()
                 .for_each(|(i, res)| {
                     let token = token_vectors.get(i as VectorId);
-                    let nearest = coarse_ref
+                    let nearest = FlatIndex::from(coarse_ref)
                         .search_nearest(token)
                         .map(|s| s.vector)
                         .unwrap_or(0);
@@ -550,7 +550,7 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
             }
             for m in 0..M {
                 let sub = DenseVectorView::new(&residual[m * self.dsub..(m + 1) * self.dsub]);
-                let code = self.pq_centroids[m]
+                let code = FlatIndex::from(&self.pq_centroids[m])
                     .search_nearest(sub)
                     .map(|s| s.vector as u8)
                     .unwrap_or(0);
@@ -1018,8 +1018,7 @@ where
             }
 
             let token_view = DenseVectorView::new(&token_f32);
-            let coarse_id = self
-                .coarse_centroids
+            let coarse_id = FlatIndex::from(&self.coarse_centroids)
                 .search_nearest(token_view)
                 .map(|s| s.vector as u32)
                 .unwrap_or(0);
@@ -1044,7 +1043,7 @@ where
 
             for m in 0..M {
                 let sub = DenseVectorView::new(&residual[m * self.dsub..(m + 1) * self.dsub]);
-                let code = self.pq_centroids[m]
+                let code = FlatIndex::from(&self.pq_centroids[m])
                     .search_nearest(sub)
                     .map(|s| s.vector as u8)
                     .unwrap_or(0);

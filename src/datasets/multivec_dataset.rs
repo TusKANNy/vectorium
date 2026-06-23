@@ -321,6 +321,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FlatIndex;
     use crate::core::vector::{DenseMultiVectorView, DenseVectorView};
     use crate::encoders::multivec_scalar::PlainMultiVecQuantizer;
 
@@ -398,7 +399,7 @@ mod tests {
 
         // query: [[1,0]] — MaxSim with doc0=1, doc1=2, so doc1 wins
         let query = DenseMultiVectorView::new(&[1.0f32, 0.0], 2);
-        let results = dataset.search(query, 2);
+        let results = FlatIndex::from(&dataset).search(query, 2, &());
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].vector, 1);
@@ -576,7 +577,7 @@ mod tests {
 
         // Search with a query
         let query = DenseMultiVectorView::new(&[1.0f32, 0.0, 0.0, 1.0, 0.5, 0.5, 0.5, 0.5], 8);
-        let results = dataset.search(query, 2);
+        let results = FlatIndex::from(&dataset).search(query, 2, &());
 
         assert_eq!(results.len(), 2);
     }

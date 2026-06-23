@@ -22,7 +22,7 @@ use crate::core::vector::{DenseMultiVectorOwned, DenseMultiVectorView, DenseVect
 use crate::core::vector_encoder::{MultiVecEncoder, QueryEvaluator, VectorEncoder};
 use crate::distances::{Distance, DotProduct, SquaredEuclideanDistance};
 use crate::{
-    Dataset, DatasetGrowable, Float, PlainDenseDataset, PlainDenseDatasetGrowable,
+    Dataset, DatasetGrowable, FlatIndex, Float, PlainDenseDataset, PlainDenseDatasetGrowable,
     PlainDenseQuantizer, SpaceUsage, ValueType, VectorId,
 };
 
@@ -401,7 +401,7 @@ where
             }
             for m in 0..M {
                 let sub = DenseVectorView::new(&token_f32[m * self.dsub..(m + 1) * self.dsub]);
-                let code = self.centroids[m]
+                let code = FlatIndex::from(&self.centroids[m])
                     .search_nearest(sub)
                     .map(|s| s.vector as u8)
                     .unwrap_or(0);

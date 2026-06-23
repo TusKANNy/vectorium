@@ -226,10 +226,11 @@ let _ = score;
 
 ### 4) Exhaustive search (top‑k baseline)
 
-If you do not have an ANN index yet, `Dataset::search(query, k)` provides an exhaustive top‑k baseline:
+`FlatIndex` wraps any dataset and searches it exhaustively. It is the brute-force implementation
+of the `Index` trait, provides an exhaustive top‑k baseline:
 
 ```rust
-use vectorium::{Dataset, DatasetGrowable, DenseDataset, DenseVectorView, DotProduct, PlainDenseDatasetGrowable, PlainDenseQuantizer};
+use vectorium::{DatasetGrowable, DenseDataset, DenseVectorView, DotProduct, FlatIndex, Index, PlainDenseDatasetGrowable, PlainDenseQuantizer};
 
 let encoder = PlainDenseQuantizer::<f32, DotProduct>::new(3);
 let mut growable = PlainDenseDatasetGrowable::new(encoder);
@@ -238,7 +239,7 @@ growable.push(DenseVectorView::new(&[0.5, 1.5, 0.0]));
 let dataset: DenseDataset<_> = growable.into();
 
 let query = DenseVectorView::new(&[0.2, 0.1, 0.7]);
-let top2 = dataset.search(query, 2);
+let top2 = FlatIndex::from(&dataset).search(query, 2, &());
 assert_eq!(top2.len(), 2);
 ```
 
@@ -249,7 +250,7 @@ The easiest way to use multiple CPU cores is to parallelize across queries. This
 
 ```rust
 use rayon::prelude::*;
-use vectorium::{Dataset, DatasetGrowable, DenseVectorView, DotProduct, PlainDenseDatasetGrowable, PlainDenseQuantizer};
+use vectorium::{DatasetGrowable, DenseVectorView, DotProduct, FlatIndex, Index, PlainDenseDatasetGrowable, PlainDenseQuantizer};
 
 let encoder = PlainDenseQuantizer::<f32, DotProduct>::new(3);
 let mut growable = PlainDenseDatasetGrowable::new(encoder);
@@ -259,7 +260,7 @@ growable.push(DenseVectorView::new(&[0.5, 1.5, 0.0]));
 let queries = vec![vec![0.2_f32, 0.1, 0.7], vec![1.0_f32, 0.0, 0.0]];
 let results: Vec<_> = queries
     .par_iter()
-    .map(|q| growable.search(DenseVectorView::new(q.as_slice()), 1))
+    .map(|q| FlatIndex::from(&growable).search(DenseVectorView::new(q.as_slice()), 1, &()))
     .collect();
 
 assert_eq!(results.len(), 2);

@@ -1,10 +1,7 @@
 //! Core dataset abstractions used by the search/indexing primitives.
 //! Includes type-safe traits to iterate, look up ranges, and integrate with encoders.
 use crate::core::sealed;
-use crate::core::vector_encoder::{
-    DenseVectorEncoder, QueryEvaluator, SparseDataEncoder, VectorEncoder,
-};
-use itertools::Itertools;
+use crate::core::vector_encoder::{DenseVectorEncoder, SparseDataEncoder, VectorEncoder};
 
 /// Unique identifier assigned to each vector stored inside a dataset.
 pub type VectorId = u64;
@@ -136,46 +133,6 @@ pub trait Dataset: sealed::Sealed {
 
     /// Touch the provided range to hint that it will be accessed soon.
     fn prefetch_with_range(&self, range: std::ops::Range<usize>);
-
-    /// Exhaustive search that scores every vector via the configured query evaluator.
-    /// Complexity is `θ(n log k)` because of the heap built by `k_smallest`.
-    fn search<'d, 'q>(
-        &'d self,
-        query: <Self::Encoder as VectorEncoder>::QueryVector<'q>,
-        k: usize,
-    ) -> Vec<ScoredVector<<Self::Encoder as VectorEncoder>::Distance>> {
-        if k == 0 {
-            return Vec::new();
-        }
-
-        let evaluator = self.encoder().query_evaluator(query);
-
-        self.iter()
-            .enumerate()
-            .map(|(i, vector)| ScoredVector {
-                distance: evaluator.compute_distance(vector),
-                vector: i as VectorId,
-            })
-            .k_smallest(k)
-            .collect()
-    }
-
-    /// Search for the single nearest neighbor to the given query.
-    #[inline]
-    fn search_nearest<'d, 'q>(
-        &'d self,
-        query: <Self::Encoder as VectorEncoder>::QueryVector<'q>,
-    ) -> Option<ScoredVector<<Self::Encoder as VectorEncoder>::Distance>> {
-        let evaluator = self.encoder().query_evaluator(query);
-
-        self.iter()
-            .enumerate()
-            .map(|(i, vector)| ScoredVector {
-                distance: evaluator.compute_distance(vector),
-                vector: i as VectorId,
-            })
-            .min_by_key(|scored| scored.distance)
-    }
 }
 
 impl<T> sealed::Sealed for &T where T: Dataset {}
@@ -270,36 +227,6 @@ mod tests {
     use crate::{DenseDataset, PlainDenseQuantizer};
 
     #[test]
-    fn dataset_search_returns_expected_order() {
-        type Encoder = PlainDenseQuantizer<f32, DotProduct>;
-
-        let encoder = Encoder::new(2);
-        let mut growable = DenseDatasetGrowable::new(encoder);
-        growable.push(DenseVectorView::new(&[1.0f32, 0.5]));
-        growable.push(DenseVectorView::new(&[0.0f32, 1.0]));
-        growable.push(DenseVectorView::new(&[2.0f32, 1.0]));
-
-        let query = DenseVectorView::new(&[1.5f32, 1.0]);
-        let results = growable.search(query, 2);
-
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].vector, 2);
-        assert_eq!(results[0].distance, DotProduct::from(4.0));
-        let second = &results[1];
-        assert!(matches!(second.vector, 0));
-        assert_eq!(second.distance, DotProduct::from(2.0));
-
-        growable.push(DenseVectorView::new(&[5.0f32, 5.0]));
-        growable.push(DenseVectorView::new(&[6.0f32, 6.0]));
-
-        let results = growable.search(query, 2);
-
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].vector, 4);
-        assert_eq!(results[1].vector, 3);
-    }
-
-    #[test]
     fn scored_range_order_obeys_distance_then_start() {
         let r1 = ScoredRange {
             distance: DotProduct::from(2.0),
@@ -353,19 +280,6 @@ mod tests {
         assert_eq!(growable.output_dim(), 2);
         assert!(!growable.is_empty());
         assert!(growable.nnz() > 0);
-    }
-
-    #[test]
-    fn dataset_search_with_zero_k_returns_empty() {
-        type Encoder = PlainDenseQuantizer<f32, SquaredEuclideanDistance>;
-
-        let encoder = Encoder::new(1);
-        let mut growable = DenseDatasetGrowable::new(encoder);
-        growable.push(DenseVectorView::new(&[0.0f32]));
-        let dataset: DenseDataset<Encoder> = growable.into();
-        let query = DenseVectorView::new(&[0.0f32]);
-
-        assert!(dataset.search(query, 0).is_empty());
     }
 
     #[test]
