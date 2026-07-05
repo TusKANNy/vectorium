@@ -79,7 +79,7 @@ pub use encoders::sparse_scalar::{
 
 pub use core::dataset::{Dataset, DatasetGrowable, DenseData, SparseData, VectorId};
 pub use core::flat_index::FlatIndex;
-pub use core::index::Index;
+pub use core::index::{Index, IndexStats};
 pub use core::storage::{
     GrowableSparseStorage, ImmutableSparseStorage, SparseStorage, SparseStorageMut,
 };

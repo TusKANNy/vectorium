@@ -1,4 +1,5 @@
 use itertools::Itertools;
+use serde::{Deserialize, Serialize};
 
 use crate::Dataset;
 use crate::VectorId;
@@ -9,6 +10,7 @@ use crate::core::vector_encoder::{QueryEvaluator, VectorEncoder};
 /// Brute-force index that wraps a dataset and scores every vector exhaustively.
 ///
 /// Useful for small collections or as a correctness baseline for approximate indexes.
+#[derive(Serialize, Deserialize)]
 pub struct FlatIndex<D: Dataset> {
     dataset: D,
 }
@@ -45,10 +47,7 @@ impl<D: Dataset> From<D> for FlatIndex<D> {
     }
 }
 
-impl<D: Dataset> Index<D> for FlatIndex<D> {
-    type BuildParams = ();
-    type SearchParams = ();
-
+impl<D: Dataset> crate::core::index::IndexStats for FlatIndex<D> {
     fn n_elements(&self) -> usize {
         self.dataset.len()
     }
@@ -56,21 +55,29 @@ impl<D: Dataset> Index<D> for FlatIndex<D> {
     fn dim(&self) -> usize {
         self.dataset.input_dim()
     }
+}
 
-    fn print_space_usage_bytes(&self) {
+impl<D: Dataset> FlatIndex<D> {
+    /// Space usage in bytes (a flat index adds nothing beyond its dataset).
+    pub fn print_space_usage_bytes(&self) {
         println!("FlatIndex: no overhead beyond the underlying dataset");
     }
+}
 
-    fn build_index(dataset: D, _: &()) -> Self {
-        FlatIndex { dataset }
-    }
+impl<D: Dataset> Index for FlatIndex<D>
+where
+    <D::Encoder as VectorEncoder>::Distance: crate::distances::Distance,
+{
+    type Query<'q> = <D::Encoder as VectorEncoder>::QueryVector<'q>;
+    type Distance = <D::Encoder as VectorEncoder>::Distance;
+    type SearchParams = ();
 
     fn search<'q>(
-        &'q self,
-        query: <D::Encoder as VectorEncoder>::QueryVector<'q>,
+        &self,
+        query: Self::Query<'q>,
         k: usize,
         _: &(),
-    ) -> Vec<ScoredVector<<D::Encoder as VectorEncoder>::Distance>> {
+    ) -> Vec<ScoredVector<Self::Distance>> {
         if k == 0 {
             return Vec::new();
         }
@@ -129,19 +136,5 @@ mod tests {
                 .search(DenseVectorView::new(&[1.0f32, 0.0]), 0, &())
                 .is_empty()
         );
-    }
-
-    #[test]
-    fn flat_index_build_index_and_from_are_equivalent() {
-        type Enc = PlainDenseQuantizer<f32, DotProduct>;
-        let mut growable = DenseDatasetGrowable::new(Enc::new(2));
-        growable.push(DenseVectorView::new(&[1.0f32, 0.0]));
-        let dataset: DenseDataset<Enc> = growable.into();
-
-        let via_build = FlatIndex::build_index(dataset.clone(), &());
-        let via_from = FlatIndex::from(dataset);
-
-        assert_eq!(via_build.n_elements(), via_from.n_elements());
-        assert_eq!(via_build.dim(), via_from.dim());
     }
 }

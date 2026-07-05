@@ -7,9 +7,6 @@
 //! This is enforced via `debug_assert!` in `From<f32>` so the check is active in
 //! debug/test builds but compiled away in release builds.
 //!
-//! `Ord` is implemented via `partial_cmp(...).unwrap_or(Equal)` — NaN-free inputs
-//! are assumed, so the `unwrap_or` branch is unreachable in practice.
-//!
 //! `DotProduct` implements reversed ordering: larger values are considered better.
 
 #[cfg(feature = "multivec")]
@@ -97,9 +94,7 @@ impl Eq for SquaredEuclideanDistance {}
 impl Ord for SquaredEuclideanDistance {
     #[inline]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0
-            .partial_cmp(&other.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        self.0.total_cmp(&other.0)
     }
 }
 
@@ -145,10 +140,7 @@ impl Eq for DotProduct {}
 impl Ord for DotProduct {
     #[inline]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other
-            .0
-            .partial_cmp(&self.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        other.0.total_cmp(&self.0)
     }
 }
 

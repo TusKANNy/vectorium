@@ -23,36 +23,30 @@ use crate::VectorId;
 use serde::{Deserialize, Serialize};
 use std::collections::BinaryHeap;
 use std::fmt;
-use std::marker::PhantomData;
 
 /// A reranking index that combines a first-stage index for candidate retrieval
 /// with a higher-quality dataset for reranking.
 ///
 /// # Type Parameters
 /// - `FirstStageIndex`: The index type (e.g., HNSW from kANNolo) that implements Index
-/// - `FirstStageDataset`: The dataset type used by the first-stage index
 /// - `RerankDataset`: The dataset type used for reranking (e.g., MultiVectorDataset, DenseDataset)
 ///
 /// # Constraints
 /// Both the first-stage index and rerank dataset must contain the same number of items
 /// with the same vector IDs (same semantic content, different representations).
 #[derive(Serialize, Deserialize)]
-pub struct RerankIndex<FirstStageIndex, FirstStageDataset, RerankDataset>
+pub struct RerankIndex<FirstStageIndex, RerankDataset>
 where
-    FirstStageIndex: Index<FirstStageDataset>,
-    FirstStageDataset: Dataset,
+    FirstStageIndex: Index,
     RerankDataset: Dataset,
 {
     first_stage_index: FirstStageIndex,
     rerank_dataset: RerankDataset,
-    _phantom_first_stage: PhantomData<FirstStageDataset>,
 }
 
-impl<FirstStageIndex, FirstStageDataset, RerankDataset>
-    RerankIndex<FirstStageIndex, FirstStageDataset, RerankDataset>
+impl<FirstStageIndex, RerankDataset> RerankIndex<FirstStageIndex, RerankDataset>
 where
-    FirstStageIndex: Index<FirstStageDataset>,
-    FirstStageDataset: Dataset,
+    FirstStageIndex: Index,
     RerankDataset: Dataset,
 {
     /// Creates a new rerank index from a first-stage index and a rerank dataset.
@@ -68,7 +62,6 @@ where
         Self {
             first_stage_index,
             rerank_dataset,
-            _phantom_first_stage: PhantomData,
         }
     }
 
@@ -93,7 +86,7 @@ where
     #[allow(clippy::too_many_arguments)]
     pub fn search<'q>(
         &'q self,
-        first_stage_query: <FirstStageDataset::Encoder as VectorEncoder>::QueryVector<'q>,
+        first_stage_query: <FirstStageIndex as Index>::Query<'q>,
         rerank_query: <RerankDataset::Encoder as VectorEncoder>::QueryVector<'q>,
         k_candidates: usize,
         k_final: usize,
@@ -102,7 +95,6 @@ where
         beta: Option<usize>,
     ) -> Vec<ScoredVector<<RerankDataset::Encoder as VectorEncoder>::Distance>>
     where
-        <FirstStageDataset::Encoder as VectorEncoder>::Distance: Distance,
         <RerankDataset::Encoder as VectorEncoder>::Distance: Distance,
     {
         // Stage 1: Get candidates from first stage index using its own search method
@@ -272,11 +264,9 @@ where
     }
 }
 
-impl<FirstStageIndex, FirstStageDataset, RerankDataset> fmt::Debug
-    for RerankIndex<FirstStageIndex, FirstStageDataset, RerankDataset>
+impl<FirstStageIndex, RerankDataset> fmt::Debug for RerankIndex<FirstStageIndex, RerankDataset>
 where
-    FirstStageIndex: Index<FirstStageDataset> + fmt::Debug,
-    FirstStageDataset: Dataset + fmt::Debug,
+    FirstStageIndex: Index + fmt::Debug,
     RerankDataset: Dataset + fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -1,5 +1,6 @@
 use crate::core::dataset::{DatasetGrowable, VectorId};
 use crate::core::distances::{Distance, SquaredEuclideanDistance, dot_product_dense};
+use crate::core::index::Index;
 use crate::core::vector::DenseVectorView;
 use crate::core::vector_encoder::{QueryEvaluator, VectorEncoder};
 use crate::datasets::dense_dataset::DenseDatasetGeneric;
@@ -12,6 +13,12 @@ use rand::seq::index;
 use rayon::prelude::*;
 use std::time::Instant;
 
+/// Concrete f32 centroid dataset — fully resolved, with no associated-type
+/// projections in its storage type. Used throughout `train_with_index` so the
+/// where-clauses stay on a single concrete type rather than an alias chain.
+type F32Centroids =
+    DenseDatasetGeneric<ScalarDenseQuantizer<f32, f32, SquaredEuclideanDistance>, Box<[f32]>>;
+
 pub struct KMeans {
     n_iter: usize,
     n_redo: usize,
@@ -19,6 +26,8 @@ pub struct KMeans {
     /// Optional fixed seed for the RNG.  `None` = `from_entropy()` (non-deterministic).
     /// Setting a seed makes clustering fully reproducible across runs and thread counts.
     seed: Option<u64>,
+    /// Spherical k-means: L2-normalize each centroid after every update step.
+    spherical: bool,
 }
 
 impl KMeans {
@@ -59,41 +68,6 @@ impl KMeans {
         VIn: Float + ValueType + FromF32,
         VOut: Float + ValueType + FromF32,
     {
-        // HNSW path disabled: always fall back to flat dataset search.
-        /*
-        if _k >= index_threshold {
-            // Use HNSW index for large k
-            let hnsw_params = HNSWBuildParams {
-                num_neighbors_per_vec: 16,
-                ef_construction: 600,
-                initial_build_batch_size: 4,
-                max_build_batch_size: 64,
-            };
-            let centroids_hnsw = HNSW::<PlainDenseDataset<T>, PlainQuantizer<T>, GraphFixedDegree>::build_index(
-                centroids,
-                PlainQuantizer::<T>::new(Dataset::dim(centroids), DistanceType::Euclidean),
-                &hnsw_params,
-            );
-            let search_params = HNSWSearchParams { ef_search: 600 };
-
-            (0..dataset.len())
-                .into_par_iter()
-                .map(|i| {
-                    let query = dataset.get(i);
-                    let res = centroids_hnsw.search::<PlainDenseDataset<T>, PlainQuantizer<T>>(
-                        query,
-                        1,
-                        &search_params,
-                    );
-                    if let Some((dist, idx)) = res.into_iter().next() {
-                        (dist, idx)
-                    } else {
-                        (f32::MAX, usize::MAX)
-                    }
-                })
-                .collect()
-        } else {
-        */
         let centroid_encoder = centroids.encoder();
 
         dataset
@@ -112,6 +86,15 @@ impl KMeans {
                     .unwrap()
             })
             .collect()
+    }
+
+    fn renorm_l2(centroids: &mut [f32], d: usize) {
+        for sl in centroids.chunks_exact_mut(d) {
+            let norm: f32 = sl.iter().map(|x| x * x).sum::<f32>().sqrt();
+            // Take inverse of norm, take 0 if norm is 0
+            let inv_norm = f32::from(norm > 0.0) * (1.0 / norm.max(f32::MIN_POSITIVE));
+            sl.iter_mut().for_each(|x| *x *= inv_norm);
+        }
     }
 
     /// Computes the centroids of the clustering as the mean of vectors assigned to each cluster.
@@ -134,6 +117,7 @@ impl KMeans {
         k: usize,
         assignments: &[(f32, usize)],
         rng: &mut StdRng,
+        spherical: bool,
     ) -> (
         usize,
         Vec<f32>,
@@ -235,6 +219,10 @@ impl KMeans {
             histograms[ci] = histograms[cj] / 2.0;
             histograms[cj] /= 2.0;
             n_splits += 1;
+        }
+
+        if spherical {
+            Self::renorm_l2(&mut centroids, d);
         }
 
         // Convert f32 centroids back to VOut
@@ -361,8 +349,14 @@ impl KMeans {
                 obj = assignments.iter().map(|&(value, _)| value).sum();
 
                 // Update: recompute centroids
-                let (n_split, histograms, new_centroids) =
-                    Self::update_and_split(training_dataset, w, k, &assignments, &mut rng);
+                let (n_split, histograms, new_centroids) = Self::update_and_split(
+                    training_dataset,
+                    w,
+                    k,
+                    &assignments,
+                    &mut rng,
+                    self.spherical,
+                );
 
                 let imbalance_factor = Self::imbalance_factor(&histograms, k);
                 let split_time = t0.elapsed();
@@ -399,6 +393,147 @@ impl KMeans {
         }
         best_centroids
     }
+
+    /// Like [`train`], but uses a generic [`Index`] for centroid assignment instead of exhaustive
+    /// flat search.  At each k-means iteration the index is rebuilt from the current centroids and
+    /// then searched (top-1) for every training vector.
+    ///
+    /// Restricted to `f32` datasets because the centroid index is always `F32Centroids`.
+    pub fn train_with_index<Q>(
+        &self,
+        training_dataset: &F32Centroids,
+        k: usize,
+        weights: Option<Vec<f32>>,
+        build_centroid_index: impl Fn(F32Centroids) -> Q,
+        search_params: &Q::SearchParams,
+    ) -> F32Centroids
+    where
+        Q: Index + Sync,
+        for<'q> Q: Index<Query<'q> = DenseVectorView<'q, f32>>,
+        Q::SearchParams: Sync,
+    {
+        let n = training_dataset.len();
+        let d = training_dataset.output_dim();
+
+        if self.verbose {
+            println!(
+                "Clustering {} points in {}D to {} clusters (ANN assignment), redo {} times, {} iterations",
+                n, d, k, self.n_redo, self.n_iter
+            );
+        }
+
+        let mut best_obj = f32::MAX;
+        let mut best_centroids = F32Centroids::from_raw(
+            Vec::new().into_boxed_slice(),
+            0,
+            ScalarDenseQuantizer::new(d),
+        );
+
+        let w = weights.as_deref();
+        let mut rng = match self.seed {
+            Some(s) => StdRng::seed_from_u64(s),
+            None => StdRng::from_entropy(),
+        };
+
+        for redo in 0..self.n_redo {
+            let mut centroids_builder =
+                PlainDenseDatasetGrowable::with_capacity(ScalarDenseQuantizer::new(d), k);
+            let mut init_rng = match self.seed {
+                Some(s) => StdRng::seed_from_u64(s + 1),
+                None => StdRng::from_entropy(),
+            };
+            for i in index::sample(&mut init_rng, n, k).into_iter() {
+                centroids_builder.push(training_dataset.get(i as VectorId));
+            }
+            let mut centroids: F32Centroids = centroids_builder.into();
+
+            let mut obj;
+            let mut average_imbalance_factor = 0.0;
+            let mut total_splits = 0;
+
+            for i in 0..self.n_iter {
+                let t0 = Instant::now();
+                let centroid_index = build_centroid_index(centroids.clone());
+                let build_idx_time = t0.elapsed();
+
+                let t0 = Instant::now();
+                let assignments =
+                    Self::assign_with_index(training_dataset, &centroid_index, search_params);
+                let search_time = t0.elapsed();
+
+                let t0 = Instant::now();
+                obj = assignments.iter().map(|&(v, _)| v).sum();
+
+                let (n_split, histograms, new_centroids) = Self::update_and_split(
+                    training_dataset,
+                    w,
+                    k,
+                    &assignments,
+                    &mut rng,
+                    self.spherical,
+                );
+                let imbalance_factor = Self::imbalance_factor(&histograms, k);
+                let split_time = t0.elapsed();
+
+                average_imbalance_factor += imbalance_factor;
+                total_splits += n_split;
+
+                if obj < best_obj {
+                    if self.verbose {
+                        println!("New best objective: {obj} (keep new clusters)");
+                    }
+                    best_obj = obj;
+                    best_centroids = new_centroids.clone();
+                }
+                centroids = new_centroids;
+
+                if self.verbose {
+                    println!(
+                        "Iteration {i}, imbalance: {imbalance_factor:.4}, splits: {n_split}, \
+                         build_idx: {build_idx_time:.2?}, search: {search_time:.2?}, split: {split_time:.2?}"
+                    );
+                }
+            }
+
+            if self.verbose {
+                println!(
+                    "Outer iteration {redo} -- average imbalance: {:.4}, splits: {total_splits}",
+                    average_imbalance_factor / (self.n_iter + 1) as f32,
+                );
+            }
+        }
+
+        best_centroids
+    }
+
+    /// Assigns each vector in `dataset` to its nearest centroid using `index` (top-1 search).
+    pub fn assign_with_index<Q>(
+        dataset: &F32Centroids,
+        index: &Q,
+        search_params: &Q::SearchParams,
+    ) -> Vec<(f32, usize)>
+    where
+        Q: Index + Sync,
+        for<'q> Q: Index<Query<'q> = DenseVectorView<'q, f32>>,
+        Q::SearchParams: Sync,
+    {
+        let values = dataset.values();
+        let dim = dataset.output_dim();
+        let n = dataset.len();
+
+        (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let query = DenseVectorView::new(&values[i * dim..(i + 1) * dim]);
+                let results = index.search(query, 1, search_params);
+                let best = results
+                    .into_iter()
+                    .next()
+                    .expect("centroid index returned no result during k-means assignment");
+                (best.distance.distance(), best.vector as usize)
+            })
+            .collect()
+    }
 }
 
 pub struct KMeansBuilder {
@@ -407,16 +542,18 @@ pub struct KMeansBuilder {
     verbose: bool,
     max_points_per_centroid: usize,
     seed: Option<u64>,
+    spherical: bool,
 }
 
 impl Default for KMeansBuilder {
     fn default() -> Self {
         KMeansBuilder {
-            n_iter: 25,
+            n_iter: 10,
             n_redo: 1,
             verbose: false,
             max_points_per_centroid: 256,
             seed: None,
+            spherical: false,
         }
     }
 }
@@ -464,12 +601,19 @@ impl KMeansBuilder {
         self
     }
 
+    /// Spherical k-means: L2-normalize centroids after every update step.
+    pub fn spherical(mut self, spherical: bool) -> KMeansBuilder {
+        self.spherical = spherical;
+        self
+    }
+
     pub fn build(self) -> KMeans {
         KMeans {
             n_iter: self.n_iter,
             n_redo: self.n_redo,
             verbose: self.verbose,
             seed: self.seed,
+            spherical: self.spherical,
         }
     }
 }
