@@ -55,6 +55,7 @@ pub use core::vector_encoder::{
 
 pub use clustering::{KMeans, KMeansBuilder};
 
+pub use encoders::binary::{BinaryQuantizer, BinaryQueryEvaluator};
 pub use encoders::dense_scalar::{
     PlainDenseQuantizer, PlainDenseQuantizerDotProduct, PlainDenseQuantizerSquaredEuclidean,
     ScalarDenseQuantizer, ScalarDenseQuantizerDotProduct, ScalarDenseQuantizerSame,
@@ -100,6 +101,9 @@ pub type ScalarDenseDatasetGrowable<VIn, VOut, D> =
 
 pub type PlainDenseDataset<V, D> = ScalarDenseDataset<V, V, D>;
 pub type PlainDenseDatasetGrowable<V, D> = ScalarDenseDatasetGrowable<V, V, D>;
+
+/// Dense dataset backed by the 1-bit-per-component [`BinaryQuantizer`] (packed into `u64` words).
+pub type BinaryDenseDataset = DenseDataset<BinaryQuantizer>;
 
 // Useful type aliases for sparse dataset types
 pub type ScalarSparseDataset<C, W, V, D> = SparseDataset<ScalarSparseQuantizer<C, W, V, D>>;

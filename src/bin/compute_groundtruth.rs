@@ -57,7 +57,7 @@ struct Args {
     #[arg(default_value = "u32")]
     component_type: String,
 
-    /// Encoder: 'plain', 'pq' (dense only), or 'dotvbyte' (default: plain)
+    /// Encoder: 'plain', 'pq' (dense only), 'binary' (dense, dotproduct only), or 'dotvbyte' (default: plain)
     #[clap(long, value_parser)]
     #[arg(default_value = "plain")]
     encoder: String,
@@ -92,9 +92,9 @@ fn main() {
     if encoder == "dotvbyte" {
         println!("Dotvbyte encoder: quantizing values using FixedU8Q.");
     }
-    if encoder != "plain" && encoder != "dotvbyte" && encoder != "pq" {
+    if encoder != "plain" && encoder != "dotvbyte" && encoder != "pq" && encoder != "binary" {
         eprintln!(
-            "Unknown encoder='{}'. Use encoder='plain'|'dotvbyte'|'pq' (dense only).",
+            "Unknown encoder='{}'. Use encoder='plain'|'dotvbyte'|'pq'|'binary' (dense only).",
             encoder
         );
         return;
@@ -180,9 +180,20 @@ fn main() {
                     eprintln!("Failed to compute PQ groundtruth: {}", err);
                 }
             }
+            "binary" => {
+                if value_type != "f32" {
+                    eprintln!("Encoder 'binary' requires value_type='f32'.");
+                    return;
+                }
+                if distance != "dotproduct" {
+                    eprintln!("Encoder 'binary' requires distance='dotproduct'.");
+                    return;
+                }
+                compute_dense_groundtruth_binary(input_path, query_path, output_path, k);
+            }
             _ => {
                 eprintln!(
-                    "Encoder '{}' is not supported for dense datasets. Use 'plain' or 'pq'.",
+                    "Encoder '{}' is not supported for dense datasets. Use 'plain', 'pq', or 'binary'.",
                     encoder
                 );
             }
@@ -190,6 +201,10 @@ fn main() {
         "sparse" => {
             if encoder == "pq" {
                 eprintln!("Encoder 'pq' is only supported with dataset_type='dense'.");
+                return;
+            }
+            if encoder == "binary" {
+                eprintln!("Encoder 'binary' is only supported with dataset_type='dense'.");
                 return;
             }
             // Sparse dataset logic
@@ -393,6 +408,77 @@ fn compute_dense_groundtruth<V, D>(
 
     let mut output_file = File::create(output_path).expect("failed to create output file");
 
+    for (query_id, result) in results.iter().enumerate() {
+        for (idx, (score, doc_id)) in result.iter().enumerate() {
+            writeln!(
+                &mut output_file,
+                "{query_id}\t{doc_id}\t{}\t{score}",
+                idx + 1
+            )
+            .expect("failed to write result");
+        }
+    }
+}
+
+/// Ground truth for the 1-bit-per-component binary encoder (dense, dot product only).
+///
+/// Reads the dataset and queries as f32, learns per-component means and binarizes the
+/// dataset via `ConvertInto`, then scores each query exhaustively with the symmetric
+/// popcount dot product.
+fn compute_dense_groundtruth_binary(
+    input_path: String,
+    query_path: String,
+    output_path: String,
+    k: usize,
+) {
+    use vectorium::{BinaryQuantizer, DenseDataset, VectorEncoder};
+
+    let dataset_f32 = readers::read_npy_f32::<distances::DotProduct>(&input_path)
+        .expect("failed to read dataset");
+    let queries =
+        readers::read_npy_f32::<distances::DotProduct>(&query_path).expect("failed to read queries");
+
+    let start_time = Instant::now();
+    let dataset: DenseDataset<BinaryQuantizer> = dataset_f32.convert_into();
+    println!(
+        "Binary encoding completed in {:.3}s",
+        start_time.elapsed().as_secs_f64()
+    );
+
+    println!("N documents: {}", dataset.len());
+    println!("N dims: {}", dataset.input_dim());
+    println!("N u64 words per vector: {}", dataset.encoder().output_dim());
+    println!("N queries: {}", queries.len());
+    println!("N dims: {}", queries.input_dim());
+    println!("Dataset size: {:.3} GiB", dataset.space_usage_GiB());
+    println!("Computing ground truth for {} queries...", queries.len());
+
+    let start_time = Instant::now();
+
+    let pb_style = ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec}, ETA: {eta})")
+        .unwrap()
+        .progress_chars("=>-");
+
+    let results: Vec<Vec<(f32, u64)>> = queries
+        .par_iter()
+        .progress_count(queries.len() as u64)
+        .with_style(pb_style)
+        .map(|qvec| {
+            let res: Vec<DatasetResult<distances::DotProduct>> =
+                FlatIndex::from(&dataset).search(qvec, k, &());
+            res.into_iter()
+                .map(|r| (r.distance.distance(), r.vector))
+                .collect()
+        })
+        .collect();
+
+    println!(
+        "Groundtruth computed in {:.3}s",
+        start_time.elapsed().as_secs_f64()
+    );
+
+    let mut output_file = File::create(output_path).expect("failed to create output file");
     for (query_id, result) in results.iter().enumerate() {
         for (idx, (score, doc_id)) in result.iter().enumerate() {
             writeln!(

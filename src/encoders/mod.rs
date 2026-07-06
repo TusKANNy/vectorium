@@ -1,3 +1,4 @@
+pub mod binary;
 pub mod dense_scalar;
 pub mod dotvbyte_fixedu8;
 #[cfg(feature = "multivec")]

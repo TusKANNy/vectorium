@@ -52,6 +52,11 @@ name = "compute_groundtruth"
 path = "src/bin/compute_groundtruth.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "evaluate_binary"
+path = "src/bin/evaluate_binary.rs"
+required-features = ["cli"]
+
 
 [profile.release]
 opt-level = 3
