@@ -394,7 +394,7 @@ fn quantize_query_multibit(residual: &[f32], query_bits: u32) -> (Vec<u8>, f32, 
         .iter()
         .map(|&r| (r.abs() as f64 / norm) as f32)
         .collect();
-    let t = best_rescale_factor(&o_abs, ex_bits);
+    let t: f64 = best_rescale_factor(&o_abs, ex_bits);
 
     let codes: Vec<u8> = residual
         .iter()

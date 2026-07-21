@@ -9,4 +9,5 @@ pub mod multivec_scalar;
 pub mod multivec_two_level_pq;
 pub mod pq;
 pub mod rabitq;
+pub mod rabitq_ext;
 pub mod sparse_scalar;

@@ -60,6 +60,7 @@ pub use encoders::binary::{BinaryQuantizer, BinaryQueryEvaluator};
 pub use encoders::rabitq::{
     RabitqConfig, RabitqQuantizer, RabitqQueryEvaluator, RabitqSupportedDistance,
 };
+pub use encoders::rabitq_ext::{RabitqExtConfig, RabitqExtQuantizer, RabitqExtQueryEvaluator};
 pub use transformations::fht_kac::FhtKacRotator;
 
 pub use encoders::dense_scalar::{
@@ -124,6 +125,20 @@ pub type RabitqDenseDataset = DenseDataset<RabitqQuantizer<DotProduct>>;
 /// [`RabitqDenseDataset`] scored with the RaBitQ squared-Euclidean estimator.
 pub type RabitqDenseDatasetSquaredEuclidean =
     DenseDataset<RabitqQuantizer<SquaredEuclideanDistance>>;
+
+/// Extended RaBitQ dense dataset: rotated multi-bit document codes (a configurable
+/// `total_bits ∈ 1..=9` per component, plane-major) with per-document scan metadata.
+///
+/// Defaults to inner-product scoring. Use [`RabitqExtDenseDatasetSquaredEuclidean`] for Euclidean
+/// search; document codes are identical either way, so the metric is purely a scoring choice.
+///
+/// Built via [`RabitqExtQuantizer::encode_dataset`] with a [`RabitqExtConfig`]; stores
+/// `total_bits · d/64` code words plus one metadata word per vector.
+pub type RabitqExtDenseDataset = DenseDataset<RabitqExtQuantizer<DotProduct>>;
+
+/// [`RabitqExtDenseDataset`] scored with the RaBitQ squared-Euclidean estimator.
+pub type RabitqExtDenseDatasetSquaredEuclidean =
+    DenseDataset<RabitqExtQuantizer<SquaredEuclideanDistance>>;
 
 // Useful type aliases for sparse dataset types
 pub type ScalarSparseDataset<C, W, V, D> = SparseDataset<ScalarSparseQuantizer<C, W, V, D>>;

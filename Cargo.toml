@@ -57,6 +57,16 @@ name = "evaluate_rabitq"
 path = "src/bin/evaluate_rabitq.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "evaluate_rabitq_ext"
+path = "src/bin/evaluate_rabitq_ext.rs"
+required-features = ["cli"]
+
+[[bin]]
+name = "evaluate_pq"
+path = "src/bin/evaluate_pq.rs"
+required-features = ["cli"]
+
 
 [profile.release]
 opt-level = 3
