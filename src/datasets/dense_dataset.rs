@@ -121,6 +121,17 @@ where
         }
     }
 
+    /// Mutable access to the encoder.
+    ///
+    /// Intended for tuning *query-side* encoder settings on an already-built dataset, such as
+    /// [`RabitqQuantizer::set_query_bits`](crate::encoders::rabitq::RabitqQuantizer::set_query_bits).
+    /// Mutating state that the stored codes depend on (dimensions, centroids, rotation) invalidates
+    /// the dataset.
+    #[inline]
+    pub fn encoder_mut(&mut self) -> &mut E {
+        &mut self.encoder
+    }
+
     /// Access the contiguous storage backing the dataset.
     ///
     /// This is the same buffer that gets populated by `DenseDatasetGrowable::push`.

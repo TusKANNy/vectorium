@@ -394,7 +394,7 @@ fn quantize_query_multibit(residual: &[f32], query_bits: u32) -> (Vec<u8>, f32, 
         .iter()
         .map(|&r| (r.abs() as f64 / norm) as f32)
         .collect();
-    let t: f64 = best_rescale_factor(&o_abs, ex_bits);
+    let t: f64   = best_rescale_factor(&o_abs, ex_bits);
 
     let codes: Vec<u8> = residual
         .iter()
@@ -464,6 +464,28 @@ pub struct RabitqQuantizer<D = DotProduct> {
 }
 
 impl<D: RabitqSupportedDistance> RabitqQuantizer<D> {
+    /// The number of bits currently used to quantize the query.
+    #[inline]
+    pub fn query_bits(&self) -> u32 {
+        self.config.query_bits
+    }
+
+    /// Set the number of bits used to quantize the *query*.
+    ///
+    /// Document codes do not depend on this value, so it is safe to change on an already-encoded
+    /// dataset: it trades scan cost for estimate accuracy without re-encoding. A single index can
+    /// therefore serve every `query_bits` setting.
+    ///
+    /// Panics unless `query_bits ∈ 1..=8`.
+    #[inline]
+    pub fn set_query_bits(&mut self, query_bits: u32) {
+        assert!(
+            (1..=8).contains(&query_bits),
+            "RabitqQuantizer requires query_bits in 1..=8, got {query_bits}"
+        );
+        self.config.query_bits = query_bits;
+    }
+
     /// Learn per-component means over `dataset` and build the rotation.
     ///
     /// Panics unless the dataset dimension is a multiple of 64.
