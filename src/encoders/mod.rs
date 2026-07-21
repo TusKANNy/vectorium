@@ -8,4 +8,5 @@ pub mod multivec_scalar;
 #[cfg(feature = "multivec")]
 pub mod multivec_two_level_pq;
 pub mod pq;
+pub mod rabitq;
 pub mod sparse_scalar;

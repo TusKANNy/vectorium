@@ -24,6 +24,7 @@ pub mod clustering;
 pub mod core;
 pub mod datasets;
 pub mod encoders;
+pub mod transformations;
 pub mod utils;
 
 pub use core::dataset;
@@ -56,6 +57,11 @@ pub use core::vector_encoder::{
 pub use clustering::{KMeans, KMeansBuilder};
 
 pub use encoders::binary::{BinaryQuantizer, BinaryQueryEvaluator};
+pub use encoders::rabitq::{
+    RabitqConfig, RabitqQuantizer, RabitqQueryEvaluator, RabitqSupportedDistance,
+};
+pub use transformations::fht_kac::FhtKacRotator;
+
 pub use encoders::dense_scalar::{
     PlainDenseQuantizer, PlainDenseQuantizerDotProduct, PlainDenseQuantizerSquaredEuclidean,
     ScalarDenseQuantizer, ScalarDenseQuantizerDotProduct, ScalarDenseQuantizerSame,
@@ -104,6 +110,20 @@ pub type PlainDenseDatasetGrowable<V, D> = ScalarDenseDatasetGrowable<V, V, D>;
 
 /// Dense dataset backed by the 1-bit-per-component [`BinaryQuantizer`] (packed into `u64` words).
 pub type BinaryDenseDataset = DenseDataset<BinaryQuantizer>;
+
+/// RaBitQ-style binary dense dataset: rotated 1-bit sign codes with per-document factor/norm
+/// metadata, scored with the RaBitQ estimator.
+///
+/// Defaults to inner-product scoring. Use [`RabitqDenseDatasetSquaredEuclidean`] for Euclidean
+/// search; document codes are identical either way, so the metric is purely a scoring choice.
+///
+/// Built via [`RabitqQuantizer::encode_dataset`] with a [`RabitqConfig`]; stores `d/64` code
+/// words plus one metadata word per vector.
+pub type RabitqDenseDataset = DenseDataset<RabitqQuantizer<DotProduct>>;
+
+/// [`RabitqDenseDataset`] scored with the RaBitQ squared-Euclidean estimator.
+pub type RabitqDenseDatasetSquaredEuclidean =
+    DenseDataset<RabitqQuantizer<SquaredEuclideanDistance>>;
 
 // Useful type aliases for sparse dataset types
 pub type ScalarSparseDataset<C, W, V, D> = SparseDataset<ScalarSparseQuantizer<C, W, V, D>>;

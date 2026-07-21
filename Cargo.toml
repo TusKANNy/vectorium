@@ -53,8 +53,8 @@ path = "src/bin/compute_groundtruth.rs"
 required-features = ["cli"]
 
 [[bin]]
-name = "evaluate_binary"
-path = "src/bin/evaluate_binary.rs"
+name = "evaluate_rabitq"
+path = "src/bin/evaluate_rabitq.rs"
 required-features = ["cli"]
 
 
