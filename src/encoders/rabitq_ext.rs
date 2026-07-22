@@ -233,6 +233,113 @@ fn doc_planes_ip<const QB: usize>(
     (ip, sum_u)
 }
 
+/// Six-way [`ip_signed_planes`]: the fused cross-candidate kernel. Returns the per-document
+/// `(ip, ppc)` pairs as `([ip; 6], [ppc; 6])`.
+///
+/// Each query-plane chunk is broadcast **once** per chunk position and reused against six
+/// documents' chunks, whose accumulator chains are independent — the cross-candidate ILP that six
+/// back-to-back single-document calls can't get. Register pressure is kept flat across `QB` by
+/// folding the `2^j` plane weight into the accumulation (`(dv & qv).count_ones() << j`): one `ip`
+/// accumulator per document instead of the single-document kernel's per-plane array, which at six
+/// documents (`6·QB` registers) would spill for the larger plane counts.
+#[inline]
+fn ip_signed_planes_batch6<const QB: usize>(
+    codes: [&[u64]; 6],
+    planes: &[u64],
+) -> ([u64; 6], [u64; 6]) {
+    let nw = codes[0].len();
+    debug_assert!(codes.iter().all(|c| c.len() == nw));
+    // Same layout invariant as `ip_signed_planes`: plane `j` occupies `planes[j*nw .. (j+1)*nw]`,
+    // so every plane load at `j*nw + base` with `base + LANES <= nw` is in bounds.
+    debug_assert_eq!(
+        planes.len(),
+        QB * nw,
+        "plane buffer must be QB * code.len()"
+    );
+    let full = nw / LANES;
+    let tail_len = nw % LANES;
+
+    let mut ppc_acc = [Simd::<u64, LANES>::splat(0); 6];
+    let mut ip_acc = [Simd::<u64, LANES>::splat(0); 6];
+    for c in 0..full {
+        let base = c * LANES;
+        // SAFETY: `base + LANES <= nw == codes[k].len()` (asserted above); each read of `LANES`
+        // contiguous words is in bounds. Skips the bounds checks on these hot loads.
+        let dv: [Simd<u64, LANES>; 6] = std::array::from_fn(|k| {
+            Simd::from_array(unsafe { *(codes[k].as_ptr().add(base) as *const [u64; LANES]) })
+        });
+        for (v, a) in dv.iter().zip(ppc_acc.iter_mut()) {
+            *a += v.count_ones();
+        }
+        for j in 0..QB {
+            let off = j * nw + base;
+            // SAFETY: `off + LANES <= QB*nw = planes.len()` (see the invariant above).
+            let qv = Simd::<u64, LANES>::from_array(unsafe {
+                *(planes.as_ptr().add(off) as *const [u64; LANES])
+            });
+            let shift = Simd::<u64, LANES>::splat(j as u64);
+            for (v, a) in dv.iter().zip(ip_acc.iter_mut()) {
+                *a += (v & qv).count_ones() << shift;
+            }
+        }
+    }
+
+    // Remainder (`nw % LANES` words): zero-pad both sides up to a full register, as in the
+    // single-document kernel; the padding contributes nothing to the AND-popcount or to `ppc`.
+    if tail_len > 0 {
+        let base = full * LANES;
+        let dv: [Simd<u64, LANES>; 6] =
+            std::array::from_fn(|k| Simd::load_or_default(&codes[k][base..]));
+        for (v, a) in dv.iter().zip(ppc_acc.iter_mut()) {
+            *a += v.count_ones();
+        }
+        for j in 0..QB {
+            let off = j * nw + base;
+            // SAFETY: `off + tail_len == j*nw + nw <= QB*nw = planes.len()` (see the invariant
+            // above), so this sub-`LANES` slice is in bounds.
+            let qv = Simd::<u64, LANES>::load_or_default(unsafe {
+                planes.get_unchecked(off..off + tail_len)
+            });
+            let shift = Simd::<u64, LANES>::splat(j as u64);
+            for (v, a) in dv.iter().zip(ip_acc.iter_mut()) {
+                *a += (v & qv).count_ones() << shift;
+            }
+        }
+    }
+
+    (
+        ip_acc.map(|a| a.reduce_sum()),
+        ppc_acc.map(|a| a.reduce_sum()),
+    )
+}
+
+/// Six-way [`doc_planes_ip`]: the full document/query code inner product for six documents at
+/// once. Returns `([⟨u, c⟩; 6], [Σu; 6])`.
+///
+/// One [`ip_signed_planes_batch6`] call per document plane `a`, accumulated with weight `2^a` —
+/// the query planes are re-broadcast per document plane exactly as in the single-document path,
+/// but shared across all six candidates within each pass.
+#[inline]
+fn doc_planes_ip_batch6<const QB: usize>(
+    codes: [&[u64]; 6],
+    query_planes: &[u64],
+    num_words: usize,
+) -> ([u64; 6], [u64; 6]) {
+    let mut ip = [0u64; 6];
+    let mut sum_u = [0u64; 6];
+    let n_planes = codes[0].len() / num_words;
+    for a in 0..n_planes {
+        let doc_planes: [&[u64]; 6] =
+            std::array::from_fn(|k| &codes[k][a * num_words..(a + 1) * num_words]);
+        let (ip_a, ppc_a) = ip_signed_planes_batch6::<QB>(doc_planes, query_planes);
+        for k in 0..6 {
+            ip[k] += ip_a[k] << a;
+            sum_u[k] += ppc_a[k] << a;
+        }
+    }
+    (ip, sum_u)
+}
+
 /// Tight lower bounds for the rescale-factor search window, indexed by `ex_bits` (RaBitQ-Library's
 /// `kTightStart`): candidate factors below `t_end · TIGHT_START[ex_bits]` never win.
 const TIGHT_START: [f64; 9] = [0.0, 0.15, 0.20, 0.52, 0.59, 0.71, 0.75, 0.77, 0.81];
@@ -873,6 +980,28 @@ impl<'e, D> RabitqExtQueryEvaluator<'e, D> {
             _ => doc_planes_ip::<9>(code, buf, self.num_words),
         }
     }
+
+    /// Six-way [`Self::doc_ip`]: `(⟨u, c⟩, Σu)` for six documents through the fused batch kernel
+    /// ([`doc_planes_ip_batch6`]), dispatched on the compile-time plane count.
+    #[inline]
+    fn doc_ip_batch6(&self, codes: [&[u64]; 6]) -> ([u64; 6], [u64; 6]) {
+        let buf = if self.planes.is_empty() {
+            &self.query_words
+        } else {
+            &self.planes
+        };
+        match self.query_bits {
+            1 => doc_planes_ip_batch6::<1>(codes, buf, self.num_words),
+            2 => doc_planes_ip_batch6::<2>(codes, buf, self.num_words),
+            3 => doc_planes_ip_batch6::<3>(codes, buf, self.num_words),
+            4 => doc_planes_ip_batch6::<4>(codes, buf, self.num_words),
+            5 => doc_planes_ip_batch6::<5>(codes, buf, self.num_words),
+            6 => doc_planes_ip_batch6::<6>(codes, buf, self.num_words),
+            7 => doc_planes_ip_batch6::<7>(codes, buf, self.num_words),
+            8 => doc_planes_ip_batch6::<8>(codes, buf, self.num_words),
+            _ => doc_planes_ip_batch6::<9>(codes, buf, self.num_words),
+        }
+    }
 }
 
 impl<'e, 'v, D: RabitqSupportedDistance> QueryEvaluator<DenseVectorView<'v, u64>>
@@ -902,6 +1031,32 @@ impl<'e, 'v, D: RabitqSupportedDistance> QueryEvaluator<DenseVectorView<'v, u64>
         // Metric-specific combine (see the module docs and `RabitqSupportedDistance`): both metrics
         // reduce to ⟨r, q_r⟩ ≈ s_ext·⟨u + cb, q̂⟩ plus a per-query additive term.
         D::from_terms(self.add, f_add, term)
+    }
+
+    /// Fused six-candidate scan: the query planes (or sign words) are broadcast once per chunk
+    /// and interleaved against all six documents' popcount accumulators in a single pass per
+    /// document plane ([`doc_planes_ip_batch6`]) — cross-candidate ILP the default
+    /// six-single-calls dispatch can't reach. The scalar combine matches
+    /// [`Self::compute_distance`] operation for operation, so batch and single scores are
+    /// bit-identical.
+    #[inline]
+    fn compute_distances_batch6(&self, vectors: [DenseVectorView<'v, u64>; 6]) -> [D; 6] {
+        let total_words = self.total_bits as usize * self.num_words;
+        let words: [&[u64]; 6] = vectors.map(|v| v.values());
+        let codes: [&[u64]; 6] = std::array::from_fn(|k| &words[k][..total_words]);
+
+        let (ips, sum_us) = self.doc_ip_batch6(codes);
+
+        std::array::from_fn(|k| {
+            let (f_add, s_ext) = unpack_metadata(words[k][total_words]);
+            let raw = if self.planes.is_empty() {
+                2.0 * ips[k] as f32 - sum_us[k] as f32 + self.q_const
+            } else {
+                self.delta * ips[k] as f32 + self.vl * sum_us[k] as f32 + self.q_const
+            };
+            let term = s_ext * self.scale * raw;
+            D::from_terms(self.add, f_add, term)
+        })
     }
 }
 
@@ -1574,6 +1729,56 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The fused batch kernel must be bit-identical to six single `compute_distance` calls,
+    /// across the 1-bit and multi-bit query paths and every document plane count, under metric `D`.
+    fn assert_batch6_matches_singles<D: RabitqSupportedDistance + std::fmt::Debug>(
+        vectors: &[Vec<f32>],
+        dataset: &PlainDenseDataset<f32, DotProduct>,
+    ) {
+        for (total_bits, query_bits) in [(2, 1), (2, 3), (4, 1), (4, 4), (9, 8)] {
+            let config = ext_config(total_bits, query_bits, true);
+            let ds = RabitqExtQuantizer::<D>::encode_dataset(dataset, config);
+            for q in vectors {
+                let evaluator = ds.encoder().query_evaluator(DenseVectorView::new(q));
+                let views = std::array::from_fn(|k| ds.get(k as u64));
+                let batch = evaluator.compute_distances_batch6(views);
+                let singles = std::array::from_fn(|k| evaluator.compute_distance(ds.get(k as u64)));
+                assert_eq!(batch, singles, "{config:?}");
+            }
+            // The build path (`vector_evaluator`) dispatches on `total_bits` planes (up to 9):
+            // its batch scores must also match its singles.
+            let evaluator = ds.encoder().vector_evaluator(ds.get(0));
+            let views = std::array::from_fn(|k| ds.get(k as u64));
+            let batch = evaluator.compute_distances_batch6(views);
+            let singles = std::array::from_fn(|k| evaluator.compute_distance(ds.get(k as u64)));
+            assert_eq!(batch, singles, "build path, {config:?}");
+        }
+    }
+
+    #[test]
+    fn compute_distances_batch6_matches_six_singles() {
+        let vectors = varied_vectors();
+        let dataset = plain_dataset(&vectors);
+        assert_batch6_matches_singles::<SquaredEuclideanDistance>(&vectors, &dataset);
+        assert_batch6_matches_singles::<DotProduct>(&vectors, &dataset);
+    }
+
+    #[test]
+    fn compute_distances_batch6_matches_six_singles_wide() {
+        // d = 640 → 10 words per plane: exercises the 8-wide unchecked-load chunk loop *and* the
+        // 2-word tail (the d = 64 fixture is all tail).
+        let vectors: Vec<Vec<f32>> = (0..8)
+            .map(|k| {
+                (0..640)
+                    .map(|i| ((i * (k + 3)) as f32 * 0.13).sin())
+                    .collect()
+            })
+            .collect();
+        let dataset = plain_dataset(&vectors);
+        assert_batch6_matches_singles::<SquaredEuclideanDistance>(&vectors, &dataset);
+        assert_batch6_matches_singles::<DotProduct>(&vectors, &dataset);
     }
 
     #[test]
