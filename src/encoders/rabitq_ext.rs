@@ -65,6 +65,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::marker::PhantomData;
 use std::simd::Simd;
+use std::simd::cmp::SimdPartialEq;
 use std::simd::num::SimdUint;
 
 use crate::core::distances::DotProduct;
@@ -93,6 +94,13 @@ pub struct RabitqExtConfig {
     /// (`P = I` is a valid orthogonal transform), but the codes lose the information-spreading
     /// guarantee, so recall on real data is expected to drop.
     pub rotate: bool,
+    /// Use the **constant** rescale factor for document quantization instead of the exact per-vector
+    /// search ([`best_rescale_factor`]). When set (the default), the factor is estimated **once** at
+    /// [`train`](RabitqExtQuantizer::train) over random unit vectors and every document quantizes in a
+    /// single `O(d)` pass — RaBitQ-Library's `faster_config` build path, ~20× faster to encode. Clear
+    /// it (`--faster-quant false`) to run the exact per-vector optimal search, which costs a heap sweep
+    /// per vector for a marginal recall gain. Query quantization always uses the exact search.
+    pub faster_quant: bool,
 }
 
 impl Default for RabitqExtConfig {
@@ -102,6 +110,7 @@ impl Default for RabitqExtConfig {
             query_bits: 4,
             seed: 42,
             rotate: true,
+            faster_quant: true,
         }
     }
 }
@@ -228,6 +237,14 @@ fn doc_planes_ip<const QB: usize>(
 /// `kTightStart`): candidate factors below `t_end · TIGHT_START[ex_bits]` never win.
 const TIGHT_START: [f64; 9] = [0.0, 0.15, 0.20, 0.52, 0.59, 0.71, 0.75, 0.77, 0.81];
 
+/// Scratch buffers reused across [`best_rescale_factor`] calls to keep the exact per-vector search
+/// allocation-free on the batch encode path (one instance per Rayon worker).
+#[derive(Default)]
+struct RescaleScratch {
+    cur_code: Vec<i64>,
+    heap: BinaryHeap<Reverse<(u64, usize)>>,
+}
+
 /// Exact search for the rescale factor `t` maximizing the cosine between the ex-bit magnitude
 /// code (`+0.5`) and `o_abs` (the normalized `|residual|`).
 ///
@@ -236,7 +253,9 @@ const TIGHT_START: [f64; 9] = [0.0, 0.15, 0.20, 0.52, 0.59, 0.71, 0.75, 0.77, 0.
 /// maintaining the cosine numerator/denominator incrementally. Zero components are skipped —
 /// their candidate `t` is infinite and incrementing them can only lower the objective.
 /// Must not be called with `ex_bits = 0` (the sweep assumes `max_code ≥ 1`).
-fn best_rescale_factor(o_abs: &[f32], ex_bits: u32) -> f64 {
+///
+/// `scratch` is cleared and reused so the batch encode path pays no per-vector allocation.
+fn best_rescale_factor(o_abs: &[f32], ex_bits: u32, scratch: &mut RescaleScratch) -> f64 {
     const EPS: f64 = 1e-5;
     const N_ENUM: usize = 10;
     let dim = o_abs.len();
@@ -248,7 +267,9 @@ fn best_rescale_factor(o_abs: &[f32], ex_bits: u32) -> f64 {
     let t_end = (max_code as usize + N_ENUM) as f64 / max_o;
     let t_start = t_end * TIGHT_START[ex_bits as usize];
 
-    let mut cur_code = vec![0i64; dim];
+    let cur_code = &mut scratch.cur_code;
+    cur_code.clear();
+    cur_code.resize(dim, 0i64);
     let mut sqr_denominator = dim as f64 * 0.25;
     let mut numerator = 0.0f64;
     for (c, &o) in cur_code.iter_mut().zip(o_abs.iter()) {
@@ -259,7 +280,8 @@ fn best_rescale_factor(o_abs: &[f32], ex_bits: u32) -> f64 {
 
     // Min-heap of candidate `t` values. All candidates are positive finite floats, so ordering
     // their IEEE-754 bit patterns as integers orders the values — no float-Ord wrapper needed.
-    let mut heap: BinaryHeap<Reverse<(u64, usize)>> = BinaryHeap::new();
+    let heap = &mut scratch.heap;
+    heap.clear();
     for (i, &o) in o_abs.iter().enumerate() {
         if o > 0.0 {
             let t = (cur_code[i] + 1) as f64 / o as f64;
@@ -292,6 +314,52 @@ fn best_rescale_factor(o_abs: &[f32], ex_bits: u32) -> f64 {
     best_t
 }
 
+/// Number of random unit vectors averaged to estimate the constant rescale factor (RaBitQ-Library's
+/// `kConstNum`).
+const CONST_SCALE_SAMPLES: usize = 100;
+
+/// Estimate a **constant** rescale factor for `dim`/`ex_bits` by averaging the exact
+/// [`best_rescale_factor`] over [`CONST_SCALE_SAMPLES`] random unit vectors — RaBitQ-Library's
+/// `get_const_scaling_factors`. Computed once at [`train`](RabitqExtQuantizer::train); every document
+/// then quantizes in a single `O(d)` pass with this `t` instead of a per-vector heap sweep.
+///
+/// The vectors are standard-Gaussian (isotropic ⇒ the factor is rotation-independent), row-normalized
+/// and abs'd — exactly the `o_abs` shape the search consumes. The generator is seeded, so the factor
+/// is reproducible; the specific RNG need not match the C++ library since this is an average estimate.
+fn get_const_scaling_factors(dim: usize, ex_bits: u32, seed: u64) -> f64 {
+    use rand::{Rng, SeedableRng, rngs::StdRng};
+
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut scratch = RescaleScratch::default();
+    let mut o_abs = vec![0.0f32; dim];
+    let mut sum = 0.0f64;
+
+    for _ in 0..CONST_SCALE_SAMPLES {
+        // Box–Muller: draw `dim` standard-normal samples straight into `o_abs`.
+        let mut k = 0;
+        while k < dim {
+            let u1: f64 = rng.gen_range(0.0f64..1.0).max(f64::MIN_POSITIVE);
+            let u2: f64 = rng.gen_range(0.0f64..1.0);
+            let r = (-2.0 * u1.ln()).sqrt();
+            let theta = std::f64::consts::TAU * u2;
+            o_abs[k] = (r * theta.cos()) as f32;
+            if k + 1 < dim {
+                o_abs[k + 1] = (r * theta.sin()) as f32;
+            }
+            k += 2;
+        }
+        // Normalize to a unit vector, then take absolute values (the search's `o_abs` domain).
+        let norm = (o_abs.iter().map(|&v| v as f64 * v as f64).sum::<f64>()).sqrt();
+        let inv = if norm > 0.0 { 1.0 / norm } else { 0.0 };
+        for v in o_abs.iter_mut() {
+            *v = (*v as f64 * inv).abs() as f32;
+        }
+        sum += best_rescale_factor(&o_abs, ex_bits, &mut scratch);
+    }
+
+    sum / CONST_SCALE_SAMPLES as f64
+}
+
 /// Scalar-quantize a query residual to `query_bits` bits per component.
 ///
 /// Returns `(codes, delta, vl)`: per-component codes in `[0, 2^query_bits)` and the
@@ -317,7 +385,7 @@ fn quantize_query_multibit(residual: &[f32], query_bits: u32) -> (Vec<u8>, f32, 
         .iter()
         .map(|&r| (r.abs() as f64 / norm) as f32)
         .collect();
-    let t = best_rescale_factor(&o_abs, ex_bits);
+    let t = best_rescale_factor(&o_abs, ex_bits, &mut RescaleScratch::default());
 
     let codes: Vec<u8> = residual
         .iter()
@@ -367,19 +435,23 @@ fn pack_bit_planes(codes: &[u8], bits: u32) -> Vec<u64> {
 }
 
 /// [`pack_bit_planes`] for the `u16` **document** codes (`total_bits = 9` reaches code 511, which
-/// overflows `u8`), writing into a caller-provided zeroed buffer of `bits · num_words` words.
+/// overflows `u8`), writing into a caller-provided buffer of `bits · num_words` words.
+///
+/// SIMD bit-transpose: each 64-code word is loaded into a 64-lane vector once, and each plane `j` is
+/// extracted as `((v >> j) & 1) != 0` and packed straight to a `u64` via `Mask::to_bitmask` (lane
+/// `i` → bit `i`) — replacing the scalar `words × 64 × bits` bit-by-bit loop. Each `(j, w)` word is
+/// written exactly once, so a plain assignment is correct regardless of the buffer's prior contents.
 fn pack_bit_planes_u16_into(codes: &[u16], bits: u32, planes: &mut [u64]) {
     let bits = bits as usize;
     let num_words = codes.len() / WORD_BITS;
     debug_assert_eq!(planes.len(), bits * num_words);
+    let one = Simd::<u16, WORD_BITS>::splat(1);
+    let zero = Simd::<u16, WORD_BITS>::splat(0);
     for w in 0..num_words {
-        for i in 0..WORD_BITS {
-            let code = codes[w * WORD_BITS + i];
-            for j in 0..bits {
-                if (code >> j) & 1 == 1 {
-                    planes[j * num_words + w] |= 1u64 << i;
-                }
-            }
+        let v = Simd::<u16, WORD_BITS>::from_slice(&codes[w * WORD_BITS..]);
+        for j in 0..bits {
+            let bit = (v >> Simd::splat(j as u16)) & one;
+            planes[j * num_words + w] = bit.simd_ne(zero).to_bitmask();
         }
     }
 }
@@ -398,6 +470,10 @@ pub struct RabitqExtQuantizer<D = DotProduct> {
     /// Fast random orthogonal transform shared by documents and queries; `None` when the encoder
     /// was trained with `config.rotate == false` (identity `P`).
     rotator: Option<FhtKacRotator>,
+    /// Constant rescale factor for the fast document-quantization path
+    /// ([`get_const_scaling_factors`]), computed once at [`train`](Self::train). `None` unless
+    /// `config.faster_quant` is set; the exact per-vector path ignores it.
+    t_const: Option<f64>,
     /// Encoder parameters.
     config: RabitqExtConfig,
     /// The metric is encoded purely in the type; no runtime state.
@@ -497,10 +573,17 @@ impl<D: RabitqSupportedDistance> RabitqExtQuantizer<D> {
 
         let rotator = config.rotate.then(|| FhtKacRotator::new(d, config.seed));
 
+        // Constant rescale factor for the fast build path, estimated once here (negligible vs. the
+        // per-vector encode). `ex_bits = total_bits − 1 ≥ 1` always holds (total_bits ∈ 2..=9).
+        let t_const = config
+            .faster_quant
+            .then(|| get_const_scaling_factors(d, config.total_bits - 1, config.seed));
+
         Self {
             d,
             means: means.into_boxed_slice(),
             rotator,
+            t_const,
             config,
             _distance: PhantomData,
         }
@@ -540,15 +623,22 @@ impl<D: RabitqSupportedDistance> RabitqExtQuantizer<D> {
         data.par_chunks_mut(output_dim)
             .zip(input.par_chunks_exact(d))
             .for_each_init(
-                || (vec![0.0f32; d], vec![0u16; d]),
-                |(scratch, codes), (out, x)| {
+                || {
+                    (
+                        vec![0.0f32; d],
+                        vec![0u16; d],
+                        Vec::<f32>::with_capacity(d),
+                        RescaleScratch::default(),
+                    )
+                },
+                |(scratch, codes, o_abs, rescale), (out, x)| {
                     for ((s, &v), &m) in scratch.iter_mut().zip(x).zip(self.means.iter()) {
                         *s = v - m;
                     }
                     if let Some(rotator) = &self.rotator {
                         rotator.rotate_inplace(scratch);
                     }
-                    let (f_add, s_ext) = self.encode_residual_into(scratch, codes);
+                    let (f_add, s_ext) = self.encode_residual_into(scratch, codes, o_abs, rescale);
                     // `out` comes from the zeroed slab, so the plane packer can OR bits in place.
                     pack_bit_planes_u16_into(
                         codes,
@@ -634,7 +724,18 @@ impl<D: RabitqSupportedDistance> RabitqExtQuantizer<D> {
     /// Returns the scan constants `(f_add = ‖r‖², s_ext = ‖r‖/ipnorm)`. A zero residual gets
     /// all-zero codes and `(0, 0)`, so the estimator contributes `term = 0` and never divides by
     /// zero or produces NaN. Otherwise `ipnorm = Σ (e_i + 0.5)·o_abs_i ≥ 0.5·Σ o_abs_i > 0`.
-    fn encode_residual_into(&self, residual: &[f32], codes: &mut [u16]) -> (f32, f32) {
+    ///
+    /// The rescale factor is the constant [`Self::t_const`] (fast path) when set, else the exact
+    /// per-vector [`best_rescale_factor`]. `o_abs` and `rescale` are caller-owned scratch reused
+    /// across vectors so the batch encode path allocates nothing per vector; the fast path folds
+    /// `1/‖r‖` into the scalar and never touches `o_abs`.
+    fn encode_residual_into(
+        &self,
+        residual: &[f32],
+        codes: &mut [u16],
+        o_abs: &mut Vec<f32>,
+        rescale: &mut RescaleScratch,
+    ) -> (f32, f32) {
         let ex_bits = self.ex_bits();
         let norm = residual
             .iter()
@@ -645,30 +746,51 @@ impl<D: RabitqSupportedDistance> RabitqExtQuantizer<D> {
             codes.fill(0);
             return (0.0, 0.0);
         }
-        let o_abs: Vec<f32> = residual
-            .iter()
-            .map(|&r| (r.abs() as f64 / norm) as f32)
-            .collect();
-
+        let inv_norm = 1.0 / norm;
         let mut ipnorm = 0.0f64;
+
         if ex_bits == 0 {
-            // Plain sign code: `best_rescale_factor` must not run with max_code = 0.
-            for ((c, &r), &o) in codes.iter_mut().zip(residual).zip(&o_abs) {
+            // Plain sign code: `best_rescale_factor` must not run with max_code = 0. (Unreachable on
+            // a trained encoder — `train` asserts total_bits ∈ 2..=9 — but kept for safety.)
+            for (c, &r) in codes.iter_mut().zip(residual) {
                 *c = (r >= 0.0) as u16;
-                ipnorm += 0.5 * o as f64;
+                ipnorm += 0.5 * (r.abs() as f64 * inv_norm);
             }
         } else {
             let max_code = (1u32 << ex_bits) - 1;
-            let t = best_rescale_factor(&o_abs, ex_bits);
-            for ((c, &r), &o) in codes.iter_mut().zip(residual).zip(&o_abs) {
-                let e = (((t * o as f64) + 1e-5) as u32).min(max_code);
-                let code = if r >= 0.0 {
-                    (1u32 << ex_bits) | e
-                } else {
-                    !e & max_code
-                };
-                ipnorm += (e as f64 + 0.5) * o as f64;
-                *c = code as u16;
+            match self.t_const {
+                // Fast path: constant factor, single O(d) pass with no per-component o_abs buffer —
+                // `scale·|r_i| = t·(|r_i|/‖r‖)` because `scale = t/‖r‖`.
+                Some(t_const) => {
+                    let scale = t_const * inv_norm;
+                    for (c, &r) in codes.iter_mut().zip(residual) {
+                        let ar = r.abs() as f64;
+                        let e = (((scale * ar) + 1e-5) as u32).min(max_code);
+                        let code = if r >= 0.0 {
+                            (1u32 << ex_bits) | e
+                        } else {
+                            !e & max_code
+                        };
+                        ipnorm += (e as f64 + 0.5) * (ar * inv_norm);
+                        *c = code as u16;
+                    }
+                }
+                // Exact path: per-vector search over the normalized abs residual (reused `o_abs`).
+                None => {
+                    o_abs.clear();
+                    o_abs.extend(residual.iter().map(|&r| (r.abs() as f64 * inv_norm) as f32));
+                    let t = best_rescale_factor(o_abs, ex_bits, rescale);
+                    for ((c, &r), &o) in codes.iter_mut().zip(residual).zip(o_abs.iter()) {
+                        let e = (((t * o as f64) + 1e-5) as u32).min(max_code);
+                        let code = if r >= 0.0 {
+                            (1u32 << ex_bits) | e
+                        } else {
+                            !e & max_code
+                        };
+                        ipnorm += (e as f64 + 0.5) * o as f64;
+                        *c = code as u16;
+                    }
+                }
             }
         }
 
@@ -680,7 +802,12 @@ impl<D: RabitqSupportedDistance> RabitqExtQuantizer<D> {
     #[cfg(test)]
     fn encode_residual(&self, residual: &[f32]) -> (Vec<u16>, f32, f32) {
         let mut codes = vec![0u16; residual.len()];
-        let (f_add, s_ext) = self.encode_residual_into(residual, &mut codes);
+        let (f_add, s_ext) = self.encode_residual_into(
+            residual,
+            &mut codes,
+            &mut Vec::new(),
+            &mut RescaleScratch::default(),
+        );
         (codes, f_add, s_ext)
     }
 }
@@ -818,7 +945,12 @@ impl<D: RabitqSupportedDistance> DenseVectorEncoder for RabitqExtQuantizer<D> {
         );
         let residual = self.residual(input.values());
         let mut codes = vec![0u16; self.d];
-        let (f_add, s_ext) = self.encode_residual_into(&residual, &mut codes);
+        let (f_add, s_ext) = self.encode_residual_into(
+            &residual,
+            &mut codes,
+            &mut Vec::new(),
+            &mut RescaleScratch::default(),
+        );
         let total_words = self.config.total_bits as usize * self.num_words();
         let mut words = vec![0u64; total_words + 1];
         pack_bit_planes_u16_into(&codes, self.config.total_bits, &mut words[..total_words]);
@@ -957,6 +1089,7 @@ impl<D> SpaceUsage for RabitqExtQuantizer<D> {
         self.d.space_usage_bytes()
             + self.means.space_usage_bytes()
             + self.rotator.space_usage_bytes()
+            + self.t_const.space_usage_bytes()
     }
 }
 
@@ -1009,6 +1142,7 @@ mod tests {
             query_bits,
             seed: 42,
             rotate,
+            ..Default::default()
         }
     }
 
@@ -1116,6 +1250,7 @@ mod tests {
                         query_bits,
                         seed,
                         rotate: true,
+                        ..Default::default()
                     };
                     let ds = RabitqExtQuantizer::<D>::encode_dataset(dataset, config);
                     let index = FlatIndex::from(&ds);
@@ -1229,6 +1364,49 @@ mod tests {
             prev_cos > 0.99,
             "7-bit reconstruction cosine too low: {prev_cos}"
         );
+    }
+
+    #[test]
+    fn faster_quant_matches_optimal_reconstruction() {
+        // The constant-factor fast path (`faster_quant = true`) must reconstruct essentially as well
+        // as the exact per-vector search: it uses an averaged rescale factor, so codes differ
+        // slightly, but the reconstruction cosine must stay within a small tolerance. Assert on
+        // reconstruction quality (the meaningful quantity), not bit-equality (which is expected to
+        // differ by design).
+        let d = 128;
+        let x = smooth_vector(d);
+        let vectors = vec![x.clone(), x.iter().map(|&v| -v * 0.5 + 0.2).collect()];
+        let dataset = plain_dataset(&vectors);
+
+        for total_bits in [2u32, 4, 5, 7, 9] {
+            let cos = |faster_quant: bool| -> f32 {
+                let cfg = RabitqExtConfig {
+                    total_bits,
+                    query_bits: 4,
+                    seed: 42,
+                    rotate: true,
+                    faster_quant,
+                };
+                let encoder = RabitqExtL2::train(&dataset, cfg);
+                let residual = encoder.residual(&x);
+                let mut words: Vec<u64> = Vec::new();
+                encoder.push_encoded(DenseVectorView::new(&x), &mut words);
+                let decoded = encoder.decode_vector(DenseVectorView::new(&words));
+                let dot: f32 = residual
+                    .iter()
+                    .zip(decoded.values())
+                    .map(|(a, b)| a * b)
+                    .sum();
+                let nr: f32 = residual.iter().map(|v| v * v).sum::<f32>().sqrt();
+                let nd: f32 = decoded.values().iter().map(|v| v * v).sum::<f32>().sqrt();
+                dot / (nr * nd)
+            };
+            let (fast, optimal) = (cos(true), cos(false));
+            assert!(
+                fast >= optimal - 0.02,
+                "fast-path cosine {fast} trails optimal {optimal} by too much at total_bits {total_bits}"
+            );
+        }
     }
 
     #[test]

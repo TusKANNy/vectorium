@@ -435,8 +435,8 @@ fn compute_dense_groundtruth_binary(
 
     let dataset_f32 = readers::read_npy_f32::<distances::DotProduct>(&input_path)
         .expect("failed to read dataset");
-    let queries =
-        readers::read_npy_f32::<distances::DotProduct>(&query_path).expect("failed to read queries");
+    let queries = readers::read_npy_f32::<distances::DotProduct>(&query_path)
+        .expect("failed to read queries");
 
     let start_time = Instant::now();
     let dataset: DenseDataset<BinaryQuantizer> = dataset_f32.convert_into();

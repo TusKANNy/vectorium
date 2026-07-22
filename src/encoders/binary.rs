@@ -99,7 +99,9 @@ impl BinaryQuantizer {
     /// Binarize a full `f32` vector into `num_words()` packed `u64` words.
     #[inline]
     fn pack(&self, values: &[f32]) -> Vec<u64> {
-        (0..self.num_words()).map(|w| self.pack_word(values, w)).collect()
+        (0..self.num_words())
+            .map(|w| self.pack_word(values, w))
+            .collect()
     }
 }
 
@@ -139,10 +141,7 @@ impl DenseVectorEncoder for BinaryQuantizer {
     /// Decode a packed vector into `±1` `f32` values (set bit → `+1.0`, clear bit → `-1.0`).
     ///
     /// Lossy, as expected for binary quantization, but required by the trait.
-    fn decode_vector<'a>(
-        &self,
-        encoded: DenseVectorView<'a, u64>,
-    ) -> DenseVectorOwned<f32> {
+    fn decode_vector<'a>(&self, encoded: DenseVectorView<'a, u64>) -> DenseVectorOwned<f32> {
         let mut values = Vec::with_capacity(self.d);
         for &word in encoded.values() {
             for i in 0..WORD_BITS {
@@ -251,8 +250,8 @@ mod tests {
     use super::*;
     use crate::dataset::ConvertInto;
     use crate::{
-        DatasetGrowable, DenseDataset, FlatIndex, Index, IndexSerializer, PlainDenseDatasetGrowable,
-        PlainDenseQuantizer,
+        DatasetGrowable, DenseDataset, FlatIndex, Index, IndexSerializer,
+        PlainDenseDatasetGrowable, PlainDenseQuantizer,
     };
 
     /// Build a `PlainDenseDataset<f32, DotProduct>` from a list of equal-length vectors.
@@ -319,11 +318,20 @@ mod tests {
         let one_off = DenseVectorView::new(&[u64::MAX ^ 1]); // one differing bit
 
         // identical -> +d
-        assert_eq!(enc.compute_distance_between(all_set, all_set), DotProduct(64.0));
+        assert_eq!(
+            enc.compute_distance_between(all_set, all_set),
+            DotProduct(64.0)
+        );
         // bitwise opposite -> -d
-        assert_eq!(enc.compute_distance_between(all_set, all_clear), DotProduct(-64.0));
+        assert_eq!(
+            enc.compute_distance_between(all_set, all_clear),
+            DotProduct(-64.0)
+        );
         // one differing bit -> d - 2
-        assert_eq!(enc.compute_distance_between(all_set, one_off), DotProduct(62.0));
+        assert_eq!(
+            enc.compute_distance_between(all_set, one_off),
+            DotProduct(62.0)
+        );
     }
 
     #[test]
@@ -335,8 +343,12 @@ mod tests {
         let query_f32 = DenseVectorView::new(&query);
         let encoded = enc.encode_vector(query_f32); // same vector, binarized
 
-        let via_query = enc.query_evaluator(query_f32).compute_distance(encoded.as_view());
-        let via_vector = enc.vector_evaluator(encoded.as_view()).compute_distance(encoded.as_view());
+        let via_query = enc
+            .query_evaluator(query_f32)
+            .compute_distance(encoded.as_view());
+        let via_vector = enc
+            .vector_evaluator(encoded.as_view())
+            .compute_distance(encoded.as_view());
         let direct = enc.compute_distance_between(encoded.as_view(), encoded.as_view());
 
         assert_eq!(via_query, DotProduct(64.0));
