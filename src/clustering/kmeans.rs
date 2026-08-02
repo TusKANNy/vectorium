@@ -131,54 +131,61 @@ impl KMeans {
         let n = dataset.len();
         let d = dataset.output_dim();
 
-        // TODO: This code is terrible. group by centroids and avoid iterating over all data k times.
-        // However, its cost is just a fraction of the cost of the assignment step, so leaving it as is for now.
+        // Scatter-add: a single pass over the n points, accumulating each point's
+        // (weighted) contribution into its assigned centroid — O(n*d) — instead of
+        // the previous O(n*k) scan that re-read all n points once per centroid.
+        //
+        // Each rayon worker owns a private (sums[k*d], counts[k]) accumulator over a
+        // disjoint range of points; the partials are then reduced in parallel over
+        // disjoint output ranges. Deterministic for a fixed thread count modulo
+        // floating-point reassociation. The transient cost is n_threads * k * d
+        // floats of accumulator — more memory than the old scan, but k/d times less
+        // work, which dominates once k grows past a few thousand.
         let (centroids, histograms) = {
-            let results: Vec<(Vec<f32>, f32)> = (0..k)
-                .into_par_iter()
-                .map(|ci| {
-                    let mut centroid = vec![0.0; d];
-                    let mut count = 0.0;
+            let n_threads = rayon::current_num_threads().max(1);
+            let chunk = n.div_ceil(n_threads).max(1);
 
-                    for i in 0..n {
-                        if assignments[i].1 == ci {
-                            let vec = dataset.get(i as VectorId);
-                            match weights {
-                                Some(w) => {
-                                    count += w[i];
-                                    centroid
-                                        .iter_mut()
-                                        .zip(vec.values().iter())
-                                        .for_each(|(c, x)| *c += x.to_f32().unwrap() * w[i]);
-                                }
-                                None => {
-                                    count += 1.0;
-                                    centroid
-                                        .iter_mut()
-                                        .zip(vec.values().iter())
-                                        .for_each(|(c, x)| *c += x.to_f32().unwrap());
-                                }
-                            }
+            let partials: Vec<(Vec<f32>, Vec<f32>)> = (0..n)
+                .into_par_iter()
+                .chunks(chunk)
+                .map(|range| {
+                    let mut sums = vec![0.0f32; k * d];
+                    let mut counts = vec![0.0f32; k];
+                    for i in range {
+                        let ci = assignments[i].1;
+                        let w = weights.map_or(1.0, |w| w[i]);
+                        counts[ci] += w;
+                        let vec = dataset.get(i as VectorId);
+                        let dst = &mut sums[ci * d..(ci + 1) * d];
+                        for (c, x) in dst.iter_mut().zip(vec.values().iter()) {
+                            *c += x.to_f32().unwrap() * w;
                         }
                     }
-
-                    // Normalize
-                    if count > 0.0 {
-                        centroid.iter_mut().for_each(|c| *c /= count);
-                    }
-
-                    (centroid, count)
+                    (sums, counts)
                 })
                 .collect();
 
-            // Flatten results
-            let mut centroids = Vec::with_capacity(k * d);
-            let mut histograms = Vec::with_capacity(k);
-            for (centroid, count) in results {
-                centroids.extend(centroid);
-                histograms.push(count);
-            }
-            (centroids, histograms)
+            // Reduce partials in parallel over disjoint output ranges.
+            let mut sums = vec![0.0f32; k * d];
+            let mut counts = vec![0.0f32; k];
+            sums.par_iter_mut().enumerate().for_each(|(idx, s)| {
+                *s = partials.iter().map(|(ps, _)| ps[idx]).sum();
+            });
+            counts.par_iter_mut().enumerate().for_each(|(ci, c)| {
+                *c = partials.iter().map(|(_, pc)| pc[ci]).sum();
+            });
+
+            // Normalize each centroid's summed vector by its count to get the mean.
+            sums.par_chunks_mut(d).enumerate().for_each(|(ci, centroid)| {
+                if counts[ci] > 0.0 {
+                    let inv = 1.0 / counts[ci];
+                    for x in centroid {
+                        *x *= inv;
+                    }
+                }
+            });
+
+            (sums, counts)
         };
 
         let mut centroids = centroids;
@@ -625,6 +632,8 @@ mod tests {
     use crate::distances::SquaredEuclideanDistance;
     use crate::encoders::dense_scalar::PlainDenseQuantizer;
     use crate::{PlainDenseDataset, PlainDenseDatasetGrowable};
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     #[test]
     fn compute_assignments_picks_nearest_centroid() {
@@ -672,5 +681,62 @@ mod tests {
             assignments.iter().map(|&(_, idx)| idx).collect();
         assert_eq!(cluster_ids.len(), 2);
         assert_eq!(assignments.len(), dataset.len());
+    }
+
+    // ---- scatter-add update: correctness ------------------------------------
+
+    #[test]
+    fn update_and_split_scatter_matches_reference_means() {
+        // Two non-empty clusters => no splits, so the returned centroids are
+        // exactly the per-cluster means. Compare against hand-computed means.
+        let encoder = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(2);
+        let mut builder = PlainDenseDatasetGrowable::new(encoder);
+        let pts = [
+            [0.0f32, 0.0],
+            [2.0, 0.0],
+            [1.0, 3.0], // cluster 0 -> mean [1, 1]
+            [10.0, 10.0],
+            [12.0, 10.0],
+            [11.0, 13.0], // cluster 1 -> mean [11, 11]
+        ];
+        for p in pts.iter() {
+            builder.push(DenseVectorView::new(&p[..]));
+        }
+        let dataset: PlainDenseDataset<f32, SquaredEuclideanDistance> = builder.into();
+
+        let assignments = vec![(0.0, 0usize), (0.0, 0), (0.0, 0), (0.0, 1), (0.0, 1), (0.0, 1)];
+        let mut rng = StdRng::seed_from_u64(0);
+        let (n_splits, hist, centroids) =
+            KMeans::update_and_split(&dataset, None, 2, &assignments, &mut rng, false);
+
+        assert_eq!(n_splits, 0, "no empty clusters => no splits");
+        assert_eq!(hist, vec![3.0, 3.0]);
+
+        let c0 = centroids.get(0 as VectorId).values().to_vec();
+        let c1 = centroids.get(1 as VectorId).values().to_vec();
+        for (a, b) in c0.iter().zip([1.0f32, 1.0].iter()) {
+            assert!((a - b).abs() < 1e-5, "cluster 0 mean {a} != {b}");
+        }
+        for (a, b) in c1.iter().zip([11.0f32, 11.0].iter()) {
+            assert!((a - b).abs() < 1e-5, "cluster 1 mean {a} != {b}");
+        }
+    }
+
+    #[test]
+    fn update_and_split_fires_split_on_empty_cluster() {
+        // k=3 but assignments only ever use clusters 0 and 1 => cluster 2 is empty
+        // and must be split off a populated one.
+        let encoder = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(2);
+        let mut builder = PlainDenseDatasetGrowable::new(encoder);
+        for p in [[0.0f32, 0.0], [1.0, 0.0], [10.0, 10.0], [11.0, 10.0]].iter() {
+            builder.push(DenseVectorView::new(&p[..]));
+        }
+        let dataset: PlainDenseDataset<f32, SquaredEuclideanDistance> = builder.into();
+        let assignments = vec![(0.0, 0usize), (0.0, 0), (0.0, 1), (0.0, 1)];
+        let mut rng = StdRng::seed_from_u64(0);
+        let (n_splits, _hist, centroids) =
+            KMeans::update_and_split(&dataset, None, 3, &assignments, &mut rng, false);
+        assert_eq!(n_splits, 1, "one empty cluster => one split");
+        assert_eq!(centroids.len(), 3);
     }
 }
