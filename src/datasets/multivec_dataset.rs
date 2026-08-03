@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::SpaceUsage;
+use crate::core::dataset::{assert_valid_permutation, invert_permutation};
 use crate::core::sealed;
 use crate::core::vector::DenseMultiVectorView;
 use crate::core::vector_encoder::MultiVecEncoder;
@@ -34,8 +35,8 @@ pub type MultiVectorDataset<E> =
 pub struct MultiVectorDatasetGeneric<E, Offsets, Data>
 where
     E: MultiVecEncoder,
-    Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::OutputValueType]>,
+    Offsets: AsRef<[usize]> + From<Vec<usize>>,
+    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
 {
     data: Data,
     offsets: Offsets,
@@ -45,16 +46,16 @@ where
 impl<E, Offsets, Data> sealed::Sealed for MultiVectorDatasetGeneric<E, Offsets, Data>
 where
     E: MultiVecEncoder,
-    Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::OutputValueType]>,
+    Offsets: AsRef<[usize]> + From<Vec<usize>>,
+    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
 {
 }
 
 impl<E, Offsets, Data> MultiVectorDatasetGeneric<E, Offsets, Data>
 where
     E: MultiVecEncoder,
-    Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::OutputValueType]>,
+    Offsets: AsRef<[usize]> + From<Vec<usize>>,
+    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
 {
     /// Build a dataset from pre-encoded raw buffers.
     ///
@@ -107,10 +108,11 @@ where
 impl<E, Offsets, Data> Dataset for MultiVectorDatasetGeneric<E, Offsets, Data>
 where
     E: MultiVecEncoder,
-    Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::OutputValueType]>,
+    Offsets: AsRef<[usize]> + From<Vec<usize>>,
+    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
 {
     type Encoder = E;
+    type Owned = Self;
 
     fn encoder(&self) -> &E {
         &self.encoder
@@ -162,6 +164,33 @@ where
             .as_ref()
             .windows(2)
             .map(move |w| DenseMultiVectorView::new(&data[w[0]..w[1]], dim))
+    }
+
+    fn permute(&self, permutation: &[usize]) -> Self::Owned {
+        let n_docs = self.len();
+        assert_valid_permutation(permutation, n_docs);
+
+        // Documents hold a variable number of tokens: gather them in the new order and rebuild
+        // the offsets by prefix sum. Each document's encoding is self-contained, so copying its
+        // range verbatim is equivalent to re-encoding, and lossless.
+        let old_by_new = invert_permutation(permutation);
+        let offsets = self.offsets.as_ref();
+        let source = self.data.as_ref();
+
+        let mut new_offsets = Vec::with_capacity(n_docs + 1);
+        new_offsets.push(0);
+        let mut permuted = Vec::with_capacity(source.len());
+
+        for old_id in old_by_new {
+            permuted.extend_from_slice(&source[offsets[old_id]..offsets[old_id + 1]]);
+            new_offsets.push(permuted.len());
+        }
+
+        Self {
+            data: Data::from(permuted),
+            offsets: Offsets::from(new_offsets),
+            encoder: self.encoder.clone(),
+        }
     }
 }
 
@@ -297,8 +326,8 @@ where
 impl<E, Offsets, Data> SpaceUsage for MultiVectorDatasetGeneric<E, Offsets, Data>
 where
     E: MultiVecEncoder + SpaceUsage,
-    Offsets: AsRef<[usize]> + SpaceUsage,
-    Data: AsRef<[E::OutputValueType]> + SpaceUsage,
+    Offsets: AsRef<[usize]> + From<Vec<usize>> + SpaceUsage,
+    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>> + SpaceUsage,
 {
     fn space_usage_bytes(&self) -> usize {
         self.encoder.space_usage_bytes()
@@ -313,8 +342,8 @@ pub trait MultiVecData: Dataset<Encoder: MultiVecEncoder> {}
 impl<E, Offsets, Data> MultiVecData for MultiVectorDatasetGeneric<E, Offsets, Data>
 where
     E: MultiVecEncoder,
-    Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::OutputValueType]>,
+    Offsets: AsRef<[usize]> + From<Vec<usize>>,
+    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
 {
 }
 
@@ -322,6 +351,8 @@ where
 mod tests {
     use super::*;
     use crate::FlatIndex;
+    use crate::core::dataset::invert_permutation;
+    use crate::core::index::Index;
     use crate::core::vector::{DenseMultiVectorView, DenseVectorView};
     use crate::encoders::multivec_scalar::PlainMultiVecQuantizer;
 
@@ -580,5 +611,80 @@ mod tests {
         let results = FlatIndex::from(&dataset).search(query, 2, &());
 
         assert_eq!(results.len(), 2);
+    }
+
+    /// Four documents holding 1, 3, 2 and 4 tokens, so wrong offsets are caught.
+    fn permutable_multivec() -> MultiVectorDataset<PlainMultiVecQuantizer<f32>> {
+        let encoder = PlainMultiVecQuantizer::<f32>::new(2);
+        let mut growable = MultiVectorDatasetGrowable::new(encoder);
+        growable.push(DenseMultiVectorView::new(&[10.0f32, 11.0], 2));
+        growable.push(DenseMultiVectorView::new(
+            &[20.0f32, 21.0, 22.0, 23.0, 24.0, 25.0],
+            2,
+        ));
+        growable.push(DenseMultiVectorView::new(&[30.0f32, 31.0, 32.0, 33.0], 2));
+        growable.push(DenseMultiVectorView::new(
+            &[40.0f32, 41.0, 42.0, 43.0, 44.0, 45.0, 46.0, 47.0],
+            2,
+        ));
+        growable.into()
+    }
+
+    #[test]
+    fn multivec_permute_moves_each_doc_to_its_target_slot() {
+        let dataset = permutable_multivec();
+        let permutation = [2usize, 0, 3, 1];
+
+        let permuted = dataset.permute(&permutation);
+
+        assert_eq!(permuted.len(), dataset.len());
+        assert_eq!(permuted.nnz(), dataset.nnz());
+        for (old_id, &new_id) in permutation.iter().enumerate() {
+            assert_eq!(
+                permuted.get(new_id as VectorId).values(),
+                dataset.get(old_id as VectorId).values(),
+                "document {old_id} should have landed at {new_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn multivec_permute_rebuilds_consistent_offsets() {
+        let dataset = permutable_multivec();
+        let permuted = dataset.permute(&[2usize, 0, 3, 1]);
+
+        let offsets = permuted.offsets();
+        assert_eq!(offsets[0], 0);
+        assert_eq!(*offsets.last().unwrap(), permuted.values().len());
+
+        // Documents of 1, 3, 2, 4 tokens land in the original order 1, 3, 0, 2, so the permuted
+        // lengths (in scalar values, 2 per token) are 6, 8, 2, 4.
+        let lengths: Vec<usize> = offsets.windows(2).map(|w| w[1] - w[0]).collect();
+        assert_eq!(lengths, vec![6, 8, 2, 4]);
+    }
+
+    #[test]
+    fn multivec_permute_then_inverse_round_trips() {
+        let dataset = permutable_multivec();
+        let permutation = [2usize, 0, 3, 1];
+
+        let round_tripped = dataset
+            .permute(&permutation)
+            .permute(&invert_permutation(&permutation));
+
+        assert_eq!(round_tripped.values(), dataset.values());
+        assert_eq!(round_tripped.offsets(), dataset.offsets());
+    }
+
+    #[test]
+    #[should_panic(expected = "permutation length")]
+    fn multivec_permute_rejects_wrong_length() {
+        permutable_multivec().permute(&[0, 1, 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "more than one vector to position")]
+    fn multivec_permute_rejects_non_bijective_permutation() {
+        permutable_multivec().permute(&[0, 1, 1, 3]);
     }
 }

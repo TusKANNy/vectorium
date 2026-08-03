@@ -33,7 +33,10 @@ pub trait QueryEvaluator<V: VectorView> {
 ///
 /// Each encoder maps user-supplied inputs into an encoded representation and exposes
 /// the types necessary to build evaluators and query decoders.
-pub trait VectorEncoder: Send + Sync + SpaceUsage {
+///
+/// `Clone` lets bulk operations such as [`crate::Dataset::permute`] carry the encoder over to
+/// the dataset they build.
+pub trait VectorEncoder: Send + Sync + SpaceUsage + Clone {
     type Distance: Copy + Ord;
 
     type InputVector<'a>: VectorView;

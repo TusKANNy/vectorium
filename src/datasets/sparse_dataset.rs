@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::hint::assert_unchecked;
 
 use crate::SpaceUsage;
+use crate::core::dataset::{assert_valid_permutation, invert_permutation};
 use crate::core::sealed;
 use crate::core::storage::{GrowableSparseStorage, ImmutableSparseStorage, SparseStorage};
 use crate::core::vector::SparseVectorView;
@@ -182,6 +183,7 @@ where
     S: SparseStorage<E>,
 {
     type Encoder = E;
+    type Owned = Self;
 
     #[inline]
     fn nnz(&self) -> usize {
@@ -342,6 +344,36 @@ where
     /// ```
     fn len(&self) -> usize {
         self.storage.offsets().as_ref().len() - 1
+    }
+
+    fn permute(&self, permutation: &[usize]) -> Self::Owned {
+        let n_vecs = self.len();
+        assert_valid_permutation(permutation, n_vecs);
+
+        // Rows are variable-width: gather them in the new order and rebuild the offsets by
+        // prefix sum. Copying the CSR ranges verbatim keeps the encoded values bit-identical.
+        let old_by_new = invert_permutation(permutation);
+        let offsets = self.storage.offsets().as_ref();
+        let components = self.storage.components().as_ref();
+        let values = self.storage.values().as_ref();
+
+        let mut new_offsets = Vec::with_capacity(n_vecs + 1);
+        new_offsets.push(0);
+        let mut new_components = Vec::with_capacity(components.len());
+        let mut new_values = Vec::with_capacity(values.len());
+
+        for old_id in old_by_new {
+            let range = offsets[old_id]..offsets[old_id + 1];
+            new_components.extend_from_slice(&components[range.clone()]);
+            new_values.extend_from_slice(&values[range]);
+            new_offsets.push(new_components.len());
+        }
+
+        Self {
+            storage: GrowableSparseStorage::from_parts(new_offsets, new_components, new_values)
+                .into(),
+            encoder: self.encoder.clone(),
+        }
     }
 }
 
@@ -934,6 +966,80 @@ mod tests {
     };
     use half::f16;
     use rayon::prelude::*;
+
+    /// Four rows of different lengths (3, 1, 2, 4 non-zeros), so wrong offsets are caught.
+    fn permutable_sparse() -> PlainSparseDataset<u16, f32, DotProduct> {
+        let mut growable =
+            PlainSparseDatasetGrowable::new(PlainSparseQuantizer::<u16, f32, DotProduct>::new(
+                8, 8,
+            ));
+        growable.push(SparseVectorView::new(&[0_u16, 1, 2], &[1.0_f32, 1.5, 2.0]));
+        growable.push(SparseVectorView::new(&[3_u16], &[3.0_f32]));
+        growable.push(SparseVectorView::new(&[4_u16, 5], &[4.0_f32, 4.5]));
+        growable.push(SparseVectorView::new(
+            &[0_u16, 2, 6, 7],
+            &[5.0_f32, 5.5, 6.0, 6.5],
+        ));
+        growable.into()
+    }
+
+    #[test]
+    fn sparse_permute_moves_each_row_to_its_target_slot() {
+        let dataset = permutable_sparse();
+        let permutation = [2usize, 0, 3, 1];
+
+        let permuted = dataset.permute(&permutation);
+
+        assert_eq!(permuted.len(), dataset.len());
+        assert_eq!(permuted.nnz(), dataset.nnz());
+        for (old_id, &new_id) in permutation.iter().enumerate() {
+            let expected = dataset.get(old_id as u64);
+            let actual = permuted.get(new_id as u64);
+            assert_eq!(actual.components(), expected.components());
+            assert_eq!(actual.values(), expected.values());
+        }
+    }
+
+    #[test]
+    fn sparse_permute_rebuilds_consistent_offsets() {
+        let permuted = permutable_sparse().permute(&[2, 0, 3, 1]);
+
+        // Rows land in the original order 1, 3, 0, 2, whose lengths are 1, 4, 3, 2.
+        let ranges: Vec<_> = (0..permuted.len())
+            .map(|id| permuted.range_from_id(id as u64))
+            .collect();
+        assert_eq!(ranges[0].start, 0);
+        assert!(ranges.windows(2).all(|w| w[0].end == w[1].start));
+        let lengths: Vec<usize> = ranges.iter().map(|r| r.end - r.start).collect();
+        assert_eq!(lengths, vec![1, 4, 3, 2]);
+    }
+
+    #[test]
+    fn sparse_permute_with_identity_is_a_no_op() {
+        let dataset = permutable_sparse();
+        assert_eq!(dataset.permute(&[0, 1, 2, 3]), dataset);
+    }
+
+    #[test]
+    fn sparse_permute_then_inverse_round_trips() {
+        let dataset = permutable_sparse();
+        let permutation = [2usize, 0, 3, 1];
+        let inverse = crate::core::dataset::invert_permutation(&permutation);
+
+        assert_eq!(dataset.permute(&permutation).permute(&inverse), dataset);
+    }
+
+    #[test]
+    #[should_panic(expected = "permutation length")]
+    fn sparse_permute_rejects_wrong_length() {
+        permutable_sparse().permute(&[0, 1, 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "more than one vector to position")]
+    fn sparse_permute_rejects_non_bijective_permutation() {
+        permutable_sparse().permute(&[0, 1, 1, 3]);
+    }
 
     #[test]
     fn sparse_dataset_iter_next_then_next_back_returns_last_vector() {

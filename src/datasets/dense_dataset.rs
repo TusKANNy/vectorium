@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::SpaceUsage;
+use crate::core::dataset::{assert_valid_permutation, invert_permutation};
 use crate::core::sealed;
 use crate::core::vector_encoder::{DenseVectorEncoder, VectorEncoder};
 use crate::{Dataset, DatasetGrowable, VectorId};
@@ -60,7 +61,7 @@ pub type DenseDataset<E> =
 pub struct DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    Data: AsRef<[E::OutputValueType]>,
+    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
 {
     n_vecs: usize,
     data: Data,
@@ -70,14 +71,14 @@ where
 impl<E, Data> sealed::Sealed for DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    Data: AsRef<[E::OutputValueType]>,
+    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
 {
 }
 
 impl<E, Data> SpaceUsage for DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    Data: AsRef<[E::OutputValueType]> + SpaceUsage,
+    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>> + SpaceUsage,
 {
     fn space_usage_bytes(&self) -> usize {
         self.n_vecs.space_usage_bytes()
@@ -89,7 +90,7 @@ where
 impl<E, Data> DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    Data: AsRef<[E::OutputValueType]>,
+    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
 {
     /// Build a dataset from its raw encoded buffer.
     ///
@@ -169,9 +170,10 @@ where
 impl<E, Data> Dataset for DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    Data: AsRef<[E::OutputValueType]>,
+    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
 {
     type Encoder = E;
+    type Owned = Self;
 
     #[inline]
     fn encoder(&self) -> &E {
@@ -253,6 +255,27 @@ where
     #[inline]
     fn prefetch_with_range(&self, range: std::ops::Range<usize>) {
         crate::utils::prefetch_read_slice(&self.data.as_ref()[range]);
+    }
+
+    fn permute(&self, permutation: &[usize]) -> Self::Owned {
+        let n_vecs = self.n_vecs;
+        assert_valid_permutation(permutation, n_vecs);
+
+        // Gather in the new order rather than scatter into a pre-filled buffer: appending rows
+        // only needs `Copy` (guaranteed by `ValueType`), while scattering would need `Default`.
+        let dim = self.encoder.output_dim();
+        let source = self.data.as_ref();
+        let mut permuted = Vec::with_capacity(n_vecs * dim);
+        for old_id in invert_permutation(permutation) {
+            let old_start = old_id * dim;
+            permuted.extend_from_slice(&source[old_start..old_start + dim]);
+        }
+
+        Self {
+            n_vecs,
+            data: Data::from(permuted),
+            encoder: self.encoder.clone(),
+        }
     }
 }
 
@@ -465,8 +488,8 @@ where
         DenseVectorEncoder<InputValueType = SrcIn, OutputValueType = Mid>,
     ScalarDenseQuantizer<Mid, DstOut, D>:
         DenseVectorEncoder<InputValueType = Mid, OutputValueType = DstOut>,
-    SrcStorage: AsRef<[Mid]>,
-    DstStorage: From<Box<[DstOut]>> + AsRef<[DstOut]>,
+    SrcStorage: AsRef<[Mid]> + From<Vec<Mid>>,
+    DstStorage: AsRef<[DstOut]> + From<Vec<DstOut>> + From<Box<[DstOut]>>,
 {
     fn convert_from(
         source: &DenseDatasetGeneric<ScalarDenseQuantizer<SrcIn, Mid, D>, SrcStorage>,
@@ -494,7 +517,7 @@ where
 impl<E, Data> crate::core::dataset::DenseData for DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    Data: AsRef<[E::OutputValueType]>,
+    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
 {
 }
 
@@ -505,6 +528,61 @@ mod tests {
     use crate::dataset::ConvertFrom;
     use crate::distances::DotProduct;
     use crate::encoders::dense_scalar::ScalarDenseQuantizer;
+
+    type PermuteEncoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+
+    /// Rows `[10, 11] [20, 21] [30, 31] [40, 41]`, so each row is easy to identify.
+    fn permutable_dense() -> DenseDataset<PermuteEncoder> {
+        let mut growable = DenseDatasetGrowable::new(PermuteEncoder::new(2));
+        for i in 1..=4 {
+            let base = (i * 10) as f32;
+            growable.push(DenseVectorView::new(&[base, base + 1.0]));
+        }
+        growable.into()
+    }
+
+    #[test]
+    fn dense_permute_moves_each_row_to_its_target_slot() {
+        let dataset = permutable_dense();
+        let permutation = [2usize, 0, 3, 1];
+
+        let permuted = dataset.permute(&permutation);
+
+        assert_eq!(permuted.len(), dataset.len());
+        for (old_id, &new_id) in permutation.iter().enumerate() {
+            assert_eq!(
+                permuted.get(new_id as VectorId).values(),
+                dataset.get(old_id as VectorId).values()
+            );
+        }
+    }
+
+    #[test]
+    fn dense_permute_with_identity_is_a_no_op() {
+        let dataset = permutable_dense();
+        assert_eq!(dataset.permute(&[0, 1, 2, 3]), dataset);
+    }
+
+    #[test]
+    fn dense_permute_then_inverse_round_trips() {
+        let dataset = permutable_dense();
+        let permutation = [2usize, 0, 3, 1];
+        let inverse = crate::core::dataset::invert_permutation(&permutation);
+
+        assert_eq!(dataset.permute(&permutation).permute(&inverse), dataset);
+    }
+
+    #[test]
+    #[should_panic(expected = "permutation length")]
+    fn dense_permute_rejects_wrong_length() {
+        permutable_dense().permute(&[0, 1, 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "more than one vector to position")]
+    fn dense_permute_rejects_non_bijective_permutation() {
+        permutable_dense().permute(&[0, 1, 1, 3]);
+    }
 
     #[test]
     fn dense_dataset_range_and_id_are_consistent() {

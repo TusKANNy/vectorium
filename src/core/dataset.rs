@@ -89,6 +89,11 @@ where
 pub trait Dataset: sealed::Sealed {
     type Encoder: VectorEncoder;
 
+    /// Owned dataset produced by bulk operations such as [`Self::permute`].
+    /// Concrete datasets set `Owned = Self`; the forwarding impl for `&T` defers to `T::Owned`,
+    /// since it cannot return a reference to a dataset it just allocated.
+    type Owned: Dataset<Encoder = Self::Encoder>;
+
     /// Shared encoder instance used to encode, query, and decode vectors.
     fn encoder(&self) -> &Self::Encoder;
 
@@ -133,6 +138,17 @@ pub trait Dataset: sealed::Sealed {
 
     /// Touch the provided range to hint that it will be accessed soon.
     fn prefetch_with_range(&self, range: std::ops::Range<usize>);
+
+    /// Returns a copy of this dataset whose rows are reordered so that the row currently
+    /// at `old_id` ends up at position `permutation[old_id]`.
+    ///
+    /// Implementations reorder the encoded storage directly instead of decoding and
+    /// re-encoding, so the copy is lossless even for quantized or packed encodings.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `permutation` is not a bijection of `0..self.len()`.
+    fn permute(&self, permutation: &[usize]) -> Self::Owned;
 }
 
 impl<T> sealed::Sealed for &T where T: Dataset {}
@@ -144,6 +160,7 @@ where
     T: Dataset,
 {
     type Encoder = T::Encoder;
+    type Owned = T::Owned;
 
     #[inline]
     fn encoder(&self) -> &Self::Encoder {
@@ -192,6 +209,11 @@ where
     fn iter(&self) -> impl Iterator<Item = <Self::Encoder as VectorEncoder>::EncodedVector<'_>> {
         (*self).iter()
     }
+
+    #[inline]
+    fn permute(&self, permutation: &[usize]) -> Self::Owned {
+        (*self).permute(permutation)
+    }
 }
 
 /// Marker trait representing any dataset whose encoder exposes the dense-vector contract.
@@ -215,6 +237,38 @@ pub trait DatasetGrowable: Dataset {
 
     /// Append another vector, encoded through the dataset encoder, into storage.
     fn push<'a>(&mut self, vec: <Self::Encoder as VectorEncoder>::InputVector<'a>);
+}
+
+/// Validates that `permutation` is a bijection of `0..n`, panicking otherwise.
+pub(crate) fn assert_valid_permutation(permutation: &[usize], n: usize) {
+    assert_eq!(
+        permutation.len(),
+        n,
+        "permutation length ({}) must match dataset length ({n})",
+        permutation.len()
+    );
+
+    let mut seen = vec![false; n];
+    for (old_id, &new_id) in permutation.iter().enumerate() {
+        assert!(
+            new_id < n,
+            "permutation[{old_id}] = {new_id} is out of bounds for a dataset of {n} vectors"
+        );
+        assert!(
+            !std::mem::replace(&mut seen[new_id], true),
+            "permutation maps more than one vector to position {new_id}"
+        );
+    }
+}
+
+/// Inverts `permutation` (`old_id -> new_id`) into `new_id -> old_id`, the order in which
+/// implementations gather rows. Callers must validate it with [`assert_valid_permutation`] first.
+pub(crate) fn invert_permutation(permutation: &[usize]) -> Vec<usize> {
+    let mut old_by_new = vec![0usize; permutation.len()];
+    for (old_id, &new_id) in permutation.iter().enumerate() {
+        old_by_new[new_id] = old_id;
+    }
+    old_by_new
 }
 
 #[cfg(test)]
@@ -346,5 +400,31 @@ mod tests {
         }
 
         exercise(&dataset);
+    }
+
+    /// Permuting through a reference must produce the same owned dataset as permuting the value.
+    #[test]
+    fn permute_through_a_reference_matches_permuting_the_value() {
+        type Encoder = PlainDenseQuantizer<f32, DotProduct>;
+
+        let encoder = Encoder::new(2);
+        let mut growable = DenseDatasetGrowable::new(encoder);
+        growable.push(DenseVectorView::new(&[10.0f32, 11.0]));
+        growable.push(DenseVectorView::new(&[20.0f32, 21.0]));
+        growable.push(DenseVectorView::new(&[30.0f32, 31.0]));
+
+        let dataset: DenseDataset<Encoder> = growable.into();
+        let permutation = [2usize, 0, 1];
+
+        let borrowed: &DenseDataset<Encoder> = &dataset;
+        let via_reference = <&DenseDataset<Encoder> as Dataset>::permute(&borrowed, &permutation);
+
+        assert_eq!(via_reference, dataset.permute(&permutation));
+        for (old_id, &new_id) in permutation.iter().enumerate() {
+            assert_eq!(
+                via_reference.get(new_id as VectorId),
+                dataset.get(old_id as VectorId)
+            );
+        }
     }
 }

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::PackedSparseVectorEncoder;
 use crate::SpaceUsage;
+use crate::core::dataset::{assert_valid_permutation, invert_permutation};
 use crate::core::sealed;
 use crate::dataset::ConvertFrom;
 use crate::utils::prefetch_read_slice;
@@ -106,8 +107,8 @@ pub type PackedSparseDataset<E> = PackedSparseDatasetGeneric<
 pub struct PackedSparseDatasetGeneric<E, Offsets, Data>
 where
     E: PackedSparseVectorEncoder,
-    Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::PackedDataType]>,
+    Offsets: AsRef<[usize]> + From<Vec<usize>>,
+    Data: AsRef<[E::PackedDataType]> + From<Vec<E::PackedDataType>>,
 {
     offsets: Offsets,
     data: Data,
@@ -118,16 +119,16 @@ where
 impl<E, Offsets, Data> sealed::Sealed for PackedSparseDatasetGeneric<E, Offsets, Data>
 where
     E: PackedSparseVectorEncoder,
-    Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::PackedDataType]>,
+    Offsets: AsRef<[usize]> + From<Vec<usize>>,
+    Data: AsRef<[E::PackedDataType]> + From<Vec<E::PackedDataType>>,
 {
 }
 
 impl<E, Offsets, Data> PackedSparseDatasetGeneric<E, Offsets, Data>
 where
     E: PackedSparseVectorEncoder,
-    Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::PackedDataType]>,
+    Offsets: AsRef<[usize]> + From<Vec<usize>>,
+    Data: AsRef<[E::PackedDataType]> + From<Vec<E::PackedDataType>>,
 {
     #[inline]
     /// Return the raw offsets array that demarcates each vector slice.
@@ -260,8 +261,8 @@ impl<E, Offsets, Data> SpaceUsage for PackedSparseDatasetGeneric<E, Offsets, Dat
 where
     E: PackedSparseVectorEncoder,
     E: SpaceUsage,
-    Offsets: AsRef<[usize]> + SpaceUsage,
-    Data: AsRef<[E::PackedDataType]> + SpaceUsage,
+    Offsets: AsRef<[usize]> + From<Vec<usize>> + SpaceUsage,
+    Data: AsRef<[E::PackedDataType]> + From<Vec<E::PackedDataType>> + SpaceUsage,
 {
     fn space_usage_bytes(&self) -> usize {
         self.encoder.space_usage_bytes()
@@ -274,10 +275,11 @@ where
 impl<E, Offsets, Data> Dataset for PackedSparseDatasetGeneric<E, Offsets, Data>
 where
     E: PackedSparseVectorEncoder,
-    Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::PackedDataType]>,
+    Offsets: AsRef<[usize]> + From<Vec<usize>>,
+    Data: AsRef<[E::PackedDataType]> + From<Vec<E::PackedDataType>>,
 {
     type Encoder = E;
+    type Owned = Self;
 
     #[inline]
     fn nnz(&self) -> usize {
@@ -338,13 +340,41 @@ where
             .windows(2)
             .map(move |w| PackedVectorView::new(&data[w[0]..w[1]]))
     }
+
+    fn permute(&self, permutation: &[usize]) -> Self::Owned {
+        let n_vecs = self.offsets.as_ref().len() - 1;
+        assert_valid_permutation(permutation, n_vecs);
+
+        // Each row is padded to a whole number of `PackedDataType` words, so its encoding does
+        // not depend on its position: copying the range verbatim is lossless.
+        let old_by_new = invert_permutation(permutation);
+        let offsets = self.offsets.as_ref();
+        let source = self.data.as_ref();
+
+        let mut new_offsets = Vec::with_capacity(n_vecs + 1);
+        new_offsets.push(0);
+        let mut permuted = Vec::with_capacity(source.len());
+
+        for old_id in old_by_new {
+            permuted.extend_from_slice(&source[offsets[old_id]..offsets[old_id + 1]]);
+            new_offsets.push(permuted.len());
+        }
+
+        Self {
+            offsets: Offsets::from(new_offsets),
+            data: Data::from(permuted),
+            encoder: self.encoder.clone(),
+            // Reordering rows moves non-zeros around but never adds or drops any.
+            nnz: self.nnz,
+        }
+    }
 }
 
 impl<E, Offsets, Data> SparseData for PackedSparseDatasetGeneric<E, Offsets, Data>
 where
     E: PackedSparseVectorEncoder,
-    Offsets: AsRef<[usize]>,
-    Data: AsRef<[E::PackedDataType]>,
+    Offsets: AsRef<[usize]> + From<Vec<usize>>,
+    Data: AsRef<[E::PackedDataType]> + From<Vec<E::PackedDataType>>,
 {
 }
 
@@ -471,7 +501,89 @@ mod tests {
     use crate::FixedU8Q;
     use crate::FromF32 as _;
     use crate::core::vector::SparseVectorView;
-    use crate::core::vector_encoder::VectorEncoder;
+    use crate::core::vector_encoder::{SparseDataEncoder, VectorEncoder};
+
+    /// Four DotVByte rows of differing encoded lengths.
+    fn permutable_packed() -> PackedSparseDataset<DotVByteFixedU8Encoder> {
+        use crate::DatasetGrowable;
+
+        let rows: [(&[u16], &[f32]); 4] = [
+            (&[1, 10, 100], &[1.5, 2.0, 2.5]),
+            (&[2, 11], &[0.5, 1.0]),
+            (&[0, 5, 50, 200, 400], &[0.25, 0.5, 0.75, 1.0, 1.25]),
+            (&[300], &[2.0]),
+        ];
+
+        let mut growable = PackedSparseDatasetGrowable::new(DotVByteFixedU8Encoder::new(505, 505));
+        for (components, values) in rows {
+            let quantized: Vec<FixedU8Q> = values
+                .iter()
+                .map(|&v| FixedU8Q::from_f32_saturating(v))
+                .collect();
+            growable.push(SparseVectorView::new(components, &quantized));
+        }
+        growable.into()
+    }
+
+    /// A verbatim copy is exact, while decoding and re-quantizing through `FixedU8Q` would
+    /// lose precision on every permutation.
+    #[test]
+    fn packed_permute_is_lossless() {
+        let dataset = permutable_packed();
+        let permutation = [2usize, 0, 3, 1];
+
+        let permuted = dataset.permute(&permutation);
+        let encoder = dataset.encoder();
+
+        assert_eq!(permuted.len(), dataset.len());
+        assert_eq!(permuted.nnz(), dataset.nnz());
+        for (old_id, &new_id) in permutation.iter().enumerate() {
+            let expected = encoder.decode_vector(dataset.get(old_id as VectorId));
+            let actual = encoder.decode_vector(permuted.get(new_id as VectorId));
+            assert_eq!(actual.components(), expected.components());
+            // Exact equality, no tolerance: the bytes were copied, not recomputed.
+            assert_eq!(actual.values(), expected.values());
+        }
+    }
+
+    #[test]
+    fn packed_permute_copies_row_bytes_verbatim() {
+        let dataset = permutable_packed();
+        let permutation = [2usize, 0, 3, 1];
+
+        let permuted = dataset.permute(&permutation);
+
+        for (old_id, &new_id) in permutation.iter().enumerate() {
+            assert_eq!(
+                permuted.get(new_id as VectorId).data(),
+                dataset.get(old_id as VectorId).data()
+            );
+        }
+    }
+
+    #[test]
+    fn packed_permute_then_inverse_round_trips() {
+        let dataset = permutable_packed();
+        let permutation = [2usize, 0, 3, 1];
+        let inverse = crate::core::dataset::invert_permutation(&permutation);
+
+        let round_tripped = dataset.permute(&permutation).permute(&inverse);
+
+        assert_eq!(round_tripped.offsets(), dataset.offsets());
+        assert_eq!(round_tripped.data(), dataset.data());
+    }
+
+    #[test]
+    #[should_panic(expected = "permutation length")]
+    fn packed_permute_rejects_wrong_length() {
+        permutable_packed().permute(&[0, 1, 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "more than one vector to position")]
+    fn packed_permute_rejects_non_bijective_permutation() {
+        permutable_packed().permute(&[0, 1, 1, 3]);
+    }
 
     #[test]
     fn conversion_and_dot_product() {
