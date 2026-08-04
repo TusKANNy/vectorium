@@ -13,11 +13,12 @@ use rand::seq::index;
 use rayon::prelude::*;
 use std::time::Instant;
 
-/// Concrete f32 centroid dataset — fully resolved, with no associated-type
-/// projections in its storage type. Used throughout `train_with_index` so the
-/// where-clauses stay on a single concrete type rather than an alias chain.
-type F32Centroids =
-    DenseDatasetGeneric<ScalarDenseQuantizer<f32, f32, SquaredEuclideanDistance>, Box<[f32]>>;
+/// Plain dense dataset over value type `V`, used for both training storage and
+/// centroids in [`KMeans::train_with_index`]. Prefer `T = f16` for the (large)
+/// training set and `C = f32` for centroids / the ANN index: means still
+/// accumulate in `f32`, queries are always `f32`, and an `f32` centroid index
+/// keeps HNSW distance SIMD-friendly while f16 halves the training footprint.
+type Centroids<V> = PlainDenseDataset<V, SquaredEuclideanDistance>;
 
 pub struct KMeans {
     n_iter: usize,
@@ -108,7 +109,12 @@ impl KMeans {
     /// * `assignments`: the latest assignment vector in the dataset - cluster
     ///
     /// returns: the number of splits, a vector storing how many vectors are assigned to each cluster and the new centroids in a Dataset.
-    fn update_and_split<VIn, VOut, Data>(
+    ///
+    /// `VOut` is the training-vector storage type (read from `dataset`); `VCent`
+    /// is the centroid storage type written from the f32 means. They are usually
+    /// the same (`train`); [`train_with_index`] may choose `VCent = f32` while
+    /// training vectors stay `f16`.
+    fn update_and_split<VIn, VOut, VCent, Data>(
         dataset: &DenseDatasetGeneric<
             ScalarDenseQuantizer<VIn, VOut, SquaredEuclideanDistance>,
             Data,
@@ -121,11 +127,12 @@ impl KMeans {
     ) -> (
         usize,
         Vec<f32>,
-        PlainDenseDataset<VOut, SquaredEuclideanDistance>,
+        PlainDenseDataset<VCent, SquaredEuclideanDistance>,
     )
     where
         VIn: Float + ValueType + FromF32,
         VOut: Float + ValueType + FromF32 + num_traits::ToPrimitive + num_traits::FromPrimitive,
+        VCent: Float + ValueType + FromF32 + num_traits::ToPrimitive + num_traits::FromPrimitive,
         Data: AsRef<[VOut]> + Sync,
     {
         let n = dataset.len();
@@ -227,21 +234,39 @@ impl KMeans {
             Self::renorm_l2(&mut centroids, d);
         }
 
-        // Convert f32 centroids back to VOut
-        let centroids_vout: Vec<VOut> = centroids
+        // Convert f32 means into the caller-chosen centroid storage type.
+        let centroids_out: Vec<VCent> = centroids
             .iter()
-            .map(|&x| VOut::from_f32(x).unwrap())
+            .map(|&x| VCent::from_f32(x).unwrap())
             .collect();
 
         (
             n_splits,
             histograms,
-            PlainDenseDataset::<VOut, SquaredEuclideanDistance>::from_raw(
-                centroids_vout.into_boxed_slice(),
+            PlainDenseDataset::<VCent, SquaredEuclideanDistance>::from_raw(
+                centroids_out.into_boxed_slice(),
                 k,
                 ScalarDenseQuantizer::new(dataset.encoder().output_dim()),
             ),
         )
+    }
+
+    /// Cast a dense vector from storage type `T` to centroid type `C` via f32.
+    #[inline]
+    fn cast_dense_values<T, C>(values: &[T]) -> Vec<C>
+    where
+        T: ValueType + num_traits::ToPrimitive,
+        C: FromF32,
+    {
+        values
+            .iter()
+            .map(|x| {
+                C::from_f32_saturating(
+                    x.to_f32()
+                        .expect("value type is not representable as f32"),
+                )
+            })
+            .collect()
     }
 
     /// Runs K-Means training on a dataset with k clusters.
@@ -397,19 +422,43 @@ impl KMeans {
     }
 
     /// Like [`train`], but uses a generic [`Index`] for centroid assignment instead of exhaustive
-    /// flat search.  At each k-means iteration the index is rebuilt from the current centroids and
+    /// flat search. At each k-means iteration the index is rebuilt from the current centroids and
     /// then searched (top-1) for every training vector.
     ///
-    /// Restricted to `f32` datasets because the centroid index is always `F32Centroids`.
-    pub fn train_with_index<Q>(
+    /// # Type parameters
+    /// * `T` — storage precision of the **training** vectors (e.g. `f16` to halve the corpus).
+    /// * `C` — storage precision of the **centroids** and of the dataset the index is built on
+    ///   (prefer `f32`: the centroid set is small, and an `f32` index keeps distance SIMD-friendly).
+    /// * `Q` — centroid index type; must accept `f32` queries.
+    ///
+    /// Means still accumulate in `f32` inside [`update_and_split`]. Training vectors of type `T`
+    /// are upconverted to `f32` per query in [`assign_with_index`]. `T = C = f32` is the IVF /
+    /// kannolo call shape (turbofish `train_with_index::<HNSW<..>, f32, f32>` or let `T`/`C`
+    /// infer from the dataset and closure).
+    ///
+    /// This is a breaking change vs the previous single-generic `train_with_index::<Q>`: callers
+    /// must supply or infer `T` and `C`.
+    pub fn train_with_index<Q, T, C>(
         &self,
-        training_dataset: &F32Centroids,
+        training_dataset: &Centroids<T>,
         k: usize,
         weights: Option<Vec<f32>>,
-        build_centroid_index: impl Fn(F32Centroids) -> Q,
+        build_centroid_index: impl Fn(Centroids<C>) -> Q,
         search_params: &Q::SearchParams,
-    ) -> F32Centroids
+    ) -> Centroids<C>
     where
+        T: Float
+            + ValueType
+            + FromF32
+            + num_traits::ToPrimitive
+            + num_traits::FromPrimitive
+            + Clone,
+        C: Float
+            + ValueType
+            + FromF32
+            + num_traits::ToPrimitive
+            + num_traits::FromPrimitive
+            + Clone,
         Q: Index + Sync,
         for<'q> Q: Index<Query<'q> = DenseVectorView<'q, f32>>,
         Q::SearchParams: Sync,
@@ -425,7 +474,7 @@ impl KMeans {
         }
 
         let mut best_obj = f32::MAX;
-        let mut best_centroids = F32Centroids::from_raw(
+        let mut best_centroids = Centroids::<C>::from_raw(
             Vec::new().into_boxed_slice(),
             0,
             ScalarDenseQuantizer::new(d),
@@ -438,16 +487,18 @@ impl KMeans {
         };
 
         for redo in 0..self.n_redo {
-            let mut centroids_builder =
+            let mut centroids_builder: PlainDenseDatasetGrowable<C, SquaredEuclideanDistance> =
                 PlainDenseDatasetGrowable::with_capacity(ScalarDenseQuantizer::new(d), k);
             let mut init_rng = match self.seed {
                 Some(s) => StdRng::seed_from_u64(s + 1),
                 None => StdRng::from_entropy(),
             };
             for i in index::sample(&mut init_rng, n, k).into_iter() {
-                centroids_builder.push(training_dataset.get(i as VectorId));
+                let src = training_dataset.get(i as VectorId);
+                let cast = Self::cast_dense_values::<T, C>(src.values());
+                centroids_builder.push(DenseVectorView::new(&cast));
             }
-            let mut centroids: F32Centroids = centroids_builder.into();
+            let mut centroids: Centroids<C> = centroids_builder.into();
 
             let mut obj;
             let mut average_imbalance_factor = 0.0;
@@ -466,7 +517,7 @@ impl KMeans {
                 let t0 = Instant::now();
                 obj = assignments.iter().map(|&(v, _)| v).sum();
 
-                let (n_split, histograms, new_centroids) = Self::update_and_split(
+                let (n_split, histograms, new_centroids) = Self::update_and_split::<_, _, C, _>(
                     training_dataset,
                     w,
                     k,
@@ -509,12 +560,24 @@ impl KMeans {
     }
 
     /// Assigns each vector in `dataset` to its nearest centroid using `index` (top-1 search).
-    pub fn assign_with_index<Q>(
-        dataset: &F32Centroids,
+    ///
+    /// The dataset stores vectors in precision `T`; the centroid index is searched with `f32`
+    /// queries, so each stored vector is upconverted to `f32` before the search. The scratch
+    /// buffer is reused per rayon worker (via `map_init`) rather than allocated per query, so the
+    /// `T = f32` path costs one `dim`-length copy per query instead of the previous zero-copy view
+    /// — negligible next to a single HNSW search, and it keeps the hot loop allocation-free.
+    pub fn assign_with_index<Q, T>(
+        dataset: &Centroids<T>,
         index: &Q,
         search_params: &Q::SearchParams,
     ) -> Vec<(f32, usize)>
     where
+        T: Float
+            + ValueType
+            + FromF32
+            + num_traits::ToPrimitive
+            + num_traits::FromPrimitive
+            + Clone,
         Q: Index + Sync,
         for<'q> Q: Index<Query<'q> = DenseVectorView<'q, f32>>,
         Q::SearchParams: Sync,
@@ -525,15 +588,24 @@ impl KMeans {
 
         (0..n)
             .into_par_iter()
-            .map(|i| {
-                let query = DenseVectorView::new(&values[i * dim..(i + 1) * dim]);
-                let results = index.search(query, 1, search_params);
-                let best = results
-                    .into_iter()
-                    .next()
-                    .expect("centroid index returned no result during k-means assignment");
-                (best.distance.distance(), best.vector as usize)
-            })
+            .map_init(
+                || Vec::<f32>::with_capacity(dim),
+                |query_buf, i| {
+                    query_buf.clear();
+                    query_buf.extend(
+                        values[i * dim..(i + 1) * dim]
+                            .iter()
+                            .map(|x| x.to_f32().expect("value type is not representable as f32")),
+                    );
+                    let query = DenseVectorView::new(query_buf.as_slice());
+                    let results = index.search(query, 1, search_params);
+                    let best = results
+                        .into_iter()
+                        .next()
+                        .expect("centroid index returned no result during k-means assignment");
+                    (best.distance.distance(), best.vector as usize)
+                },
+            )
             .collect()
     }
 }
@@ -623,12 +695,13 @@ impl KMeansBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::flat_index::FlatIndex;
     use crate::core::vector::DenseVectorView;
     use crate::distances::SquaredEuclideanDistance;
     use crate::encoders::dense_scalar::PlainDenseQuantizer;
     use crate::{PlainDenseDataset, PlainDenseDatasetGrowable};
-    use rand::SeedableRng;
     use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
 
     #[test]
     fn compute_assignments_picks_nearest_centroid() {
@@ -678,6 +751,118 @@ mod tests {
         assert_eq!(assignments.len(), dataset.len());
     }
 
+    // ---- train_with_index: dual storage precision (T train, C centroids) -----
+    //
+    // ANN-assignment k-means via in-crate `FlatIndex` (no kannolo). Two well-separated
+    // blobs with integer coords (exact in f16). Covers T=C=f32, T=C=f16, and the
+    // recommended hybrid T=f16 / C=f32.
+
+    /// Two blobs: points 0..3 near the origin, points 3..6 near (10, 10).
+    const BLOB_POINTS: [[f32; 2]; 6] = [
+        [0.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 0.0],
+        [10.0, 10.0],
+        [10.0, 11.0],
+        [11.0, 10.0],
+    ];
+
+    /// Cluster `BLOB_POINTS` into 2 via `train_with_index` with training storage `T`
+    /// and centroid / index storage `C`.
+    fn blob_partition<T, C>() -> Vec<usize>
+    where
+        T: Float
+            + ValueType
+            + FromF32
+            + num_traits::ToPrimitive
+            + num_traits::FromPrimitive
+            + Clone,
+        C: Float
+            + ValueType
+            + FromF32
+            + num_traits::ToPrimitive
+            + num_traits::FromPrimitive
+            + Clone,
+    {
+        let encoder = PlainDenseQuantizer::<T, SquaredEuclideanDistance>::new(2);
+        let mut builder = PlainDenseDatasetGrowable::new(encoder);
+        for pt in BLOB_POINTS.iter() {
+            let v: Vec<T> = pt.iter().map(|&x| T::from_f32_saturating(x)).collect();
+            builder.push(DenseVectorView::new(&v[..]));
+        }
+        let dataset: Centroids<T> = builder.into();
+
+        let kmeans = KMeansBuilder::new()
+            .n_iter(10)
+            .n_redo(3)
+            .seed(Some(42))
+            .build();
+        let centroids = kmeans.train_with_index::<FlatIndex<Centroids<C>>, T, C>(
+            &dataset,
+            2,
+            None,
+            |c| FlatIndex::from(c),
+            &(),
+        );
+        assert_eq!(centroids.len(), 2, "expected exactly 2 centroids");
+
+        // Final labels via the same ANN path (works for T != C; compute_assignments
+        // requires matching storage types).
+        let index = FlatIndex::from(centroids);
+        KMeans::assign_with_index(&dataset, &index, &())
+            .into_iter()
+            .map(|(_, cluster)| cluster)
+            .collect()
+    }
+
+    /// A correct partition puts {0,1,2} in one cluster and {3,4,5} in the other.
+    fn assert_recovers_blobs(p: &[usize]) {
+        assert_eq!(p.len(), 6);
+        assert_eq!(p[0], p[1], "blob A points 0,1 must co-cluster");
+        assert_eq!(p[1], p[2], "blob A points 1,2 must co-cluster");
+        assert_eq!(p[3], p[4], "blob B points 3,4 must co-cluster");
+        assert_eq!(p[4], p[5], "blob B points 4,5 must co-cluster");
+        assert_ne!(p[0], p[3], "the two blobs must be in different clusters");
+    }
+
+    fn assert_same_partition(a: &[usize], b: &[usize]) {
+        assert_eq!(a.len(), b.len());
+        for i in 0..a.len() {
+            for j in 0..a.len() {
+                assert_eq!(
+                    a[i] == a[j],
+                    b[i] == b[j],
+                    "co-assignment of points {i},{j} differs"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn train_with_index_f32_recovers_blobs() {
+        assert_recovers_blobs(&blob_partition::<f32, f32>());
+    }
+
+    #[test]
+    fn train_with_index_f16_recovers_blobs() {
+        assert_recovers_blobs(&blob_partition::<half::f16, half::f16>());
+    }
+
+    #[test]
+    fn train_with_index_f16_train_f32_centroids_recovers_blobs() {
+        // Recommended scale path: f16 training corpus, f32 centroid index.
+        assert_recovers_blobs(&blob_partition::<half::f16, f32>());
+    }
+
+    #[test]
+    fn train_with_index_precisions_agree_on_partition() {
+        let f32p = blob_partition::<f32, f32>();
+        let f16p = blob_partition::<half::f16, half::f16>();
+        let hybrid = blob_partition::<half::f16, f32>();
+        assert_same_partition(&f32p, &f16p);
+        assert_same_partition(&f32p, &hybrid);
+    }
+
     // ---- centroid update: correctness ----------------------------------------
 
     #[test]
@@ -701,7 +886,7 @@ mod tests {
 
         let assignments = vec![(0.0, 0usize), (0.0, 0), (0.0, 0), (0.0, 1), (0.0, 1), (0.0, 1)];
         let mut rng = StdRng::seed_from_u64(0);
-        let (n_splits, hist, centroids) =
+        let (n_splits, hist, centroids): (_, _, Centroids<f32>) =
             KMeans::update_and_split(&dataset, None, 2, &assignments, &mut rng, false);
 
         assert_eq!(n_splits, 0, "no empty clusters => no splits");
@@ -729,7 +914,7 @@ mod tests {
         let dataset: PlainDenseDataset<f32, SquaredEuclideanDistance> = builder.into();
         let assignments = vec![(0.0, 0usize), (0.0, 0), (0.0, 1), (0.0, 1)];
         let mut rng = StdRng::seed_from_u64(0);
-        let (n_splits, _hist, centroids) =
+        let (n_splits, _hist, centroids): (_, _, Centroids<f32>) =
             KMeans::update_and_split(&dataset, None, 3, &assignments, &mut rng, false);
         assert_eq!(n_splits, 1, "one empty cluster => one split");
         assert_eq!(centroids.len(), 3);
@@ -763,7 +948,7 @@ mod tests {
                 .unwrap()
                 .install(|| {
                     let mut rng = StdRng::seed_from_u64(0);
-                    let (_, _, centroids) =
+                    let (_, _, centroids): (_, _, Centroids<f32>) =
                         KMeans::update_and_split(&dataset, None, k, &assignments, &mut rng, false);
                     (0..k)
                         .flat_map(|ci| {
@@ -800,7 +985,7 @@ mod tests {
         let weights = [1.0f32, 3.0, 2.0, 2.0];
         let assignments = vec![(0.0, 0usize), (0.0, 0), (0.0, 1), (0.0, 1)];
         let mut rng = StdRng::seed_from_u64(0);
-        let (n_splits, hist, centroids) = KMeans::update_and_split(
+        let (n_splits, hist, centroids): (_, _, Centroids<f32>) = KMeans::update_and_split(
             &dataset,
             Some(&weights),
             2,
@@ -819,5 +1004,129 @@ mod tests {
         for (a, b) in c1.iter().zip([11.0f32, 10.0].iter()) {
             assert!((a - b).abs() < 1e-5, "cluster 1 weighted mean {a} != {b}");
         }
+    }
+
+    // ---- scale benchmark: scatter speedup + f16 memory ----------------------
+
+    /// Build a `Centroids<T>` from raw f32 rows.
+    fn build_dataset<T>(raw: &[f32], n: usize, d: usize) -> Centroids<T>
+    where
+        T: Float
+            + ValueType
+            + FromF32
+            + num_traits::ToPrimitive
+            + num_traits::FromPrimitive
+            + Clone,
+    {
+        let enc = PlainDenseQuantizer::<T, SquaredEuclideanDistance>::new(d);
+        let mut b = PlainDenseDatasetGrowable::new(enc);
+        for i in 0..n {
+            let v: Vec<T> = raw[i * d..(i + 1) * d]
+                .iter()
+                .map(|&x| T::from_f32_saturating(x))
+                .collect();
+            b.push(DenseVectorView::new(&v[..]));
+        }
+        b.into()
+    }
+
+    /// The pre-scatter O(n*k) mean computation, kept as a reference to A/B against.
+    fn brute_force_means(
+        dataset: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
+        assignments: &[(f32, usize)],
+        k: usize,
+        d: usize,
+    ) -> Vec<f32> {
+        let n = dataset.len();
+        let results: Vec<Vec<f32>> = (0..k)
+            .into_par_iter()
+            .map(|ci| {
+                let mut centroid = vec![0.0f32; d];
+                let mut count = 0.0f32;
+                for i in 0..n {
+                    if assignments[i].1 == ci {
+                        count += 1.0;
+                        let vec = dataset.get(i as VectorId);
+                        for (c, x) in centroid.iter_mut().zip(vec.values().iter()) {
+                            *c += *x;
+                        }
+                    }
+                }
+                if count > 0.0 {
+                    for c in &mut centroid {
+                        *c /= count;
+                    }
+                }
+                centroid
+            })
+            .collect();
+        results.into_iter().flatten().collect()
+    }
+
+    #[test]
+    #[ignore = "scale benchmark; run: cargo test --release -- --ignored --nocapture bench_kmeans_fixes"]
+    fn bench_kmeans_fixes() {
+        use std::time::Instant;
+        let n = 200_000usize;
+        let d = 128usize;
+        let k = 8_000usize;
+
+        // Deterministic pseudo-random rows.
+        let mut rng = StdRng::seed_from_u64(1234);
+        let mut raw = vec![0.0f32; n * d];
+        for x in raw.iter_mut() {
+            *x = rng.gen_range(-1.0f32..1.0);
+        }
+        // Balanced, all-non-empty assignment so scatter == brute (no splits).
+        let assignments: Vec<(f32, usize)> = (0..n).map(|i| (0.0f32, i % k)).collect();
+
+        let ds_f32: Centroids<f32> = build_dataset(&raw, n, d);
+        let ds_f16: Centroids<half::f16> = build_dataset(&raw, n, d);
+
+        let mut rng2 = StdRng::seed_from_u64(0);
+        let t = Instant::now();
+        let (_, _, scat) =
+            KMeans::update_and_split(&ds_f32, None, k, &assignments, &mut rng2, false);
+        let t_scatter = t.elapsed();
+
+        let t = Instant::now();
+        let bmeans = brute_force_means(&ds_f32, &assignments, k, d);
+        let t_brute = t.elapsed();
+
+        let scat_vals: Vec<f32> = (0..k)
+            .flat_map(|ci| scat.get(ci as VectorId).values().to_vec())
+            .collect();
+        let max_diff = scat_vals
+            .iter()
+            .zip(bmeans.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_diff < 1e-3, "scatter vs brute means differ by {max_diff}");
+
+        let mut rng3 = StdRng::seed_from_u64(0);
+        let t = Instant::now();
+        let (_, _, _scat_f16): (_, _, Centroids<half::f16>) =
+            KMeans::update_and_split(&ds_f16, None, k, &assignments, &mut rng3, false);
+        let t_scatter_f16 = t.elapsed();
+
+        let mb = |bytes: usize| bytes as f64 / 1e6;
+        let bytes_f32 = n * d * std::mem::size_of::<f32>();
+        let bytes_f16 = n * d * std::mem::size_of::<half::f16>();
+
+        println!("\n=== kmeans fixes benchmark (n={n}, d={d}, k={k}) ===");
+        println!("[scatter fix]  update f32 brute : {t_brute:>10.3?}");
+        println!("[scatter fix]  update f32 scatter: {t_scatter:>10.3?}");
+        println!(
+            "[scatter fix]  speedup          : {:.1}x   (max centroid diff {:.1e})",
+            t_brute.as_secs_f64() / t_scatter.as_secs_f64(),
+            max_diff
+        );
+        println!("[f16 fix]      update f16 scatter: {t_scatter_f16:>10.3?}  (bandwidth)");
+        println!(
+            "[f16 fix]      dataset f32 = {:.1} MB, f16 = {:.1} MB ({:.0}% of f32)",
+            mb(bytes_f32),
+            mb(bytes_f16),
+            100.0 * bytes_f16 as f64 / bytes_f32 as f64
+        );
     }
 }
