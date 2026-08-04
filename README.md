@@ -275,8 +275,8 @@ Enable the feature in your `Cargo.toml` first (see [Cargo features](#cargo-featu
 # #[cfg(feature = "multivec")]
 # {
 use vectorium::{
-    Dataset, DatasetGrowable, DenseMultiVectorView, MultiVectorDatasetGrowable,
-    PlainMultiVecQuantizer,
+    Dataset, DatasetGrowable, DenseMultiVectorView, MultiVectorDataset,
+    MultiVectorDatasetGrowable, PlainMultiVecQuantizer,
 };
 
 // Each document is a sequence of token vectors.  Here dim=2 and each doc has 2 tokens.
@@ -288,7 +288,7 @@ dataset.push(DenseMultiVectorView::new(&[1.0_f32, 0.0, 0.0, 1.0], 2));
 // Doc 1: two tokens [0.5, 0.5] and [1.0, 1.0]
 dataset.push(DenseMultiVectorView::new(&[0.5_f32, 0.5, 1.0, 1.0], 2));
 
-let frozen = dataset.into_immutable();
+let frozen: MultiVectorDataset<_> = dataset.into();
 assert_eq!(frozen.len(), 2);
 # }
 ```

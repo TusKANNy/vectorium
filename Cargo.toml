@@ -1,6 +1,6 @@
 [package]
 name = "vectorium"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 authors = [
     "Rossano Venturini <rossano.venturini@unipi.it>"]
@@ -25,17 +25,14 @@ ndarray = "0.16"
 ndarray-npy = "0.9"
 # TODO: use upstream when https://gitlab.com/tspiteri/fixed/-/issues/69 is fixed
 # If it's not getting fixed, prefer using a git patch when https://github.com/rust-lang/cargo/issues/4648 is fixed
-fixed = { git = "https://gitlab.com/tinozzo123/fixed", branch = "fast_to_f32_hack", features = [
-    "num-traits",
-    "serde",
-] }
+fixed = { git = "https://gitlab.com/tinozzo123/fixed", rev = "e7d72487b9da972d3ed7aec7bc32c12cd8881994", features = ["num-traits", "serde"] }
 num-traits = "0.2.19"
 itertools = "0.14.0"
 bytemuck = { version = "1.23", features = [
     "min_const_generics",
 ] }
 rusty-perm = "0.2.0"
-rgb = { git = "https://github.com/JMMackenzie/enhanced-graph-bisection.git", package = "rgbisect" }
+rgb = { package = "rgbisect", version = "0.1.0" }
 rand = "0.8"
 matrixmultiply = "0.3"
 faer = "0.19"
