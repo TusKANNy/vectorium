@@ -183,7 +183,9 @@ where
     S: SparseStorage<E>,
 {
     type Encoder = E;
-    type Owned = Self;
+    /// Frozen, [`ImmutableSparseStorage`]-backed variant; identical to `Self` for
+    /// [`SparseDataset`].
+    type Owned = SparseDatasetGeneric<E, ImmutableSparseStorage<E>>;
 
     #[inline]
     fn nnz(&self) -> usize {
@@ -369,9 +371,12 @@ where
             new_offsets.push(new_components.len());
         }
 
-        Self {
-            storage: GrowableSparseStorage::from_parts(new_offsets, new_components, new_values)
-                .into(),
+        SparseDatasetGeneric {
+            storage: ImmutableSparseStorage::from(GrowableSparseStorage::from_parts(
+                new_offsets,
+                new_components,
+                new_values,
+            )),
             encoder: self.encoder.clone(),
         }
     }

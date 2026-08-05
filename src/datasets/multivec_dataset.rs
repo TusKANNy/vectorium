@@ -35,8 +35,8 @@ pub type MultiVectorDataset<E> =
 pub struct MultiVectorDatasetGeneric<E, Offsets, Data>
 where
     E: MultiVecEncoder,
-    Offsets: AsRef<[usize]> + From<Vec<usize>>,
-    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
+    Offsets: AsRef<[usize]>,
+    Data: AsRef<[E::OutputValueType]>,
 {
     data: Data,
     offsets: Offsets,
@@ -46,16 +46,16 @@ where
 impl<E, Offsets, Data> sealed::Sealed for MultiVectorDatasetGeneric<E, Offsets, Data>
 where
     E: MultiVecEncoder,
-    Offsets: AsRef<[usize]> + From<Vec<usize>>,
-    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
+    Offsets: AsRef<[usize]>,
+    Data: AsRef<[E::OutputValueType]>,
 {
 }
 
 impl<E, Offsets, Data> MultiVectorDatasetGeneric<E, Offsets, Data>
 where
     E: MultiVecEncoder,
-    Offsets: AsRef<[usize]> + From<Vec<usize>>,
-    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
+    Offsets: AsRef<[usize]>,
+    Data: AsRef<[E::OutputValueType]>,
 {
     /// Build a dataset from pre-encoded raw buffers.
     ///
@@ -108,11 +108,12 @@ where
 impl<E, Offsets, Data> Dataset for MultiVectorDatasetGeneric<E, Offsets, Data>
 where
     E: MultiVecEncoder,
-    Offsets: AsRef<[usize]> + From<Vec<usize>>,
-    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
+    Offsets: AsRef<[usize]>,
+    Data: AsRef<[E::OutputValueType]>,
 {
     type Encoder = E;
-    type Owned = Self;
+    /// Frozen, `Box<[_]>`-backed variant; identical to `Self` for [`MultiVectorDataset`].
+    type Owned = MultiVectorDatasetGeneric<E, Box<[usize]>, Box<[E::OutputValueType]>>;
 
     fn encoder(&self) -> &E {
         &self.encoder
@@ -186,9 +187,9 @@ where
             new_offsets.push(permuted.len());
         }
 
-        Self {
-            data: Data::from(permuted),
-            offsets: Offsets::from(new_offsets),
+        MultiVectorDatasetGeneric {
+            data: permuted.into_boxed_slice(),
+            offsets: new_offsets.into_boxed_slice(),
             encoder: self.encoder.clone(),
         }
     }
@@ -326,8 +327,8 @@ where
 impl<E, Offsets, Data> SpaceUsage for MultiVectorDatasetGeneric<E, Offsets, Data>
 where
     E: MultiVecEncoder + SpaceUsage,
-    Offsets: AsRef<[usize]> + From<Vec<usize>> + SpaceUsage,
-    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>> + SpaceUsage,
+    Offsets: AsRef<[usize]> + SpaceUsage,
+    Data: AsRef<[E::OutputValueType]> + SpaceUsage,
 {
     fn space_usage_bytes(&self) -> usize {
         self.encoder.space_usage_bytes()
@@ -342,8 +343,8 @@ pub trait MultiVecData: Dataset<Encoder: MultiVecEncoder> {}
 impl<E, Offsets, Data> MultiVecData for MultiVectorDatasetGeneric<E, Offsets, Data>
 where
     E: MultiVecEncoder,
-    Offsets: AsRef<[usize]> + From<Vec<usize>>,
-    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
+    Offsets: AsRef<[usize]>,
+    Data: AsRef<[E::OutputValueType]>,
 {
 }
 

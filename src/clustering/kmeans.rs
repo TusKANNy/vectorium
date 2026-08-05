@@ -55,11 +55,11 @@ impl KMeans {
     pub fn compute_assignments<VIn, VOut>(
         dataset: &DenseDatasetGeneric<
             ScalarDenseQuantizer<VIn, VOut, SquaredEuclideanDistance>,
-            impl AsRef<[VOut]> + From<Vec<VOut>>,
+            impl AsRef<[VOut]>,
         >,
         centroids: &DenseDatasetGeneric<
             ScalarDenseQuantizer<VOut, VOut, SquaredEuclideanDistance>,
-            impl AsRef<[VOut]> + From<Vec<VOut>> + Sync,
+            impl AsRef<[VOut]> + Sync,
         >,
         _index_threshold: usize,
     ) -> Vec<(f32, usize)>
@@ -126,7 +126,7 @@ impl KMeans {
     where
         VIn: Float + ValueType + FromF32,
         VOut: Float + ValueType + FromF32 + num_traits::ToPrimitive + num_traits::FromPrimitive,
-        Data: AsRef<[VOut]> + From<Vec<VOut>> + Sync,
+        Data: AsRef<[VOut]> + Sync,
     {
         let n = dataset.len();
         let d = dataset.output_dim();
@@ -274,7 +274,7 @@ impl KMeans {
             + num_traits::ToPrimitive
             + num_traits::FromPrimitive
             + Clone,
-        Data: AsRef<[VOut]> + From<Vec<VOut>> + Sync,
+        Data: AsRef<[VOut]> + Sync,
     {
         let n = training_dataset.len();
 

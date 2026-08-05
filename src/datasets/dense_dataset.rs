@@ -61,7 +61,7 @@ pub type DenseDataset<E> =
 pub struct DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
+    Data: AsRef<[E::OutputValueType]>,
 {
     n_vecs: usize,
     data: Data,
@@ -71,14 +71,14 @@ where
 impl<E, Data> sealed::Sealed for DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
+    Data: AsRef<[E::OutputValueType]>,
 {
 }
 
 impl<E, Data> SpaceUsage for DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>> + SpaceUsage,
+    Data: AsRef<[E::OutputValueType]> + SpaceUsage,
 {
     fn space_usage_bytes(&self) -> usize {
         self.n_vecs.space_usage_bytes()
@@ -90,7 +90,7 @@ where
 impl<E, Data> DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
+    Data: AsRef<[E::OutputValueType]>,
 {
     /// Build a dataset from its raw encoded buffer.
     ///
@@ -170,10 +170,12 @@ where
 impl<E, Data> Dataset for DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
+    Data: AsRef<[E::OutputValueType]>,
 {
     type Encoder = E;
-    type Owned = Self;
+    /// Frozen, `Box<[_]>`-backed variant. For `DenseDataset<E>` this *is* `Self`; for the
+    /// growable variant it is the frozen counterpart, which is what a bulk copy should yield.
+    type Owned = DenseDatasetGeneric<E, Box<[E::OutputValueType]>>;
 
     #[inline]
     fn encoder(&self) -> &E {
@@ -271,9 +273,9 @@ where
             permuted.extend_from_slice(&source[old_start..old_start + dim]);
         }
 
-        Self {
+        DenseDatasetGeneric {
             n_vecs,
-            data: Data::from(permuted),
+            data: permuted.into_boxed_slice(),
             encoder: self.encoder.clone(),
         }
     }
@@ -488,8 +490,8 @@ where
         DenseVectorEncoder<InputValueType = SrcIn, OutputValueType = Mid>,
     ScalarDenseQuantizer<Mid, DstOut, D>:
         DenseVectorEncoder<InputValueType = Mid, OutputValueType = DstOut>,
-    SrcStorage: AsRef<[Mid]> + From<Vec<Mid>>,
-    DstStorage: AsRef<[DstOut]> + From<Vec<DstOut>> + From<Box<[DstOut]>>,
+    SrcStorage: AsRef<[Mid]>,
+    DstStorage: From<Box<[DstOut]>> + AsRef<[DstOut]>,
 {
     fn convert_from(
         source: &DenseDatasetGeneric<ScalarDenseQuantizer<SrcIn, Mid, D>, SrcStorage>,
@@ -517,7 +519,7 @@ where
 impl<E, Data> crate::core::dataset::DenseData for DenseDatasetGeneric<E, Data>
 where
     E: DenseVectorEncoder,
-    Data: AsRef<[E::OutputValueType]> + From<Vec<E::OutputValueType>>,
+    Data: AsRef<[E::OutputValueType]>,
 {
 }
 

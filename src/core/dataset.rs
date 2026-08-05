@@ -90,8 +90,14 @@ pub trait Dataset: sealed::Sealed {
     type Encoder: VectorEncoder;
 
     /// Owned dataset produced by bulk operations such as [`Self::permute`].
-    /// Concrete datasets set `Owned = Self`; the forwarding impl for `&T` defers to `T::Owned`,
-    /// since it cannot return a reference to a dataset it just allocated.
+    ///
+    /// Each dataset sets this to its *frozen* variant, which for the frozen aliases
+    /// (`DenseDataset`, `SparseDataset`, …) is `Self`. Naming the frozen type rather than `Self`
+    /// keeps `permute` from imposing a "constructible from a `Vec`" bound on every storage
+    /// backend, which would rule out read-only ones such as a memory map.
+    ///
+    /// The forwarding impl for `&T` defers to `T::Owned`, since it cannot return a reference to
+    /// a dataset it just allocated.
     type Owned: Dataset<Encoder = Self::Encoder>;
 
     /// Shared encoder instance used to encode, query, and decode vectors.

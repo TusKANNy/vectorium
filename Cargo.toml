@@ -1,11 +1,11 @@
 [package]
 name = "vectorium"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 authors = [
     "Rossano Venturini <rossano.venturini@unipi.it>"]
 readme = "README.md"
-description = "Dense and sparse embedding datasets with compression utilities and brute-force parallel search."
+description = "Dense, sparse and multivector embedding datasets with compression utilities and brute-force parallel search."
 license = "MIT"
 
 [dependencies]

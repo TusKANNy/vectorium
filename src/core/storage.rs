@@ -26,10 +26,7 @@ use crate::SparseVectorEncoder;
 /// This abstracts over the concrete storage types (`Vec`, `Box<[T]>`, etc.)
 /// reducing the generic parameter count from 4 (`O, AC, AV` + encoder) to 2
 /// (encoder + storage).
-///
-/// `From<GrowableSparseStorage<E>>` lets bulk operations such as [`crate::Dataset::permute`]
-/// assemble the three CSR arrays as `Vec`s and hand them to any backend.
-pub trait SparseStorage<E: SparseVectorEncoder>: Clone + From<GrowableSparseStorage<E>> {
+pub trait SparseStorage<E: SparseVectorEncoder>: Clone {
     /// Type for storing offsets (e.g., `Vec<usize>` or `Box<[usize]>`)
     type Offsets: AsRef<[usize]>;
 

@@ -107,8 +107,8 @@ pub type PackedSparseDataset<E> = PackedSparseDatasetGeneric<
 pub struct PackedSparseDatasetGeneric<E, Offsets, Data>
 where
     E: PackedSparseVectorEncoder,
-    Offsets: AsRef<[usize]> + From<Vec<usize>>,
-    Data: AsRef<[E::PackedDataType]> + From<Vec<E::PackedDataType>>,
+    Offsets: AsRef<[usize]>,
+    Data: AsRef<[E::PackedDataType]>,
 {
     offsets: Offsets,
     data: Data,
@@ -119,16 +119,16 @@ where
 impl<E, Offsets, Data> sealed::Sealed for PackedSparseDatasetGeneric<E, Offsets, Data>
 where
     E: PackedSparseVectorEncoder,
-    Offsets: AsRef<[usize]> + From<Vec<usize>>,
-    Data: AsRef<[E::PackedDataType]> + From<Vec<E::PackedDataType>>,
+    Offsets: AsRef<[usize]>,
+    Data: AsRef<[E::PackedDataType]>,
 {
 }
 
 impl<E, Offsets, Data> PackedSparseDatasetGeneric<E, Offsets, Data>
 where
     E: PackedSparseVectorEncoder,
-    Offsets: AsRef<[usize]> + From<Vec<usize>>,
-    Data: AsRef<[E::PackedDataType]> + From<Vec<E::PackedDataType>>,
+    Offsets: AsRef<[usize]>,
+    Data: AsRef<[E::PackedDataType]>,
 {
     #[inline]
     /// Return the raw offsets array that demarcates each vector slice.
@@ -261,8 +261,8 @@ impl<E, Offsets, Data> SpaceUsage for PackedSparseDatasetGeneric<E, Offsets, Dat
 where
     E: PackedSparseVectorEncoder,
     E: SpaceUsage,
-    Offsets: AsRef<[usize]> + From<Vec<usize>> + SpaceUsage,
-    Data: AsRef<[E::PackedDataType]> + From<Vec<E::PackedDataType>> + SpaceUsage,
+    Offsets: AsRef<[usize]> + SpaceUsage,
+    Data: AsRef<[E::PackedDataType]> + SpaceUsage,
 {
     fn space_usage_bytes(&self) -> usize {
         self.encoder.space_usage_bytes()
@@ -275,11 +275,12 @@ where
 impl<E, Offsets, Data> Dataset for PackedSparseDatasetGeneric<E, Offsets, Data>
 where
     E: PackedSparseVectorEncoder,
-    Offsets: AsRef<[usize]> + From<Vec<usize>>,
-    Data: AsRef<[E::PackedDataType]> + From<Vec<E::PackedDataType>>,
+    Offsets: AsRef<[usize]>,
+    Data: AsRef<[E::PackedDataType]>,
 {
     type Encoder = E;
-    type Owned = Self;
+    /// Frozen, `Box<[_]>`-backed variant; identical to `Self` for [`PackedSparseDataset`].
+    type Owned = PackedSparseDatasetGeneric<E, Box<[usize]>, Box<[E::PackedDataType]>>;
 
     #[inline]
     fn nnz(&self) -> usize {
@@ -360,9 +361,9 @@ where
             new_offsets.push(permuted.len());
         }
 
-        Self {
-            offsets: Offsets::from(new_offsets),
-            data: Data::from(permuted),
+        PackedSparseDatasetGeneric {
+            offsets: new_offsets.into_boxed_slice(),
+            data: permuted.into_boxed_slice(),
             encoder: self.encoder.clone(),
             // Reordering rows moves non-zeros around but never adds or drops any.
             nnz: self.nnz,
@@ -373,8 +374,8 @@ where
 impl<E, Offsets, Data> SparseData for PackedSparseDatasetGeneric<E, Offsets, Data>
 where
     E: PackedSparseVectorEncoder,
-    Offsets: AsRef<[usize]> + From<Vec<usize>>,
-    Data: AsRef<[E::PackedDataType]> + From<Vec<E::PackedDataType>>,
+    Offsets: AsRef<[usize]>,
+    Data: AsRef<[E::PackedDataType]>,
 {
 }
 
