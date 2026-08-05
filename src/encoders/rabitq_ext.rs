@@ -12,7 +12,7 @@
 //! This file intentionally duplicates the private helpers of `rabitq.rs` (kernels, rescale-factor
 //! search, query quantization) so the two implementations stay independent; they may be merged
 //! later. The preprocessing is identical: residual `r = P·(x − mean)` with per-component means and
-//! a seeded [`FhtKacRotator`] (disable via [`RabitqExtConfig::rotate`]).
+//! a seeded [`FhtKacRotator`](crate::FhtKacRotator) (disable via [`RabitqExtConfig::rotate`]).
 //!
 //! ## Document code
 //!
@@ -61,22 +61,19 @@
 //! scan-ready floats `[f_add = ‖r‖² | s_ext = ‖r‖/ipnorm]`, so the per-candidate scan does no
 //! divide. Only dimensions that are a multiple of 64 are supported (no bit-padding).
 use serde::{Deserialize, Serialize};
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
 use std::marker::PhantomData;
 use std::simd::Simd;
 use std::simd::cmp::SimdPartialEq;
-use std::simd::num::SimdUint;
 
 use crate::core::distances::DotProduct;
 use crate::core::vector::{DenseVectorOwned, DenseVectorView};
 use crate::core::vector_encoder::{DenseVectorEncoder, QueryEvaluator, VectorEncoder};
-use crate::encoders::rabitq::RabitqSupportedDistance;
-use crate::transformations::fht_kac::FhtKacRotator;
+use crate::encoders::rabitq_common::{
+    RabitqSpace, RabitqSupportedDistance, RescaleScratch, WORD_BITS, best_rescale_factor,
+    ip_signed_planes, ip_signed_planes_batch6, pack_bit_planes, pack_metadata, pack_signs_into,
+    quantize_query_multibit, unpack_metadata,
+};
 use crate::{Dataset, PlainDenseDataset, ScalarDenseSupportedDistance, SpaceUsage};
-
-/// Number of bits packed into a single `u64` word.
-const WORD_BITS: usize = 64;
 
 /// Extended RaBitQ encoder parameters. See the module docs for the estimator math.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -87,9 +84,9 @@ pub struct RabitqExtConfig {
     /// Bits per component for the scalar-quantized query (`1` = plain sign query). Values in
     /// `1..=8` are supported.
     pub query_bits: u32,
-    /// Seed for the random orthogonal rotation ([`FhtKacRotator`]).
+    /// Seed for the random orthogonal rotation ([`FhtKacRotator`](crate::FhtKacRotator)).
     pub seed: u64,
-    /// Apply the random orthogonal rotation ([`FhtKacRotator`]) to residuals. Disabling skips the
+    /// Apply the random orthogonal rotation ([`FhtKacRotator`](crate::FhtKacRotator)) to residuals. Disabling skips the
     /// `O(d log d)` per-vector transform at encode and query time; the estimator math is unchanged
     /// (`P = I` is a valid orthogonal transform), but the codes lose the information-spreading
     /// guarantee, so recall on real data is expected to drop.
@@ -115,102 +112,6 @@ impl Default for RabitqExtConfig {
     }
 }
 
-/// Pack the per-document scan constants into the trailing metadata word: `[f_add:f32 | s_ext:f32]`.
-///
-/// These are the two quantities the scan needs with **no per-candidate divide**:
-/// `f_add = ‖r‖²` (the squared-Euclidean additive) and `s_ext = ‖r‖/ipnorm` (the estimator's
-/// rescale; the residual norm is recoverable as `√f_add` off the hot path).
-#[inline]
-fn pack_metadata(f_add: f32, s_ext: f32) -> u64 {
-    ((f_add.to_bits() as u64) << 32) | (s_ext.to_bits() as u64)
-}
-
-/// Unpack the trailing metadata word into `(f_add, s_ext)` (see [`pack_metadata`]).
-#[inline]
-fn unpack_metadata(word: u64) -> (f32, f32) {
-    (
-        f32::from_bits((word >> 32) as u32),
-        f32::from_bits(word as u32),
-    )
-}
-
-/// Lane width for the `u64` popcount kernels (8×`u64` = one AVX-512 `zmm` register).
-const LANES: usize = 8;
-
-/// Fused multi-bit inner-product kernel: returns `(ip, ppc)` where
-/// `ip = Σ_j 2^j · popcount(doc AND plane_j)` and `ppc = popcount(doc)`.
-///
-/// A single streaming pass over the document code (mirrors RaBitQ-Library's `warmup_ip_x0_q_512`):
-/// each `LANES`-wide document chunk is loaded **once** into a register, its popcount folded into
-/// `ppc`, then reused across all `QB` query planes — instead of one full pass per plane, which
-/// re-reads the document code `QB + 1` times. `QB` is a const generic so the inner plane loop and
-/// its per-plane accumulators fully unroll into registers (the C++ template's `acc_bits[b_query]`).
-#[inline]
-fn ip_signed_planes<const QB: usize>(code: &[u64], planes: &[u64]) -> (u64, u64) {
-    let nw = code.len();
-    // Layout invariant (upheld by `pack_bit_planes`, which allocates `QB * num_words`): plane `j`
-    // occupies `planes[j*nw .. (j+1)*nw]`. Every plane load below is at `j*nw + base` with
-    // `base + LANES <= nw`, so `off + LANES <= QB*nw = planes.len()`. This lets the hot loop use
-    // unchecked loads (matching the C++ kernel's raw `_mm512_loadu_si512`) — the bounds checks that
-    // LLVM would otherwise emit on the computed offset roughly doubled the per-word scan cost.
-    debug_assert_eq!(
-        planes.len(),
-        QB * nw,
-        "plane buffer must be QB * code.len()"
-    );
-    let (code_chunks, code_tail) = code.as_chunks::<LANES>();
-
-    let mut ppc_acc = Simd::<u64, LANES>::splat(0);
-    let mut bit_acc = [Simd::<u64, LANES>::splat(0); QB];
-    for (c, chunk) in code_chunks.iter().enumerate() {
-        let dv = Simd::from_array(*chunk); // load the document chunk once...
-        ppc_acc += dv.count_ones();
-        let base = c * LANES;
-        for (j, acc) in bit_acc.iter_mut().enumerate() {
-            // ...and reuse it against every query plane's matching chunk (plane-major layout).
-            let off = j * nw + base;
-            // SAFETY: `off + LANES <= QB*nw = planes.len()` (see the invariant above); the read of
-            // `LANES` contiguous words is in bounds. Skips the bounds check on this hot load.
-            let qv = Simd::<u64, LANES>::from_array(unsafe {
-                *(planes.as_ptr().add(off) as *const [u64; LANES])
-            });
-            *acc += (dv & qv).count_ones();
-        }
-    }
-
-    // Remainder (`nw % LANES` words): pad the document words and each plane's matching words up
-    // to a full register and run the same 8-wide popcount. A scalar loop here auto-vectorizes the
-    // `QB`-plane inner loop into a strided `vpgatherqq` (the planes for one word sit `nw` apart),
-    // which dominates the scan at low dim — e.g. d=128 → nw=2 is *all* tail. The zero padding
-    // contributes nothing to the AND-popcount or to `ppc`, and the plane words for the tail are
-    // contiguous within each plane, so the load stays a plain register move.
-    let tail_len = code_tail.len();
-    if tail_len > 0 {
-        let tail_base = code_chunks.len() * LANES;
-        let dv = Simd::<u64, LANES>::load_or_default(code_tail);
-        ppc_acc += dv.count_ones();
-        for (j, acc) in bit_acc.iter_mut().enumerate() {
-            let off = j * nw + tail_base;
-            // SAFETY: `off + tail_len == j*nw + nw <= QB*nw = planes.len()` (see the invariant
-            // above), so this sub-`LANES` slice is in bounds. Skips the bounds check on the tail load.
-            let qv = Simd::<u64, LANES>::load_or_default(unsafe {
-                planes.get_unchecked(off..off + tail_len)
-            });
-            *acc += (dv & qv).count_ones();
-        }
-    }
-
-    // Weight each plane by 2^j **in vector form** and sum into one accumulator, so the whole
-    // inner product costs a single horizontal reduction instead of one per plane (this is what
-    // `warmup_ip_x0_q_512`'s `_mm512_sll_epi64` + one `_mm512_reduce_add_epi64` does; the per-plane
-    // `reduce_sum() << j` form put `QB` serialized reductions on the hot path).
-    let mut ip_acc = Simd::<u64, LANES>::splat(0);
-    for (j, acc) in bit_acc.iter().enumerate() {
-        ip_acc += *acc << Simd::<u64, LANES>::splat(j as u64);
-    }
-    (ip_acc.reduce_sum(), ppc_acc.reduce_sum())
-}
-
 /// The full document/query code inner product over all document planes: returns
 /// `(⟨u, c⟩, Σu)` where `⟨u, c⟩ = Σ_a 2^a · Σ_b 2^b · popcount(doc_plane_a AND query_plane_b)`
 /// and `Σu = Σ_a 2^a · popcount(doc_plane_a)`.
@@ -233,84 +134,26 @@ fn doc_planes_ip<const QB: usize>(
     (ip, sum_u)
 }
 
-/// Six-way [`ip_signed_planes`]: the fused cross-candidate kernel. Returns the per-document
-/// `(ip, ppc)` pairs as `([ip; 6], [ppc; 6])`.
-///
-/// Each query-plane chunk is broadcast **once** per chunk position and reused against six
-/// documents' chunks, whose accumulator chains are independent — the cross-candidate ILP that six
-/// back-to-back single-document calls can't get. Register pressure is kept flat across `QB` by
-/// folding the `2^j` plane weight into the accumulation (`(dv & qv).count_ones() << j`): one `ip`
-/// accumulator per document instead of the single-document kernel's per-plane array, which at six
-/// documents (`6·QB` registers) would spill for the larger plane counts.
+/// [`doc_planes_ip`] dispatched on a runtime plane count (`1..=9`), so the kernel's inner loops
+/// still unroll at each width.
 #[inline]
-fn ip_signed_planes_batch6<const QB: usize>(
-    codes: [&[u64]; 6],
-    planes: &[u64],
-) -> ([u64; 6], [u64; 6]) {
-    let nw = codes[0].len();
-    debug_assert!(codes.iter().all(|c| c.len() == nw));
-    // Same layout invariant as `ip_signed_planes`: plane `j` occupies `planes[j*nw .. (j+1)*nw]`,
-    // so every plane load at `j*nw + base` with `base + LANES <= nw` is in bounds.
-    debug_assert_eq!(
-        planes.len(),
-        QB * nw,
-        "plane buffer must be QB * code.len()"
-    );
-    let full = nw / LANES;
-    let tail_len = nw % LANES;
-
-    let mut ppc_acc = [Simd::<u64, LANES>::splat(0); 6];
-    let mut ip_acc = [Simd::<u64, LANES>::splat(0); 6];
-    for c in 0..full {
-        let base = c * LANES;
-        // SAFETY: `base + LANES <= nw == codes[k].len()` (asserted above); each read of `LANES`
-        // contiguous words is in bounds. Skips the bounds checks on these hot loads.
-        let dv: [Simd<u64, LANES>; 6] = std::array::from_fn(|k| {
-            Simd::from_array(unsafe { *(codes[k].as_ptr().add(base) as *const [u64; LANES]) })
-        });
-        for (v, a) in dv.iter().zip(ppc_acc.iter_mut()) {
-            *a += v.count_ones();
-        }
-        for j in 0..QB {
-            let off = j * nw + base;
-            // SAFETY: `off + LANES <= QB*nw = planes.len()` (see the invariant above).
-            let qv = Simd::<u64, LANES>::from_array(unsafe {
-                *(planes.as_ptr().add(off) as *const [u64; LANES])
-            });
-            let shift = Simd::<u64, LANES>::splat(j as u64);
-            for (v, a) in dv.iter().zip(ip_acc.iter_mut()) {
-                *a += (v & qv).count_ones() << shift;
-            }
-        }
+fn doc_planes_ip_dyn(
+    bits: u32,
+    code: &[u64],
+    query_planes: &[u64],
+    num_words: usize,
+) -> (u64, u64) {
+    match bits {
+        1 => doc_planes_ip::<1>(code, query_planes, num_words),
+        2 => doc_planes_ip::<2>(code, query_planes, num_words),
+        3 => doc_planes_ip::<3>(code, query_planes, num_words),
+        4 => doc_planes_ip::<4>(code, query_planes, num_words),
+        5 => doc_planes_ip::<5>(code, query_planes, num_words),
+        6 => doc_planes_ip::<6>(code, query_planes, num_words),
+        7 => doc_planes_ip::<7>(code, query_planes, num_words),
+        8 => doc_planes_ip::<8>(code, query_planes, num_words),
+        _ => doc_planes_ip::<9>(code, query_planes, num_words),
     }
-
-    // Remainder (`nw % LANES` words): zero-pad both sides up to a full register, as in the
-    // single-document kernel; the padding contributes nothing to the AND-popcount or to `ppc`.
-    if tail_len > 0 {
-        let base = full * LANES;
-        let dv: [Simd<u64, LANES>; 6] =
-            std::array::from_fn(|k| Simd::load_or_default(&codes[k][base..]));
-        for (v, a) in dv.iter().zip(ppc_acc.iter_mut()) {
-            *a += v.count_ones();
-        }
-        for j in 0..QB {
-            let off = j * nw + base;
-            // SAFETY: `off + tail_len == j*nw + nw <= QB*nw = planes.len()` (see the invariant
-            // above), so this sub-`LANES` slice is in bounds.
-            let qv = Simd::<u64, LANES>::load_or_default(unsafe {
-                planes.get_unchecked(off..off + tail_len)
-            });
-            let shift = Simd::<u64, LANES>::splat(j as u64);
-            for (v, a) in dv.iter().zip(ip_acc.iter_mut()) {
-                *a += (v & qv).count_ones() << shift;
-            }
-        }
-    }
-
-    (
-        ip_acc.map(|a| a.reduce_sum()),
-        ppc_acc.map(|a| a.reduce_sum()),
-    )
 }
 
 /// Six-way [`doc_planes_ip`]: the full document/query code inner product for six documents at
@@ -338,87 +181,6 @@ fn doc_planes_ip_batch6<const QB: usize>(
         }
     }
     (ip, sum_u)
-}
-
-/// Tight lower bounds for the rescale-factor search window, indexed by `ex_bits` (RaBitQ-Library's
-/// `kTightStart`): candidate factors below `t_end · TIGHT_START[ex_bits]` never win.
-const TIGHT_START: [f64; 9] = [0.0, 0.15, 0.20, 0.52, 0.59, 0.71, 0.75, 0.77, 0.81];
-
-/// Scratch buffers reused across [`best_rescale_factor`] calls to keep the exact per-vector search
-/// allocation-free on the batch encode path (one instance per Rayon worker).
-#[derive(Default)]
-struct RescaleScratch {
-    cur_code: Vec<i64>,
-    heap: BinaryHeap<Reverse<(u64, usize)>>,
-}
-
-/// Exact search for the rescale factor `t` maximizing the cosine between the ex-bit magnitude
-/// code (`+0.5`) and `o_abs` (the normalized `|residual|`).
-///
-/// Port of RaBitQ-Library's `best_rescale_factor`: sweep, in increasing order, exactly the `t`
-/// values at which some component's code increments (a min-heap of `(code_i + 1)/o_abs_i`),
-/// maintaining the cosine numerator/denominator incrementally. Zero components are skipped —
-/// their candidate `t` is infinite and incrementing them can only lower the objective.
-/// Must not be called with `ex_bits = 0` (the sweep assumes `max_code ≥ 1`).
-///
-/// `scratch` is cleared and reused so the batch encode path pays no per-vector allocation.
-fn best_rescale_factor(o_abs: &[f32], ex_bits: u32, scratch: &mut RescaleScratch) -> f64 {
-    const EPS: f64 = 1e-5;
-    const N_ENUM: usize = 10;
-    let dim = o_abs.len();
-    let max_o = o_abs.iter().cloned().fold(0.0f32, f32::max) as f64;
-    if max_o <= 0.0 {
-        return 0.0;
-    }
-    let max_code = (1i64 << ex_bits) - 1;
-    let t_end = (max_code as usize + N_ENUM) as f64 / max_o;
-    let t_start = t_end * TIGHT_START[ex_bits as usize];
-
-    let cur_code = &mut scratch.cur_code;
-    cur_code.clear();
-    cur_code.resize(dim, 0i64);
-    let mut sqr_denominator = dim as f64 * 0.25;
-    let mut numerator = 0.0f64;
-    for (c, &o) in cur_code.iter_mut().zip(o_abs.iter()) {
-        *c = ((t_start * o as f64) + EPS) as i64;
-        sqr_denominator += (*c * *c + *c) as f64;
-        numerator += (*c as f64 + 0.5) * o as f64;
-    }
-
-    // Min-heap of candidate `t` values. All candidates are positive finite floats, so ordering
-    // their IEEE-754 bit patterns as integers orders the values — no float-Ord wrapper needed.
-    let heap = &mut scratch.heap;
-    heap.clear();
-    for (i, &o) in o_abs.iter().enumerate() {
-        if o > 0.0 {
-            let t = (cur_code[i] + 1) as f64 / o as f64;
-            heap.push(Reverse((t.to_bits(), i)));
-        }
-    }
-
-    let mut max_ip = 0.0f64;
-    let mut best_t = 0.0f64;
-    while let Some(Reverse((t_bits, i))) = heap.pop() {
-        let cur_t = f64::from_bits(t_bits);
-        cur_code[i] += 1;
-        let c = cur_code[i];
-        sqr_denominator += (2 * c) as f64;
-        numerator += o_abs[i] as f64;
-
-        let cur_ip = numerator / sqr_denominator.sqrt();
-        if cur_ip > max_ip {
-            max_ip = cur_ip;
-            best_t = cur_t;
-        }
-
-        if c < max_code {
-            let t_next = (c + 1) as f64 / o_abs[i] as f64;
-            if t_next < t_end {
-                heap.push(Reverse((t_next.to_bits(), i)));
-            }
-        }
-    }
-    best_t
 }
 
 /// Number of random unit vectors averaged to estimate the constant rescale factor (RaBitQ-Library's
@@ -467,80 +229,6 @@ fn get_const_scaling_factors(dim: usize, ex_bits: u32, seed: u64) -> f64 {
     sum / CONST_SCALE_SAMPLES as f64
 }
 
-/// Scalar-quantize a query residual to `query_bits` bits per component.
-///
-/// Returns `(codes, delta, vl)`: per-component codes in `[0, 2^query_bits)` and the
-/// reconstruction scale/offset so that `q̂_i = delta·code_i + vl ≈ residual_i`. Follows
-/// RaBitQ-Library's RECONSTRUCTION scheme: 1 sign bit plus `query_bits − 1` magnitude bits from
-/// [`best_rescale_factor`], negative components complement-coded, and `delta` the least-squares
-/// fit of the residual onto the symmetric grid `u_i = code_i + cb`, `cb = −(2^(query_bits−1) − ½)`.
-fn quantize_query_multibit(residual: &[f32], query_bits: u32) -> (Vec<u8>, f32, f32) {
-    let ex_bits = query_bits - 1;
-    let max_code = (1u32 << ex_bits) - 1;
-    let cb = -((1u64 << ex_bits) as f64 - 0.5);
-
-    let norm = residual
-        .iter()
-        .map(|&r| r as f64 * r as f64)
-        .sum::<f64>()
-        .sqrt();
-    if norm <= f64::EPSILON {
-        return (vec![0u8; residual.len()], 0.0, 0.0);
-    }
-
-    let o_abs: Vec<f32> = residual
-        .iter()
-        .map(|&r| (r.abs() as f64 / norm) as f32)
-        .collect();
-    let t = best_rescale_factor(&o_abs, ex_bits, &mut RescaleScratch::default());
-
-    let codes: Vec<u8> = residual
-        .iter()
-        .zip(o_abs.iter())
-        .map(|(&r, &o)| {
-            let ex = (((t * o as f64) + 1e-5) as u32).min(max_code);
-            let code = if r >= 0.0 {
-                (1u32 << ex_bits) | ex
-            } else {
-                !ex & max_code
-            };
-            code as u8
-        })
-        .collect();
-
-    // Least-squares scale of the residual onto the reconstruction grid.
-    let mut dot = 0.0f64;
-    let mut sqr = 0.0f64;
-    for (&r, &c) in residual.iter().zip(codes.iter()) {
-        let u = c as f64 + cb;
-        dot += r as f64 * u;
-        sqr += u * u;
-    }
-    let delta = if sqr > 0.0 { (dot / sqr) as f32 } else { 0.0 };
-    (codes, delta, delta * cb as f32)
-}
-
-/// Transpose per-component query codes into **plane-major** bit planes: `planes[j·num_words + w]`
-/// holds bit `j` of components `w·64..(w+1)·64`, so each plane `j` is a contiguous
-/// `num_words`-long slice and [`ip_signed_planes`] can AND each plane against a document plane in
-/// a single fused streaming pass.
-fn pack_bit_planes(codes: &[u8], bits: u32) -> Vec<u64> {
-    let bits = bits as usize;
-    let num_words = codes.len() / WORD_BITS;
-    let mut planes = vec![0u64; bits * num_words];
-    for w in 0..num_words {
-        for i in 0..WORD_BITS {
-            let code = codes[w * WORD_BITS + i];
-            for j in 0..bits {
-                if (code >> j) & 1 == 1 {
-                    planes[j * num_words + w] |= 1u64 << i;
-                }
-            }
-        }
-    }
-    planes
-}
-
 /// [`pack_bit_planes`] for the `u16` **document** codes (`total_bits = 9` reaches code 511, which
 /// overflows `u8`), writing into a caller-provided buffer of `bits · num_words` words.
 ///
@@ -570,13 +258,9 @@ fn pack_bit_planes_u16_into(codes: &[u16], bits: u32, planes: &mut [u64]) {
 /// query path and the final combine differ, so `D` is pure type-level state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RabitqExtQuantizer<D = DotProduct> {
-    /// Input dimensionality (asserted to be a multiple of 64).
-    d: usize,
-    /// Per-component means used to center vectors (the centroid replacement); length `d`.
-    means: Box<[f32]>,
-    /// Fast random orthogonal transform shared by documents and queries; `None` when the encoder
-    /// was trained with `config.rotate == false` (identity `P`).
-    rotator: Option<FhtKacRotator>,
+    /// The trained geometry — means, rotated means and the rotation `P` — shared with
+    /// [`RabitqQuantizer`](crate::encoders::rabitq::RabitqQuantizer).
+    space: RabitqSpace,
     /// Constant rescale factor for the fast document-quantization path
     /// ([`get_const_scaling_factors`]), computed once at [`train`](Self::train). `None` unless
     /// `config.faster_quant` is set; the exact per-vector path ignores it.
@@ -629,11 +313,6 @@ impl<D: RabitqSupportedDistance> RabitqExtQuantizer<D> {
         dataset: &PlainDenseDataset<f32, Ds>,
         config: RabitqExtConfig,
     ) -> Self {
-        let d = dataset.input_dim();
-        assert!(
-            d.is_multiple_of(WORD_BITS),
-            "RabitqExtQuantizer requires dim % 64 == 0, got {d}"
-        );
         assert!(
             (2..=9).contains(&config.total_bits),
             "RabitqExtQuantizer requires 2 <= total_bits <= 9, got {}; \
@@ -645,51 +324,16 @@ impl<D: RabitqSupportedDistance> RabitqExtQuantizer<D> {
             "RabitqExtQuantizer requires 1 <= query_bits <= 8, got {}",
             config.query_bits
         );
-
-        // Per-component sum as a parallel reduction over vectors (the sequential pass over all n
-        // rows was the dominant cost of construction once the per-vector encode was optimized).
-        use rayon::prelude::*;
-        let mut means = dataset
-            .values()
-            .par_chunks_exact(d)
-            .fold(
-                || vec![0.0f32; d],
-                |mut acc, x| {
-                    for (a, &v) in acc.iter_mut().zip(x) {
-                        *a += v;
-                    }
-                    acc
-                },
-            )
-            .reduce(
-                || vec![0.0f32; d],
-                |mut a, b| {
-                    for (x, &y) in a.iter_mut().zip(&b) {
-                        *x += y;
-                    }
-                    a
-                },
-            );
-        let n = dataset.len();
-        if n > 0 {
-            let inv = 1.0 / n as f32;
-            for m in means.iter_mut() {
-                *m *= inv;
-            }
-        }
-
-        let rotator = config.rotate.then(|| FhtKacRotator::new(d, config.seed));
+        let space = RabitqSpace::train(dataset, config.rotate, config.seed);
 
         // Constant rescale factor for the fast build path, estimated once here (negligible vs. the
         // per-vector encode). `ex_bits = total_bits − 1 ≥ 1` always holds (total_bits ∈ 2..=9).
         let t_const = config
             .faster_quant
-            .then(|| get_const_scaling_factors(d, config.total_bits - 1, config.seed));
+            .then(|| get_const_scaling_factors(space.dim(), config.total_bits - 1, config.seed));
 
         Self {
-            d,
-            means: means.into_boxed_slice(),
-            rotator,
+            space,
             t_const,
             config,
             _distance: PhantomData,
@@ -705,65 +349,20 @@ impl<D: RabitqSupportedDistance> RabitqExtQuantizer<D> {
         config: RabitqExtConfig,
     ) -> crate::DenseDataset<Self> {
         let encoder = Self::train(dataset, config);
-        encoder.encode_flat_par(dataset.values(), dataset.len())
-    }
-
-    /// Encode `n_vecs` flat row-major `f32` vectors with an already-trained encoder, in parallel.
-    ///
-    /// Encodes straight into the final slab: each output record is written in place, so there is
-    /// no `Vec<Vec>` of per-vector allocations and no reassembly copy. Per-worker scratch buffers
-    /// hold the residual `r = P·(x − mean)` and the per-component codes, reused across every
-    /// vector that worker sees.
-    pub fn encode_flat_par(self, input: &[f32], n_vecs: usize) -> crate::DenseDataset<Self> {
-        use rayon::prelude::*;
-
-        let d = self.d;
-        let total_words = self.config.total_bits as usize * self.num_words();
-        let output_dim = total_words + 1;
-        assert_eq!(
-            input.len(),
-            n_vecs * d,
-            "input length must equal n_vecs * d"
-        );
-
-        let mut data = vec![0u64; n_vecs * output_dim];
-        data.par_chunks_mut(output_dim)
-            .zip(input.par_chunks_exact(d))
-            .for_each_init(
-                || {
-                    (
-                        vec![0.0f32; d],
-                        vec![0u16; d],
-                        Vec::<f32>::with_capacity(d),
-                        RescaleScratch::default(),
-                    )
-                },
-                |(scratch, codes, o_abs, rescale), (out, x)| {
-                    for ((s, &v), &m) in scratch.iter_mut().zip(x).zip(self.means.iter()) {
-                        *s = v - m;
-                    }
-                    if let Some(rotator) = &self.rotator {
-                        rotator.rotate_inplace(scratch);
-                    }
-                    let (f_add, s_ext) = self.encode_residual_into(scratch, codes, o_abs, rescale);
-                    // `out` comes from the zeroed slab, so the plane packer can OR bits in place.
-                    pack_bit_planes_u16_into(
-                        codes,
-                        self.config.total_bits,
-                        &mut out[..total_words],
-                    );
-                    out[total_words] = pack_metadata(f_add, s_ext);
-                },
-            );
-
-        crate::DenseDataset::<Self>::from_raw(data.into_boxed_slice(), n_vecs, self)
+        crate::DenseDataset::<Self>::from_flat_par(encoder, dataset.values(), dataset.len())
     }
 
     /// Number of `u64` words **per bit plane** (a document stores `total_bits` planes plus the
     /// metadata word).
     #[inline]
     fn num_words(&self) -> usize {
-        self.d / WORD_BITS
+        self.space.num_words()
+    }
+
+    /// Input dimensionality.
+    #[inline]
+    fn d(&self) -> usize {
+        self.space.dim()
     }
 
     /// Magnitude bits per component (`total_bits − 1`).
@@ -781,49 +380,109 @@ impl<D: RabitqSupportedDistance> RabitqExtQuantizer<D> {
 
     /// Apply the rotation: `P·v` (a copy of `values` when rotation is disabled, i.e. `P = I`).
     fn rotate(&self, values: &[f32]) -> Vec<f32> {
-        match &self.rotator {
-            Some(rotator) => rotator.rotate(values),
-            None => values.to_vec(),
-        }
+        self.space.rotate(values)
     }
 
-    /// Center `values` by the means and apply the rotation: `r = P·(x − mean)`.
-    ///
-    /// Documents always take this path; queries only do so under a centering metric
-    /// (see [`RabitqSupportedDistance::CENTER_QUERY`]).
+    /// The residual `r = P·(x − mean)` — see [`RabitqSpace::residual`].
     fn residual(&self, values: &[f32]) -> Vec<f32> {
-        let centered: Vec<f32> = values
-            .iter()
-            .zip(self.means.iter())
-            .map(|(&v, &m)| v - m)
-            .collect();
-        self.rotate(&centered)
+        self.space.residual(values)
     }
 
-    /// `⟨mean, q⟩` — the centroid term the inner-product metric adds back.
+    /// `⟨mean, q⟩` — see [`RabitqSpace::mean_dot`].
     fn mean_dot(&self, values: &[f32]) -> f32 {
-        self.means
-            .iter()
-            .zip(values.iter())
-            .map(|(&m, &v)| m * v)
-            .sum()
+        self.space.mean_dot(values)
+    }
+
+    /// `⟨P·mean, q_r⟩` — see [`RabitqSpace::rotated_mean_dot`].
+    fn rotated_mean_dot(&self, rotated: &[f32]) -> f32 {
+        self.space.rotated_mean_dot(rotated)
+    }
+
+    /// Reconstruct the rotated residual from a stored code: `r̂_i = s_ext·(u_i + cb)`.
+    ///
+    /// This is the reconstruction the estimator itself uses — the stored planes enter the scan as
+    /// `q̂ = delta·u + vl` with `delta = s_ext`, `vl = s_ext·cb` — so the build path stays consistent
+    /// with the search path. Backs both [`decode_vector`] and the inner-product
+    /// [`vector_evaluator`], which adds `P·mean` to it.
+    ///
+    /// [`decode_vector`]: DenseVectorEncoder::decode_vector
+    /// [`vector_evaluator`]: VectorEncoder::vector_evaluator
+    fn reconstruct_residual(&self, words: &[u64]) -> Vec<f32> {
+        let nw = self.num_words();
+        let b = self.config.total_bits as usize;
+        let (_, s_ext) = unpack_metadata(words[b * nw]);
+        let cb = self.cb();
+        (0..self.d())
+            .map(|i| {
+                let (w, bit) = (i / WORD_BITS, i % WORD_BITS);
+                let mut u = 0u32;
+                for (a, plane) in words[..b * nw].chunks_exact(nw).enumerate() {
+                    u |= (((plane[w] >> bit) & 1) as u32) << a;
+                }
+                s_ext * (u as f32 + cb)
+            })
+            .collect()
+    }
+
+    /// Build an evaluator from a query that already lives in the rotated space, given its centroid
+    /// term `⟨mean, q⟩` (ignored under a centering metric).
+    ///
+    /// Shared by both entry points: [`query_evaluator`] rotates a raw `f32` query, while the
+    /// inner-product [`vector_evaluator`] path reconstructs a stored residual and adds `P·mean`.
+    /// Everything downstream — quantization, `scale`, `add` — is therefore identical on the two
+    /// paths.
+    ///
+    /// [`query_evaluator`]: VectorEncoder::query_evaluator
+    /// [`vector_evaluator`]: VectorEncoder::vector_evaluator
+    fn rotated_query_evaluator<'e>(
+        &'e self,
+        q_r: &[f32],
+        mean_dot_query: f32,
+    ) -> RabitqExtQueryEvaluator<'e, D> {
+        let query_norm = q_r.iter().map(|&r| r * r).sum::<f32>().sqrt();
+        let add = D::query_add(mean_dot_query, query_norm);
+
+        // The *document* code's offset — distinct from the query quantizer's internal
+        // `−(2^(query_bits−1) − 0.5)`; only the former pairs with the query sums in `q_const`.
+        let cb = self.cb();
+        let query_bits = self.config.query_bits;
+        let (query_words, planes, delta, vl, q_const, scale) = if query_bits > 1 {
+            let (codes, delta, vl) = quantize_query_multibit(q_r, query_bits);
+            let sum_code: u64 = codes.iter().map(|&c| c as u64).sum();
+            // Σq̂ = delta·Σcode + vl·d; q̂ approximates q_r in absolute units, so no rescale.
+            let sum_q_hat = delta * sum_code as f32 + vl * self.d() as f32;
+            let planes = pack_bit_planes(&codes, query_bits);
+            (Vec::new(), planes, delta, vl, cb * sum_q_hat, 1.0)
+        } else {
+            let query_words = self.pack_signs(q_r);
+            let ones: u64 = query_words.iter().map(|w| w.count_ones() as u64).sum();
+            // Σsign(q_r) = 2·popcount − d; the sign query carries ‖q_r‖/√d in `scale`.
+            let sum_signs = 2.0 * ones as f32 - self.d() as f32;
+            let scale = query_norm / (self.d() as f32).sqrt();
+            (query_words, Vec::new(), 0.0, 0.0, cb * sum_signs, scale)
+        };
+
+        RabitqExtQueryEvaluator {
+            _encoder: PhantomData,
+            query_words,
+            planes,
+            delta,
+            vl,
+            q_const,
+            query_bits,
+            scale,
+            add,
+            num_words: self.num_words(),
+            total_bits: self.config.total_bits,
+        }
     }
 
     /// Sign-pack a residual into `num_words()` words (bit set iff `r_i >= 0`) — the 1-bit query
     /// path.
     fn pack_signs(&self, residual: &[f32]) -> Vec<u64> {
-        (0..self.num_words())
-            .map(|w| {
-                let base = w * WORD_BITS;
-                let mut word = 0u64;
-                for i in 0..WORD_BITS {
-                    if residual[base + i] >= 0.0 {
-                        word |= 1u64 << i;
-                    }
-                }
-                word
-            })
-            .collect()
+        let mut words = vec![0u64; self.num_words()];
+        pack_signs_into(residual, &mut words);
+        words
     }
 
     /// Quantize a residual to per-component total codes, writing them into `codes` (length `d`).
@@ -833,9 +492,9 @@ impl<D: RabitqSupportedDistance> RabitqExtQuantizer<D> {
     /// zero or produces NaN. Otherwise `ipnorm = Σ (e_i + 0.5)·o_abs_i ≥ 0.5·Σ o_abs_i > 0`.
     ///
     /// The rescale factor is the constant [`Self::t_const`] (fast path) when set, else the exact
-    /// per-vector [`best_rescale_factor`]. `o_abs` and `rescale` are caller-owned scratch reused
-    /// across vectors so the batch encode path allocates nothing per vector; the fast path folds
-    /// `1/‖r‖` into the scalar and never touches `o_abs`.
+    /// per-vector [`best_rescale_factor`]. `o_abs` and `rescale` are caller-owned scratch, so a
+    /// caller encoding many vectors can reuse them; the fast path folds `1/‖r‖` into the scalar and
+    /// never touches `o_abs`.
     fn encode_residual_into(
         &self,
         residual: &[f32],
@@ -938,8 +597,8 @@ pub struct RabitqExtQueryEvaluator<'e, D = DotProduct> {
     /// offset `cb` paired with the query sum, completing `⟨u + cb, q̂⟩`.
     q_const: f32,
     /// Number of query bit planes to dispatch on: `query_bits` (`1..=8`) for real queries, or
-    /// `total_bits` (`2..=9`) on the [`vector_evaluator`] path where the "query" is a stored
-    /// document code.
+    /// `total_bits` (`2..=9`) on the squared-Euclidean [`vector_evaluator`] path, where the "query"
+    /// is a stored document code reused verbatim.
     ///
     /// [`vector_evaluator`]: VectorEncoder::vector_evaluator
     query_bits: u32,
@@ -968,17 +627,7 @@ impl<'e, D> RabitqExtQueryEvaluator<'e, D> {
         } else {
             &self.planes
         };
-        match self.query_bits {
-            1 => doc_planes_ip::<1>(code, buf, self.num_words),
-            2 => doc_planes_ip::<2>(code, buf, self.num_words),
-            3 => doc_planes_ip::<3>(code, buf, self.num_words),
-            4 => doc_planes_ip::<4>(code, buf, self.num_words),
-            5 => doc_planes_ip::<5>(code, buf, self.num_words),
-            6 => doc_planes_ip::<6>(code, buf, self.num_words),
-            7 => doc_planes_ip::<7>(code, buf, self.num_words),
-            8 => doc_planes_ip::<8>(code, buf, self.num_words),
-            _ => doc_planes_ip::<9>(code, buf, self.num_words),
-        }
+        doc_planes_ip_dyn(self.query_bits, code, buf, self.num_words)
     }
 
     /// Six-way [`Self::doc_ip`]: `(⟨u, c⟩, Σu)` for six documents through the fused batch kernel
@@ -1068,21 +717,7 @@ impl<D: RabitqSupportedDistance> DenseVectorEncoder for RabitqExtQuantizer<D> {
     /// extended analogue of the 1-bit encoder's `±1` decode; the values live in the rotated,
     /// centered residual space).
     fn decode_vector<'a>(&self, encoded: DenseVectorView<'a, u64>) -> DenseVectorOwned<f32> {
-        let nw = self.num_words();
-        let b = self.config.total_bits as usize;
-        let words = encoded.values();
-        let (_, s_ext) = unpack_metadata(words[b * nw]);
-        let cb = self.cb();
-        let mut values = Vec::with_capacity(self.d);
-        for i in 0..self.d {
-            let (w, bit) = (i / WORD_BITS, i % WORD_BITS);
-            let mut u = 0u32;
-            for (a, plane) in words[..b * nw].chunks_exact(nw).enumerate() {
-                u |= (((plane[w] >> bit) & 1) as u32) << a;
-            }
-            values.push(s_ext * (u as f32 + cb));
-        }
-        DenseVectorOwned::new(values)
+        DenseVectorOwned::new(self.reconstruct_residual(encoded.values()))
     }
 
     #[inline]
@@ -1095,11 +730,11 @@ impl<D: RabitqSupportedDistance> DenseVectorEncoder for RabitqExtQuantizer<D> {
     {
         assert_eq!(
             input.len(),
-            self.d,
+            self.d(),
             "Input vector length must equal encoder input dimension."
         );
         let residual = self.residual(input.values());
-        let mut codes = vec![0u16; self.d];
+        let mut codes = vec![0u16; self.d()];
         let (f_add, s_ext) = self.encode_residual_into(
             &residual,
             &mut codes,
@@ -1133,7 +768,7 @@ impl<D: RabitqSupportedDistance> VectorEncoder for RabitqExtQuantizer<D> {
     fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
         assert_eq!(
             query.len(),
-            self.d,
+            self.d(),
             "Query vector length must equal encoder input dimension."
         );
         let residual = if D::CENTER_QUERY {
@@ -1141,64 +776,51 @@ impl<D: RabitqSupportedDistance> VectorEncoder for RabitqExtQuantizer<D> {
         } else {
             self.rotate(query.values())
         };
-        let query_norm = residual.iter().map(|&r| r * r).sum::<f32>().sqrt();
         // The centroid term is only needed by the non-centering (inner-product) path.
         let mean_dot_query = if D::CENTER_QUERY {
             0.0
         } else {
             self.mean_dot(query.values())
         };
-        let add = D::query_add(mean_dot_query, query_norm);
-
-        // The *document* code's offset — distinct from the query quantizer's internal
-        // `−(2^(query_bits−1) − 0.5)`; only the former pairs with the query sums in `q_const`.
-        let cb = self.cb();
-        let query_bits = self.config.query_bits;
-        let (query_words, planes, delta, vl, q_const, scale) = if query_bits > 1 {
-            let (codes, delta, vl) = quantize_query_multibit(&residual, query_bits);
-            let sum_code: u64 = codes.iter().map(|&c| c as u64).sum();
-            // Σq̂ = delta·Σcode + vl·d; q̂ approximates q_r in absolute units, so no rescale.
-            let sum_q_hat = delta * sum_code as f32 + vl * self.d as f32;
-            let planes = pack_bit_planes(&codes, query_bits);
-            (Vec::new(), planes, delta, vl, cb * sum_q_hat, 1.0)
-        } else {
-            let query_words = self.pack_signs(&residual);
-            let ones: u64 = query_words.iter().map(|w| w.count_ones() as u64).sum();
-            // Σsign(q_r) = 2·popcount − d; the sign query carries ‖q_r‖/√d in `scale`.
-            let sum_signs = 2.0 * ones as f32 - self.d as f32;
-            let scale = query_norm / (self.d as f32).sqrt();
-            (query_words, Vec::new(), 0.0, 0.0, cb * sum_signs, scale)
-        };
-
-        RabitqExtQueryEvaluator {
-            _encoder: PhantomData,
-            query_words,
-            planes,
-            delta,
-            vl,
-            q_const,
-            query_bits,
-            scale,
-            add,
-            num_words: self.num_words(),
-            total_bits: self.config.total_bits,
-        }
+        self.rotated_query_evaluator(&residual, mean_dot_query)
     }
 
-    /// Treat an already-encoded document as a query (build-path only): its stored planes *are* a
-    /// reconstruction `r̂_i = s_ext·(u_i + cb) = delta·u_i + vl` with `delta = s_ext` and
-    /// `vl = s_ext·cb`, so they slot straight into the multi-bit query path at full stored
-    /// fidelity (`total_bits` planes, up to 9).
+    /// Treat an already-encoded document as a query (build-path only).
     ///
-    /// A stored document keeps only its *centered* residual, so the raw vector needed for the
-    /// inner-product centroid term `⟨mean, q⟩` is gone. This path therefore scores in residual
-    /// space: `⟨r_x, r_y⟩` for [`DotProduct`] (not the true `⟨x, y⟩`) and the exact `‖x − y‖²` for
-    /// [`SquaredEuclideanDistance`], which is centering-invariant and so unaffected.
+    /// A stored document keeps only its *centered* residual `r`, so the two metrics need different
+    /// treatment:
+    ///
+    /// * [`SquaredEuclideanDistance`] — centering is L2-preserving, so residual-space scoring is
+    ///   already the exact `‖x − y‖²`. The stored planes *are* the reconstruction
+    ///   `r̂_i = s_ext·(u_i + cb) = delta·u_i + vl` with `delta = s_ext`, `vl = s_ext·cb`, so they
+    ///   slot straight into the multi-bit query path at full stored fidelity (`total_bits` planes,
+    ///   up to 9) with no re-quantization.
+    /// * [`DotProduct`] — centering is **not** inner-product preserving. Scoring in residual space
+    ///   would return `⟨r_x, r_y⟩`, which drops `⟨P·mean, r_y⟩`; that term varies per candidate, so
+    ///   the ranking would be wrong rather than merely shifted. The residual is therefore
+    ///   reconstructed (`reconstruct_residual`) and `P·mean` added back, rebuilding the
+    ///   un-centered rotated query `P·x̂ = r̂ + P·mean` and reducing this path to
+    ///   [`Self::query_evaluator`] on the reconstruction — without ever applying `Pᵀ` and `P` and
+    ///   letting them cancel. All four terms of
+    ///   `⟨x̂, ŷ⟩ = ‖mean‖² + ⟨P·mean, r̂⟩ + ⟨P·mean, r_y⟩ + ⟨r̂, r_y⟩` then survive: the first two as
+    ///   the per-query `add`, the last two out of a single scan pass, since the kernel estimates
+    ///   `⟨r_y, r̂ + P·mean⟩` and the dot product is linear in the query. The cost is that the
+    ///   stored planes can no longer be reused verbatim — the summed query is re-quantized at
+    ///   `query_bits`, below `total_bits`.
     ///
     /// [`SquaredEuclideanDistance`]: crate::SquaredEuclideanDistance
     #[inline]
     fn vector_evaluator<'e, 'v>(&'e self, vector: Self::EncodedVector<'v>) -> Self::Evaluator<'e> {
         let words = vector.values();
+        if !D::CENTER_QUERY {
+            let mut q_r = self.reconstruct_residual(words);
+            for (v, &m) in q_r.iter_mut().zip(self.space.rotated_means().iter()) {
+                *v += m;
+            }
+            // ⟨P·mean, P·x̂⟩ = ⟨mean, x̂⟩ — the centroid term, exactly as on the query path.
+            let mean_dot_query = self.rotated_mean_dot(&q_r);
+            return self.rotated_query_evaluator(&q_r, mean_dot_query);
+        }
         let nw = self.num_words();
         let total_words = self.config.total_bits as usize * nw;
         // The stored metadata is (f_add = ‖r‖², s_ext); recover the residual norm as √f_add.
@@ -1219,10 +841,9 @@ impl<D: RabitqSupportedDistance> VectorEncoder for RabitqExtQuantizer<D> {
             planes,
             delta,
             vl,
-            q_const: cb * (delta * sum_u as f32 + vl * self.d as f32),
+            q_const: cb * (delta * sum_u as f32 + vl * self.d() as f32),
             query_bits: self.config.total_bits,
             scale: 1.0,
-            // Residual-space scoring: no centroid term to add back.
             add: D::query_add(0.0, norm),
             num_words: nw,
             total_bits: self.config.total_bits,
@@ -1230,21 +851,66 @@ impl<D: RabitqSupportedDistance> VectorEncoder for RabitqExtQuantizer<D> {
     }
 
     fn input_dim(&self) -> usize {
-        self.d
+        self.d()
     }
 
     /// `total_bits` planes of code words plus the metadata word.
     fn output_dim(&self) -> usize {
         self.config.total_bits as usize * self.num_words() + 1
     }
+
+    /// Score two stored documents directly, without building an evaluator.
+    ///
+    /// Only the centering (squared-Euclidean) metric gets the shortcut: `v1` plays the query through
+    /// its own stored planes exactly as [`Self::vector_evaluator`] would, but those planes are read
+    /// in place instead of being copied into an owned evaluator — no allocation, and the arithmetic
+    /// matches operation for operation (its `scale` is `1.0` here, so `term = s_ext·raw`), so both
+    /// routes give bit-identical scores.
+    ///
+    /// Under [`DotProduct`] there is nothing to shortcut: the effective query is `r̂ + P·mean` (see
+    /// [`Self::vector_evaluator`]), which has to be materialized and quantized whatever the entry
+    /// point, so this delegates. `D::CENTER_QUERY` is a constant, so the branch folds at compile
+    /// time.
+    #[inline]
+    fn compute_distance_between(
+        &self,
+        v1: Self::EncodedVector<'_>,
+        v2: Self::EncodedVector<'_>,
+    ) -> Self::Distance {
+        if !D::CENTER_QUERY {
+            return self.vector_evaluator(v1).compute_distance(v2);
+        }
+        let nw = self.num_words();
+        let total_bits = self.config.total_bits;
+        let total_words = total_bits as usize * nw;
+        let (q_words, d_words) = (v1.values(), v2.values());
+
+        // v1 as query: its planes *are* the reconstruction q̂_i = delta·u_i + vl with
+        // delta = s_ext, vl = s_ext·cb, and its residual norm is √f_add.
+        let q_planes = &q_words[..total_words];
+        let (q_f_add, q_s_ext) = unpack_metadata(q_words[total_words]);
+        let norm = q_f_add.sqrt();
+        let cb = self.cb();
+        let (delta, vl) = (q_s_ext, q_s_ext * cb);
+        // Σu = Σ_a 2^a·popcount(plane_a), for the per-query constant cb·Σq̂.
+        let sum_q_u: u64 = q_planes
+            .chunks_exact(nw)
+            .enumerate()
+            .map(|(a, plane)| plane.iter().map(|w| w.count_ones() as u64).sum::<u64>() << a)
+            .sum();
+        let q_const = cb * (delta * sum_q_u as f32 + vl * self.d() as f32);
+
+        let (f_add, s_ext) = unpack_metadata(d_words[total_words]);
+        let (ip, sum_u) = doc_planes_ip_dyn(total_bits, &d_words[..total_words], q_planes, nw);
+        let raw = delta * ip as f32 + vl * sum_u as f32 + q_const;
+
+        D::from_terms(D::query_add(0.0, norm), f_add, s_ext * raw)
+    }
 }
 
 impl<D> SpaceUsage for RabitqExtQuantizer<D> {
     fn space_usage_bytes(&self) -> usize {
-        self.d.space_usage_bytes()
-            + self.means.space_usage_bytes()
-            + self.rotator.space_usage_bytes()
-            + self.t_const.space_usage_bytes()
+        self.space.space_usage_bytes() + self.t_const.space_usage_bytes()
     }
 }
 
@@ -1253,7 +919,8 @@ mod tests {
     use super::*;
     use crate::core::distances::{Distance, SquaredEuclideanDistance};
     use crate::{
-        DatasetGrowable, FlatIndex, Index, PlainDenseDatasetGrowable, PlainDenseQuantizer,
+        DatasetGrowable, FlatIndex, Index, IndexSerializer, PlainDenseDatasetGrowable,
+        PlainDenseQuantizer,
     };
 
     /// Extended RaBitQ scoring squared Euclidean distance.
@@ -1766,6 +1433,36 @@ mod tests {
     }
 
     #[test]
+    fn dataset_serialization_round_trip() {
+        // The trained geometry lives in a nested `RabitqSpace`, so exercise the serde path end to
+        // end: a reloaded index must equal the original *and* score identically.
+        let vectors = varied_vectors();
+        let dataset = plain_dataset(&vectors);
+        let ds = RabitqExtIp::encode_dataset(&dataset, RabitqExtConfig::default());
+
+        let mut path = std::env::temp_dir();
+        path.push(format!("vectorium_rabitq_ext_{}.bin", std::process::id()));
+        let path = path.to_str().unwrap().to_string();
+
+        ds.save_index(&path).unwrap();
+        let loaded = crate::DenseDataset::<RabitqExtIp>::load_index(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(ds, loaded);
+        for q in &vectors {
+            let before = ds.encoder().query_evaluator(DenseVectorView::new(q));
+            let after = loaded.encoder().query_evaluator(DenseVectorView::new(q));
+            for i in 0..ds.len() as u64 {
+                assert_eq!(
+                    before.compute_distance(ds.get(i)),
+                    after.compute_distance(loaded.get(i)),
+                    "vector {i}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn compute_distances_batch6_matches_six_singles_wide() {
         // d = 640 → 10 words per plane: exercises the 8-wide unchecked-load chunk loop *and* the
         // 2-word tail (the d = 64 fixture is all tail).
@@ -1779,6 +1476,121 @@ mod tests {
         let dataset = plain_dataset(&vectors);
         assert_batch6_matches_singles::<SquaredEuclideanDistance>(&vectors, &dataset);
         assert_batch6_matches_singles::<DotProduct>(&vectors, &dataset);
+    }
+
+    /// The allocation-free two-document score must be bit-identical to the `vector_evaluator`
+    /// route it replaces, across the stored plane counts, under metric `D`.
+    fn assert_distance_between_matches_evaluator<D: RabitqSupportedDistance + std::fmt::Debug>(
+        dataset: &PlainDenseDataset<f32, DotProduct>,
+    ) {
+        for total_bits in [2, 4, 9] {
+            let config = ext_config(total_bits, 4, true);
+            let ds = RabitqExtQuantizer::<D>::encode_dataset(dataset, config);
+            let encoder = ds.encoder();
+            for i in 0..ds.len() as u64 {
+                for j in 0..ds.len() as u64 {
+                    let direct = encoder.compute_distance_between(ds.get(i), ds.get(j));
+                    let via = encoder
+                        .vector_evaluator(ds.get(i))
+                        .compute_distance(ds.get(j));
+                    assert_eq!(direct, via, "pair ({i}, {j}), {config:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compute_distance_between_matches_vector_evaluator() {
+        let dataset = plain_dataset(&varied_vectors());
+        assert_distance_between_matches_evaluator::<SquaredEuclideanDistance>(&dataset);
+        assert_distance_between_matches_evaluator::<DotProduct>(&dataset);
+    }
+
+    #[test]
+    fn ip_build_path_equals_query_path_on_the_reconstruction() {
+        // What the inner-product build path claims to be: `query_evaluator` applied to the stored
+        // vector's reconstruction x̂ = Pᵀr̂ + mean. With rotation disabled (P = I) that x̂ can be
+        // formed directly here, and both routes must build the same effective query — bit for bit,
+        // since `vector_evaluator` skips only the Pᵀ/P pair that cancels.
+        let vectors = varied_vectors();
+        let dataset = plain_dataset(&vectors);
+        for (total_bits, query_bits) in [(2, 1), (4, 4), (9, 8)] {
+            let config = ext_config(total_bits, query_bits, false);
+            let ds = RabitqExtIp::encode_dataset(&dataset, config);
+            let encoder = ds.encoder();
+            for i in 0..ds.len() as u64 {
+                let mut recon = encoder.reconstruct_residual(ds.get(i).values());
+                for (v, &m) in recon.iter_mut().zip(encoder.space.means().iter()) {
+                    *v += m;
+                }
+                let build = encoder.vector_evaluator(ds.get(i));
+                let query = encoder.query_evaluator(DenseVectorView::new(&recon));
+                for j in 0..ds.len() as u64 {
+                    assert_eq!(
+                        build.compute_distance(ds.get(j)),
+                        query.compute_distance(ds.get(j)),
+                        "pair ({i}, {j}), {config:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ip_build_path_estimates_the_true_dot_product() {
+        // The build path must estimate ⟨x̂, ŷ⟩, not the residual-space ⟨r̂_x, r̂_y⟩ it used to
+        // return: the latter drops ⟨P·mean, r_y⟩, which varies per candidate and so reorders
+        // results. Run at high fidelity on both sides so anything left is quantization noise
+        // rather than a missing term.
+        let vectors = varied_vectors();
+        let dataset = plain_dataset(&vectors);
+        let config = ext_config(9, 8, true);
+        let ds = RabitqExtIp::encode_dataset(&dataset, config);
+        let encoder = ds.encoder();
+
+        // Reconstructions in rotated space: P·x̂ = r̂_x + P·mean (P orthogonal, so no inverse
+        // rotation is needed and every dot product below can be taken here).
+        let rotated: Vec<Vec<f32>> = (0..ds.len() as u64)
+            .map(|i| {
+                let mut v = encoder.reconstruct_residual(ds.get(i).values());
+                for (c, &m) in v.iter_mut().zip(encoder.space.rotated_means().iter()) {
+                    *c += m;
+                }
+                v
+            })
+            .collect();
+        let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(&x, &y)| x * y).sum::<f32>();
+
+        let mut worst_est = 0.0f32;
+        let mut worst_residual_only = 0.0f32;
+        for i in 0..ds.len() as u64 {
+            let evaluator = encoder.vector_evaluator(ds.get(i));
+            let r_x = encoder.reconstruct_residual(ds.get(i).values());
+            for j in 0..ds.len() as u64 {
+                let truth = dot(&rotated[i as usize], &rotated[j as usize]);
+                let residual_only = dot(&r_x, &encoder.reconstruct_residual(ds.get(j).values()));
+                let est = evaluator.compute_distance(ds.get(j)).0;
+
+                // Errors are measured against ‖x̂‖·‖ŷ‖, the scale of the quantity being estimated;
+                // dividing by |truth| would blow up on the pairs that happen to be near-orthogonal.
+                let denom = (dot(&rotated[i as usize], &rotated[i as usize])
+                    * dot(&rotated[j as usize], &rotated[j as usize]))
+                .sqrt();
+                worst_est = worst_est.max((est - truth).abs() / denom);
+                worst_residual_only =
+                    worst_residual_only.max((residual_only - truth).abs() / denom);
+            }
+        }
+        assert!(
+            worst_est < 0.02,
+            "build-path IP off the true dot product by {worst_est} of ‖x̂‖·‖ŷ‖"
+        );
+        // Confirms the bound above has teeth: dropping the centroid terms misses by far more.
+        assert!(
+            worst_residual_only > 0.2,
+            "residual-space scoring only off by {worst_residual_only} — fixture centroid too small \
+             for this test to discriminate"
+        );
     }
 
     #[test]

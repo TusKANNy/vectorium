@@ -71,6 +71,12 @@ struct Args {
     #[clap(long, default_value_t = true, action = clap::ArgAction::Set)]
     rotate: bool,
 
+    /// Quantize documents with the constant rescale factor estimated once at train time (the fast
+    /// build path). Pass `--faster-quant false` for the exact per-vector optimal search, which
+    /// costs a heap sweep per document for a marginal recall gain.
+    #[clap(long, default_value_t = true, action = clap::ArgAction::Set)]
+    faster_quant: bool,
+
     /// The metric to score with. `l2` centers the query and estimates squared Euclidean distance;
     /// `ip` rotates the raw query and estimates the inner product. Document codes are identical
     /// either way.
@@ -130,6 +136,7 @@ fn main() {
         query_bits: args.query_bits,
         seed: args.seed,
         rotate: args.rotate,
+        faster_quant: args.faster_quant,
     };
     let start = Instant::now();
     // The metric lives in the encoder's type parameter, so each arm builds a distinct dataset
@@ -138,12 +145,13 @@ fn main() {
         ($dist:ty, $name:literal) => {{
             let dataset = RabitqExtQuantizer::<$dist>::encode_dataset(&dataset_f32, config);
             println!(
-                "Extended RaBitQ encoding (metric={}, total_bits={}, query_bits={}, seed={}, rotate={}) completed in {:.3}s",
+                "Extended RaBitQ encoding (metric={}, total_bits={}, query_bits={}, seed={}, rotate={}, faster_quant={}) completed in {:.3}s",
                 $name,
                 config.total_bits,
                 config.query_bits,
                 config.seed,
                 config.rotate,
+                config.faster_quant,
                 start.elapsed().as_secs_f64()
             );
             run(&dataset, &queries, &gt, n_eval, &oversample, args.k);

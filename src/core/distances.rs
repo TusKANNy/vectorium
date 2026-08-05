@@ -26,8 +26,11 @@ pub trait Distance: Ord + Copy + Send + Sync + 'static {
     ///
     /// The relaxation parameter `lambda` (typically 0.0 to 0.5) controls how much
     /// wider the acceptance window becomes:
-    /// - For minimize metrics (Euclidean, squared distances): `self ≤ threshold × (1 + λ)`
+    /// - For minimize metrics (Euclidean, squared distances): `self ≤ threshold + |threshold| × λ`
     /// - For maximize metrics (DotProduct, similarities): `self ≥ threshold - |threshold| × λ`
+    ///
+    /// Both forms use `|threshold|` so that the window widens regardless of the threshold's sign:
+    /// quantizers that *estimate* a distance can return negative values for either metric.
     ///
     /// When `lambda = 0.0`, this is equivalent to the standard `self <= threshold` (for minimize)
     /// or `self >= threshold` (for maximize) comparison.
@@ -42,6 +45,18 @@ pub trait Distance: Ord + Copy + Send + Sync + 'static {
 }
 
 /// Squared Euclidean distance wrapper around an `f32`.
+///
+/// The enforced invariant is **not NaN** — deliberately *not* non-negativity. Exact encoders only
+/// produce non-negative values, but quantizers that *estimate* a distance can go below zero:
+/// RaBitQ computes `‖r‖² + ‖r_q‖² − 2‖r‖·‖r_q‖·cos` with an estimated cosine that can exceed 1, so
+/// near-duplicate pairs score negative — including a vector against itself, which is typically the
+/// nearest candidate and therefore the running threshold. Adding a `v >= 0.0` assert to `From<f32>`
+/// would panic on the first query of a debug-build RaBitQ search.
+///
+/// Consumers must not assume a sign. Two places where that assumption has already caused trouble:
+/// [`Distance::is_within_relaxation`] once used `threshold × (1 + λ)`, which *tightens* a negative
+/// bound instead of widening it, and [`Self::sqrt`] returns NaN on a negative value — a NaN that
+/// `total_cmp` orders below every real number, i.e. first in a minimize search.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct SquaredEuclideanDistance(f32);
 
@@ -54,13 +69,26 @@ impl Distance for SquaredEuclideanDistance {
     fn is_within_relaxation(&self, threshold: &Self, lambda: f32) -> bool {
         debug_assert!(lambda.is_finite(), "lambda must be finite");
         debug_assert!(lambda >= 0.0, "lambda must be non-negative");
-        // Minimize metric: accept if candidate ≤ threshold × (1 + λ)
-        self.0 <= threshold.0 * (1.0 + lambda)
+        // Minimize metric: accept if candidate ≤ threshold + |threshold| × λ.
+        //
+        // Equal to `threshold × (1 + λ)` whenever the threshold is non-negative, but written with
+        // `|threshold|` so the window always widens. Estimating encoders can return a negative
+        // squared distance — RaBitQ's unbiased estimator does so routinely for near-duplicate
+        // pairs, including the self-match that typically *becomes* the threshold — and the
+        // multiplicative form would move a negative bound further from zero, tightening the window
+        // exactly when it should loosen. Mirrors the `DotProduct` impl, which is already written
+        // this way. A zero threshold admits no relaxation either way: the relaxation is relative.
+        self.0 <= threshold.0 + threshold.0.abs() * lambda
     }
 }
 
 impl SquaredEuclideanDistance {
     /// Returns the actual Euclidean distance by taking the square root.
+    ///
+    /// Meaningful only for exact encoders. An estimated distance can be negative (see the type
+    /// docs), and this returns NaN for those — deliberately not clamped, since mapping every
+    /// negative to `0.0` would make genuinely different candidates compare equal. Being a monotone
+    /// transform of the stored value, it is never needed for ranking.
     #[inline]
     pub fn sqrt(&self) -> f32 {
         self.0.sqrt()
@@ -68,6 +96,8 @@ impl SquaredEuclideanDistance {
 }
 
 impl From<f32> for SquaredEuclideanDistance {
+    /// Wraps `v` unchanged. The only invariant is non-NaN: negative values are legal and expected
+    /// from estimating quantizers, so do not add a non-negativity assert here (see the type docs).
     fn from(v: f32) -> Self {
         debug_assert!(
             !v.is_nan(),
@@ -1154,6 +1184,50 @@ mod tests {
     }
 
     #[test]
+    fn euclidean_relaxation_widens_for_a_negative_threshold() {
+        // An estimating encoder can return a negative squared distance (RaBitQ does, for
+        // near-duplicate pairs), and such a value can be the running threshold. Relaxation must
+        // still *admit* more candidates, so the bound has to move toward zero, not away from it.
+        let threshold = SquaredEuclideanDistance::from(-10.0);
+
+        // Bound is −10 + 10 × 0.1 = −9: strictly looser than the un-relaxed −10.
+        let candidate = SquaredEuclideanDistance::from(-9.5);
+        assert!(!candidate.is_within_relaxation(&threshold, 0.0));
+        assert!(candidate.is_within_relaxation(&threshold, 0.1));
+
+        let candidate2 = SquaredEuclideanDistance::from(-8.5);
+        assert!(!candidate2.is_within_relaxation(&threshold, 0.1));
+
+        // Anything the un-relaxed test accepts must stay accepted for every λ.
+        let nearer = SquaredEuclideanDistance::from(-11.0);
+        assert!(nearer.is_within_relaxation(&threshold, 0.0));
+        assert!(nearer.is_within_relaxation(&threshold, 0.3));
+    }
+
+    #[test]
+    fn euclidean_relaxation_is_monotone_in_lambda() {
+        // Whatever the threshold's sign, a larger λ can only ever accept more.
+        for threshold in [-25.0f32, -1.0, 0.0, 1.0, 25.0] {
+            let threshold = SquaredEuclideanDistance::from(threshold);
+            for candidate in [-30.0f32, -12.5, -0.5, 0.0, 0.5, 12.5, 30.0] {
+                let candidate = SquaredEuclideanDistance::from(candidate);
+                let mut accepted = candidate.is_within_relaxation(&threshold, 0.0);
+                for lambda in [0.1f32, 0.2, 0.5, 1.0] {
+                    let now = candidate.is_within_relaxation(&threshold, lambda);
+                    assert!(
+                        now || !accepted,
+                        "λ = {lambda} rejected candidate {:?} that a smaller λ accepted \
+                         (threshold {:?})",
+                        candidate.distance(),
+                        threshold.distance()
+                    );
+                    accepted = now;
+                }
+            }
+        }
+    }
+
+    #[test]
     fn dotproduct_no_relaxation() {
         let candidate = DotProduct::from(0.9);
         let threshold = DotProduct::from(0.9);
@@ -1252,14 +1326,19 @@ mod tests {
         candidate.is_within_relaxation(&threshold, f32::NAN);
     }
 
+    // The NaN guards are `debug_assert!`s — `From<f32>` runs once per scanned candidate, so the
+    // check must not survive into release builds. Gated like the `lambda` tests above, which make
+    // the same trade.
     #[test]
     #[should_panic(expected = "NaN is not allowed for DotProduct")]
+    #[cfg(debug_assertions)]
     fn dot_product_from_nan_panics() {
         let _ = DotProduct::from(f32::NAN);
     }
 
     #[test]
     #[should_panic(expected = "NaN is not allowed for SquaredEuclideanDistance")]
+    #[cfg(debug_assertions)]
     fn squared_euclidean_from_nan_panics() {
         let _ = SquaredEuclideanDistance::from(f32::NAN);
     }

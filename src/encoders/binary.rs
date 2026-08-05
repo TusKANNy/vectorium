@@ -23,6 +23,7 @@ use std::marker::PhantomData;
 use crate::core::distances::DotProduct;
 use crate::core::vector::{DenseVectorOwned, DenseVectorView};
 use crate::core::vector_encoder::{DenseVectorEncoder, QueryEvaluator, VectorEncoder};
+use crate::encoders::rabitq_common::{hamming, hamming_batch6};
 use crate::{Dataset, PlainDenseDataset, SpaceUsage};
 
 /// Number of bits packed into a single `u64` word.
@@ -49,7 +50,7 @@ impl BinaryQuantizer {
     pub fn train(dataset: &PlainDenseDataset<f32, DotProduct>) -> Self {
         let d = dataset.input_dim();
         assert!(
-            d % WORD_BITS == 0,
+            d.is_multiple_of(WORD_BITS),
             "BinaryQuantizer requires dim % 64 == 0, got {d}"
         );
 
@@ -106,13 +107,14 @@ impl BinaryQuantizer {
 }
 
 /// Dot product of two packed binary vectors as `d - 2 * popcount(xor)`, wrapped in [`DotProduct`].
+///
+/// The XOR+popcount itself comes from `hamming`, shared with the RaBitQ encoders: this quantizer
+/// is the plain-BQ **baseline** those are measured against, so it has to reach the same scan kernel
+/// — a scalar popcount loop here would make the baseline look slow for reasons that have nothing to
+/// do with the coding scheme.
 #[inline]
 fn binary_dot(d: usize, a: &[u64], b: &[u64]) -> DotProduct {
-    let mut hamming: u32 = 0;
-    for (&x, &y) in a.iter().zip(b.iter()) {
-        hamming += (x ^ y).count_ones();
-    }
-    DotProduct((d as i64 - 2 * hamming as i64) as f32)
+    DotProduct((d as i64 - 2 * hamming(a, b) as i64) as f32)
 }
 
 /// Evaluator holding an owned packed query; scores packed `u64` vectors via xor+popcount.
@@ -131,6 +133,17 @@ impl<'e, 'v> QueryEvaluator<DenseVectorView<'v, u64>> for BinaryQueryEvaluator<'
     #[inline]
     fn compute_distance(&self, vector: DenseVectorView<'v, u64>) -> DotProduct {
         binary_dot(self.d, &self.query_words, vector.values())
+    }
+
+    /// Fused six-candidate scan (`hamming_batch6`): the query is loaded once per chunk and
+    /// interleaved against six documents' independent popcount accumulators. Same reason as
+    /// `binary_dot` — the baseline gets the same batch kernel the RaBitQ scan uses. The combine
+    /// matches [`Self::compute_distance`] operation for operation, so the scores are bit-identical.
+    #[inline]
+    fn compute_distances_batch6(&self, vectors: [DenseVectorView<'v, u64>; 6]) -> [DotProduct; 6] {
+        let codes: [&[u64]; 6] = vectors.map(|v| v.values());
+        hamming_batch6(&self.query_words, codes)
+            .map(|h| DotProduct((self.d as i64 - 2 * h as i64) as f32))
     }
 }
 
@@ -371,6 +384,28 @@ mod tests {
         for (i, q) in [a, b, c].iter().enumerate() {
             let top = FlatIndex::from(&bin).search(DenseVectorView::new(q), 1, &());
             assert_eq!(top[0].vector as usize, i);
+        }
+    }
+
+    #[test]
+    fn batch6_matches_six_singles() {
+        // d = 640 → 10 words: exercises the 8-wide chunk loop *and* the 2-word tail of the shared
+        // batch kernel. The fused scan must be bit-identical to six separate calls.
+        let vectors: Vec<Vec<f32>> = (0..6)
+            .map(|k| {
+                (0..640)
+                    .map(|i| ((i * (k + 3)) as f32 * 0.13).sin())
+                    .collect()
+            })
+            .collect();
+        let dataset = plain_dataset(&vectors);
+        let bin: DenseDataset<BinaryQuantizer> = dataset.convert_into();
+        for q in &vectors {
+            let evaluator = bin.encoder().query_evaluator(DenseVectorView::new(q));
+            let views = std::array::from_fn(|k| bin.get(k as u64));
+            let batch = evaluator.compute_distances_batch6(views);
+            let singles = std::array::from_fn(|k| evaluator.compute_distance(bin.get(k as u64)));
+            assert_eq!(batch, singles);
         }
     }
 

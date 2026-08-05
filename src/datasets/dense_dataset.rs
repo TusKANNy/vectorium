@@ -397,9 +397,18 @@ where
     /// `flat_input`: all input vector values concatenated in row-major order;
     /// layout `[vec0_v0, ..., vec0_vD, vec1_v0, ...]`.
     ///
-    /// Each vector is encoded independently on a rayon thread pool, then
-    /// results are assembled into a single flat buffer. Significantly faster
-    /// than sequential `push` for any non-trivial encoder (e.g. PQ).
+    /// Each vector is encoded independently on a rayon thread pool, straight into its own
+    /// row of the final buffer: the slab is allocated once up front and each worker is handed
+    /// the `&mut [OutputValueType]` slice it owns, so there is no per-vector allocation and no
+    /// reassembly copy. Significantly faster than sequential `push` for any non-trivial
+    /// encoder (e.g. PQ).
+    ///
+    /// Requires a **fixed-width** encoder: every record must be exactly
+    /// [`output_dim`](crate::core::vector_encoder::VectorEncoder::output_dim) values long, since each row is a
+    /// pre-sized slice of the slab. A record of any other length panics (see [`SliceSink`](crate::utils::SliceSink))
+    /// rather than shifting every subsequent vector. Variable-length encodings belong in a
+    /// packed dataset ([`PackedSparseDataset`](crate::datasets::packed_dataset::PackedSparseDataset)),
+    /// which carries per-vector offsets.
     pub fn from_flat_par(encoder: E, flat_input: &[E::InputValueType], n_vecs: usize) -> Self
     where
         E: Sync,
@@ -415,23 +424,18 @@ where
             "flat_input length must equal n_vecs * input_dim"
         );
 
-        // Each thread encodes one vector into a small local Vec.
-        let encoded_vecs: Vec<Vec<E::OutputValueType>> = flat_input
-            .par_chunks_exact(input_dim)
-            .map(|chunk| {
-                let view = DenseVectorView::new(chunk);
-                let mut buf = Vec::with_capacity(output_dim);
-                encoder.push_encoded(view, &mut buf);
-                buf
-            })
-            .collect();
-
-        // Assemble flat buffer (sequential, O(N * output_dim)).
-        let total_len = n_vecs * output_dim;
-        let mut data = Vec::with_capacity(total_len);
-        for vec in &encoded_vecs {
-            data.extend_from_slice(vec);
-        }
+        // Zero-initialized so encoders that OR their output into place (bit-plane packers) see
+        // a clean row; every encoder then overwrites exactly `output_dim` values, which
+        // `SliceSink::finish` enforces — a short record would otherwise leave those zeros
+        // indistinguishable from encoder output.
+        let mut data = vec![num_traits::Zero::zero(); n_vecs * output_dim];
+        data.par_chunks_mut(output_dim)
+            .zip(flat_input.par_chunks_exact(input_dim))
+            .for_each(|(out, chunk)| {
+                let mut sink = crate::utils::SliceSink::new(out);
+                encoder.push_encoded(DenseVectorView::new(chunk), &mut sink);
+                sink.finish();
+            });
 
         Self::from_raw(data.into_boxed_slice(), n_vecs, encoder)
     }

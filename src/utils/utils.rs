@@ -32,6 +32,67 @@ pub fn is_strictly_sorted<T: Ord>(slice: &[T]) -> bool {
     slice.windows(2).all(|w| w[0] < w[1])
 }
 
+/// An [`Extend`] sink that fills a fixed, pre-allocated slice instead of growing a buffer.
+///
+/// The encoders' `push_encoded` primitive is written against `Extend` so it can append into
+/// dataset-owned storage. This adapter extends that to callers that already own the exact
+/// destination — one row of a dataset's backing slab — letting them encode in place with no
+/// intermediate allocation and no reassembly copy.
+///
+/// Both failure modes are checked, in release as well as debug, because both corrupt data
+/// silently: overrunning the slice would write into the *next* record, and under-filling it would
+/// leave whatever the destination held before (zeros, for a freshly allocated slab) inside an
+/// otherwise valid-looking encoded vector. Use [`Self::finish`] to assert the record is complete —
+/// one comparison per vector, against an encode that touches `d` values.
+pub struct SliceSink<'a, T> {
+    out: &'a mut [T],
+    written: usize,
+}
+
+impl<'a, T> SliceSink<'a, T> {
+    #[inline]
+    pub fn new(out: &'a mut [T]) -> Self {
+        Self { out, written: 0 }
+    }
+
+    /// How many items have been written so far.
+    #[inline]
+    pub fn written(&self) -> usize {
+        self.written
+    }
+
+    /// Assert that exactly the whole slice was filled, panicking otherwise.
+    ///
+    /// Call this once the producer is done: a short write leaves stale values in the tail of the
+    /// destination, which no later check can distinguish from encoder output.
+    #[inline]
+    pub fn finish(self) {
+        assert_eq!(
+            self.written,
+            self.out.len(),
+            "SliceSink: producer wrote {} of {} values; the rest of the destination would keep \
+             stale contents",
+            self.written,
+            self.out.len()
+        );
+    }
+}
+
+impl<T> Extend<T> for SliceSink<'_, T> {
+    #[inline]
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        for value in iter {
+            assert!(
+                self.written < self.out.len(),
+                "SliceSink: producer overran its {}-value destination",
+                self.out.len()
+            );
+            self.out[self.written] = value;
+            self.written += 1;
+        }
+    }
+}
+
 /// Computes the size of the intersection of two unsorted lists of integers.
 pub fn intersection<T: Eq + Hash + Clone>(s: &[T], groundtruth: &[T]) -> usize {
     let s_set: HashSet<_> = s.iter().cloned().collect();
@@ -101,7 +162,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{intersection, is_strictly_sorted, permute_components_with_bisection};
+    use super::{SliceSink, intersection, is_strictly_sorted, permute_components_with_bisection};
 
     #[test]
     fn permute_components_with_bisection_returns_permutation() {
@@ -130,5 +191,36 @@ mod tests {
         let a = vec![1i32, 2, 3, 5];
         let b = vec![2i32, 3, 4];
         assert_eq!(intersection(&a, &b), 2);
+    }
+
+    #[test]
+    fn slice_sink_fills_its_destination() {
+        let mut out = [0u64; 4];
+        let mut sink = SliceSink::new(&mut out);
+        sink.extend([1u64, 2]);
+        sink.extend([3u64, 4]);
+        assert_eq!(sink.written(), 4);
+        sink.finish();
+        assert_eq!(out, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    #[should_panic(expected = "overran")]
+    fn slice_sink_rejects_an_overrun() {
+        // Must panic in release too: the fifth value would land in the *next* record.
+        let mut out = [0u64; 4];
+        let mut sink = SliceSink::new(&mut out);
+        sink.extend([1u64, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    #[should_panic(expected = "wrote 2 of 4")]
+    fn slice_sink_rejects_a_short_record() {
+        // The untouched tail keeps whatever the destination held, which is indistinguishable from
+        // real output once the record is stored — so `finish` has to catch it.
+        let mut out = [0u64; 4];
+        let mut sink = SliceSink::new(&mut out);
+        sink.extend([1u64, 2]);
+        sink.finish();
     }
 }

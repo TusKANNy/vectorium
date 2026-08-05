@@ -15,9 +15,6 @@ use std::simd::simd_swizzle;
 
 use crate::SpaceUsage;
 
-/// Number of bits packed into a single `u64` word (the rotator requires `d % 64 == 0`).
-const WORD_BITS: usize = 64;
-
 /// A fast random orthogonal transform — RaBitQ-Library's `FhtKacRotator`.
 ///
 /// Replaces the dense `d×d` matrix rotation (`O(d²)` per vector, `O(d³)` to build) with an
@@ -48,8 +45,17 @@ pub struct FhtKacRotator {
 
 impl FhtKacRotator {
     /// Draw the random sign-flip bits from `seed` and precompute the FHT block size.
+    ///
+    /// Panics unless `d` is a positive multiple of 64 — the contract the kernels are written to,
+    /// and one whose violation is silent rather than loud: `kacs_walk` butterflies only whole
+    /// 16-lane chunks of each half, so a `d` that is not a multiple of 32 drops the trailing lanes
+    /// and the transform stops being orthonormal (recall degrades, nothing panics), while the
+    /// `flip` buffer is sized `4·d/8` and indexed per round at `d/8`, which truncates for `d % 8 != 0`.
     pub fn new(d: usize, seed: u64) -> Self {
-        debug_assert!(d.is_multiple_of(WORD_BITS));
+        assert!(
+            d > 0 && d.is_multiple_of(64),
+            "FhtKacRotator requires a positive dim that is a multiple of 64, got {d}"
+        );
         let trunc_dim = 1usize << d.ilog2();
         let fac = 1.0 / (trunc_dim as f32).sqrt();
         let mut flip = vec![0u8; 4 * d / 8].into_boxed_slice();
