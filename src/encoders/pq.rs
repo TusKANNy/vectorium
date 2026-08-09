@@ -71,7 +71,9 @@ where
     D: ProductQuantizerDistance,
 {
     #[inline]
-    pub fn train(training_data: &PlainDenseDataset<f32, SquaredEuclideanDistance>) -> Self {
+    pub fn train<Ds: crate::ScalarDenseSupportedDistance>(
+        training_data: &PlainDenseDataset<f32, Ds>,
+    ) -> Self {
         Self::train_with_kmeans_options(training_data, DEFAULT_KMEANS_N_ITER, None)
     }
 
@@ -79,8 +81,8 @@ where
     /// This keeps the outer PQ training API unchanged for existing callers while allowing
     /// reproducible bin-specific runs to match older pipelines more closely.
     #[inline]
-    pub fn train_with_kmeans_options(
-        training_data: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
+    pub fn train_with_kmeans_options<Ds: crate::ScalarDenseSupportedDistance>(
+        training_data: &PlainDenseDataset<f32, Ds>,
         n_iter: usize,
         seed: Option<u64>,
     ) -> Self {
@@ -100,8 +102,8 @@ where
     /// Returns a flat Vec<f32> of length M * dsub * KSUB in SoA layout: [M × dsub × KSUB].
     /// KMeans output is AoS [KSUB × dsub]; we transpose each subspace to SoA [dsub × KSUB]
     /// so that the distance table build inner loop is over contiguous KSUB f32 values.
-    fn train_centroids(
-        training_data: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
+    fn train_centroids<Ds: crate::ScalarDenseSupportedDistance>(
+        training_data: &PlainDenseDataset<f32, Ds>,
         dsub: usize,
         n_iter: usize,
         seed: Option<u64>,
@@ -153,10 +155,10 @@ where
         flat
     }
 
-    fn sample_random_dataset(
-        dataset: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
+    fn sample_random_dataset<Ds: crate::ScalarDenseSupportedDistance>(
+        dataset: &PlainDenseDataset<f32, Ds>,
         sample_size: usize,
-    ) -> PlainDenseDataset<f32, SquaredEuclideanDistance> {
+    ) -> PlainDenseDataset<f32, Ds> {
         use rand::seq::SliceRandom;
         let d = dataset.output_dim();
         let dataset_size = dataset.len();
@@ -173,7 +175,7 @@ where
             values.extend_from_slice(&dataset.values()[start..start + d]);
         }
 
-        PlainDenseDataset::<f32, SquaredEuclideanDistance>::from_raw(
+        PlainDenseDataset::<f32, Ds>::from_raw(
             values.into_boxed_slice(),
             sample_size,
             dataset.encoder().clone(),
@@ -456,7 +458,13 @@ where
     where
         Self: 'e;
 
-    fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
+    type QueryParams = ();
+
+    fn query_evaluator<'e>(
+        &'e self,
+        query: Self::QueryVector<'_>,
+        _params: &(),
+    ) -> Self::Evaluator<'e> {
         assert_eq!(query.len(), self.d());
         ProductQuantizerQueryEvaluator::new(self, query)
     }
@@ -511,65 +519,42 @@ where
 
 use crate::dataset::ConvertFrom;
 
-/// Convert from PlainDenseDataset<f32, SquaredEuclideanDistance> to PQ-encoded dataset
-/// with automatic training (optionally sampled) and encoding.
-impl<const M: usize, D> ConvertFrom<PlainDenseDataset<f32, SquaredEuclideanDistance>>
+/// Train a product quantizer on `dataset` (sampling the training set on large inputs) and encode
+/// every vector.
+///
+/// The source is taken by **reference**, so the plain vectors survive the call — a caller that
+/// still needs them (to compute ground truth, or to encode a second time at another `M`) does not
+/// have to clone the dataset first. Consuming would buy nothing: the PQ codes are a fresh
+/// allocation in a different representation, so none of the source's storage can be reused.
+///
+/// The source metric is irrelevant to training — PQ's k-means always runs in squared Euclidean
+/// space over the sub-vectors it builds itself — so one impl serves both `ℓ₂` and inner-product
+/// sources, and the target metric `D` is independent of both.
+impl<const M: usize, D, Ds> ConvertFrom<&PlainDenseDataset<f32, Ds>>
     for crate::DenseDataset<ProductQuantizer<M, D>>
 where
     D: ProductQuantizerDistance + 'static,
+    Ds: crate::ScalarDenseSupportedDistance,
 {
-    fn convert_from(dataset: PlainDenseDataset<f32, SquaredEuclideanDistance>) -> Self {
+    type Config = ();
+
+    fn convert_from(dataset: &PlainDenseDataset<f32, Ds>, _config: ()) -> Self {
         let sample_size = ProductQuantizer::<M, D>::compute_training_sample_size(dataset.len());
 
-        let training_dataset = match sample_size {
+        let pq_encoder = match sample_size {
             Some(size) => {
                 println!(
                     "Sampling {} vectors from {} for PQ training",
                     size,
                     dataset.len()
                 );
-                ProductQuantizer::<M, D>::sample_random_dataset(&dataset, size)
+                let sample = ProductQuantizer::<M, D>::sample_random_dataset(dataset, size);
+                ProductQuantizer::<M, D>::train(&sample)
             }
-            None => dataset.clone(),
+            // Small enough to train on directly — no copy of any kind.
+            None => ProductQuantizer::<M, D>::train(dataset),
         };
 
-        let pq_encoder = ProductQuantizer::<M, D>::train(&training_dataset);
-        crate::DenseDataset::<ProductQuantizer<M, D>>::from_flat_par(
-            pq_encoder,
-            dataset.values(),
-            dataset.len(),
-        )
-    }
-}
-
-/// Convert from PlainDenseDataset<f32, DotProduct> to PQ-encoded dataset
-/// with automatic training (optionally sampled) and encoding.
-/// Training uses SquaredEuclideanDistance internally (zero-copy conversion).
-impl<const M: usize, D> ConvertFrom<PlainDenseDataset<f32, DotProduct>>
-    for crate::DenseDataset<ProductQuantizer<M, D>>
-where
-    D: ProductQuantizerDistance + 'static,
-{
-    fn convert_from(dataset: PlainDenseDataset<f32, DotProduct>) -> Self {
-        let euclidean_dataset: PlainDenseDataset<f32, SquaredEuclideanDistance> =
-            dataset.clone().into();
-
-        let sample_size =
-            ProductQuantizer::<M, D>::compute_training_sample_size(euclidean_dataset.len());
-
-        let training_dataset = match sample_size {
-            Some(size) => {
-                println!(
-                    "Sampling {} vectors from {} for PQ training",
-                    size,
-                    euclidean_dataset.len()
-                );
-                ProductQuantizer::<M, D>::sample_random_dataset(&euclidean_dataset, size)
-            }
-            None => euclidean_dataset,
-        };
-
-        let pq_encoder = ProductQuantizer::<M, D>::train(&training_dataset);
         crate::DenseDataset::<ProductQuantizer<M, D>>::from_flat_par(
             pq_encoder,
             dataset.values(),
@@ -611,6 +596,87 @@ mod tests {
 
         let pq = ProductQuantizer::<M_TEST, SquaredEuclideanDistance>::train(&training_data);
         (pq, seed_vecs)
+    }
+
+    /// Building a PQ dataset borrows its source and accepts a source of either metric. The
+    /// assertions on `plain` *after* the conversions are the point: they would not compile if the
+    /// source were moved.
+    #[test]
+    fn convert_from_borrows_the_source_and_accepts_either_source_metric() {
+        use crate::dataset::ConvertInto;
+
+        let (_, vecs) = make_pq_and_data();
+        let quantizer = PlainDenseQuantizer::<f32, DotProduct>::new(D_TEST);
+        let mut growable =
+            PlainDenseDatasetGrowable::<f32, DotProduct>::with_capacity(quantizer, vecs.len());
+        for v in &vecs {
+            growable.push(DenseVectorView::new(v));
+        }
+        let plain: PlainDenseDataset<f32, DotProduct> = growable.into();
+
+        // An inner-product source.
+        let pq_ip: crate::DenseDataset<ProductQuantizer<M_TEST, DotProduct>> =
+            (&plain).convert_into(());
+        // The same source again, for the other target metric. Only possible because `plain` lives.
+        let pq_l2: crate::DenseDataset<ProductQuantizer<M_TEST, SquaredEuclideanDistance>> =
+            (&plain).convert_into(());
+
+        assert_eq!(plain.len(), vecs.len());
+        assert_eq!(pq_ip.len(), vecs.len());
+        assert_eq!(pq_l2.len(), vecs.len());
+        assert_eq!(pq_ip.encoder().output_dim(), M_TEST);
+        assert_eq!(pq_l2.encoder().output_dim(), M_TEST);
+    }
+
+    /// PQ's k-means runs in squared-Euclidean space over sub-vectors it builds itself, so the
+    /// source dataset's metric never reaches training. This asserts that at the bit level: same
+    /// vectors, two source metrics, one k-means seed, byte-identical centroids. If the metric ever
+    /// did leak into training, the inner-product path would drift from the Euclidean one and this
+    /// test fails.
+    #[test]
+    fn training_is_independent_of_the_source_metric() {
+        let (_, vecs) = make_pq_and_data();
+
+        let mut l2 = PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
+            PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(D_TEST),
+            vecs.len(),
+        );
+        let mut ip = PlainDenseDatasetGrowable::<f32, DotProduct>::with_capacity(
+            PlainDenseQuantizer::<f32, DotProduct>::new(D_TEST),
+            vecs.len(),
+        );
+        for v in &vecs {
+            l2.push(DenseVectorView::new(v));
+            ip.push(DenseVectorView::new(v));
+        }
+        let l2: PlainDenseDataset<f32, SquaredEuclideanDistance> = l2.into();
+        let ip: PlainDenseDataset<f32, DotProduct> = ip.into();
+
+        // A fixed seed makes k-means deterministic; `train` itself passes `None`.
+        let from_l2 =
+            ProductQuantizer::<M_TEST, SquaredEuclideanDistance>::train_with_kmeans_options(
+                &l2,
+                DEFAULT_KMEANS_N_ITER,
+                Some(42),
+            );
+        let from_ip =
+            ProductQuantizer::<M_TEST, SquaredEuclideanDistance>::train_with_kmeans_options(
+                &ip,
+                DEFAULT_KMEANS_N_ITER,
+                Some(42),
+            );
+
+        assert_eq!(from_l2.d, from_ip.d);
+        assert_eq!(from_l2.dsub, from_ip.dsub);
+        assert_eq!(from_l2.centroids, from_ip.centroids);
+
+        // And the codes those centroids produce agree, which is what actually reaches a query.
+        for v in &vecs {
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            from_l2.push_encoded(DenseVectorView::new(v), &mut a);
+            from_ip.push_encoded(DenseVectorView::new(v), &mut b);
+            assert_eq!(a, b);
+        }
     }
 
     /// Encoding a vector then decoding it should reconstruct something close to

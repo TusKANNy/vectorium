@@ -91,6 +91,7 @@ where
         k_candidates: usize,
         k_final: usize,
         first_stage_search_params: &FirstStageIndex::SearchParams,
+        rerank_search_params: &<RerankDataset::Encoder as VectorEncoder>::QueryParams,
         alpha: Option<f32>,
         beta: Option<usize>,
     ) -> Vec<ScoredVector<<RerankDataset::Encoder as VectorEncoder>::Distance>>
@@ -128,9 +129,15 @@ where
 
         // Stage 2: Rerank candidates using the rerank dataset
         if let Some(beta_val) = beta {
-            self.rerank_candidates_with_early_exit(rerank_query, &candidates, k_final, beta_val)
+            self.rerank_candidates_with_early_exit(
+                rerank_query,
+                rerank_search_params,
+                &candidates,
+                k_final,
+                beta_val,
+            )
         } else {
-            self.rerank_candidates(rerank_query, &candidates, k_final)
+            self.rerank_candidates(rerank_query, rerank_search_params, &candidates, k_final)
         }
     }
 
@@ -149,6 +156,7 @@ where
     fn rerank_candidates<'q>(
         &'q self,
         rerank_query: <RerankDataset::Encoder as VectorEncoder>::QueryVector<'q>,
+        rerank_search_params: &<RerankDataset::Encoder as VectorEncoder>::QueryParams,
         candidates: &[VectorId],
         k_final: usize,
     ) -> Vec<ScoredVector<<RerankDataset::Encoder as VectorEncoder>::Distance>>
@@ -157,7 +165,7 @@ where
     {
         // Create query evaluator for the rerank dataset
         let encoder = self.rerank_dataset.encoder();
-        let query_evaluator = encoder.query_evaluator(rerank_query);
+        let query_evaluator = encoder.query_evaluator(rerank_query, rerank_search_params);
 
         // Rerank candidates by computing exact distances
         let mut reranked: Vec<ScoredVector<<RerankDataset::Encoder as VectorEncoder>::Distance>> =
@@ -183,6 +191,7 @@ where
     fn rerank_candidates_with_early_exit<'q>(
         &'q self,
         rerank_query: <RerankDataset::Encoder as VectorEncoder>::QueryVector<'q>,
+        rerank_search_params: &<RerankDataset::Encoder as VectorEncoder>::QueryParams,
         candidates: &[VectorId],
         k_final: usize,
         beta: usize,
@@ -196,7 +205,7 @@ where
         }
 
         let encoder = self.rerank_dataset.encoder();
-        let query_evaluator = encoder.query_evaluator(rerank_query);
+        let query_evaluator = encoder.query_evaluator(rerank_query, rerank_search_params);
 
         // Rerank first k_final candidates
         let first_reranked: Vec<ScoredVector<<RerankDataset::Encoder as VectorEncoder>::Distance>> =

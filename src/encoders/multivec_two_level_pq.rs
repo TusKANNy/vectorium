@@ -216,7 +216,7 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
                 .for_each(|(i, res)| {
                     let token = token_vectors.get(i as VectorId);
                     let nearest = FlatIndex::from(coarse_ref)
-                        .search_nearest(token)
+                        .search_nearest(token, &())
                         .map(|s| s.vector)
                         .unwrap_or(0);
                     let centroid = coarse_ref.get(nearest);
@@ -551,7 +551,7 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
             for m in 0..M {
                 let sub = DenseVectorView::new(&residual[m * self.dsub..(m + 1) * self.dsub]);
                 let code = FlatIndex::from(&self.pq_centroids[m])
-                    .search_nearest(sub)
+                    .search_nearest(sub, &())
                     .map(|s| s.vector as u8)
                     .unwrap_or(0);
                 pq_codes.push(code);
@@ -585,7 +585,7 @@ impl<const M: usize, In> MultiVecTwoLevelProductQuantizer<M, In> {
 /// ```ignore
 /// let encoder = /* ... */;
 /// let query = /* ... */;
-/// let evaluator = encoder.query_evaluator(query);
+/// let evaluator = encoder.query_evaluator(query, &());
 /// let mut scratchpad = MultiVecTwoLevelPQScratchpad::with_capacity(token_dim, max_doc_n);
 ///
 /// for doc in documents {
@@ -947,8 +947,14 @@ where
     where
         Self: 'e;
 
+    type QueryParams = ();
+
     #[inline]
-    fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
+    fn query_evaluator<'e>(
+        &'e self,
+        query: Self::QueryVector<'_>,
+        _params: &(),
+    ) -> Self::Evaluator<'e> {
         assert_eq!(
             query.dim(),
             self.token_dim,
@@ -1019,7 +1025,7 @@ where
 
             let token_view = DenseVectorView::new(&token_f32);
             let coarse_id = FlatIndex::from(&self.coarse_centroids)
-                .search_nearest(token_view)
+                .search_nearest(token_view, &())
                 .map(|s| s.vector as u32)
                 .unwrap_or(0);
             coarse_ids.push(coarse_id);
@@ -1044,7 +1050,7 @@ where
             for m in 0..M {
                 let sub = DenseVectorView::new(&residual[m * self.dsub..(m + 1) * self.dsub]);
                 let code = FlatIndex::from(&self.pq_centroids[m])
-                    .search_nearest(sub)
+                    .search_nearest(sub, &())
                     .map(|s| s.vector as u8)
                     .unwrap_or(0);
                 pq_codes.push(code);
@@ -1161,7 +1167,7 @@ mod tests {
         let mut encoded_doc = Vec::new();
         encoder.push_encoded(doc, &mut encoded_doc);
 
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let encoded_view = DenseMultiVectorView::new(&encoded_doc, COARSE_ID_BYTES + M);
         let dist = evaluator.compute_distance(encoded_view);
 
@@ -1195,7 +1201,7 @@ mod tests {
         let encoder = MultiVecTwoLevelProductQuantizer::<M, f32>::train(&training, 4);
         // dim = 2 doesn't match token_dim = 8
         let query = DenseMultiVectorView::new(&[1.0f32, 0.0], 2);
-        encoder.query_evaluator(query);
+        encoder.query_evaluator(query, &());
     }
 
     #[test]
@@ -1244,7 +1250,7 @@ mod tests {
                 let decoded_val = decoded.values()[token_idx * token_dim + dim];
                 // Each value should be reasonably close to 1.0
                 // PQ introduces loss but should be within this range
-                assert!(decoded_val >= 0.0 && decoded_val <= 10.0);
+                assert!((0.0..=10.0).contains(&decoded_val));
             }
         }
     }
@@ -1259,10 +1265,10 @@ mod tests {
         // Query with specific pattern
         let query_vals: Vec<f32> = vec![1.0f32; 32 * token_dim];
         let query = DenseMultiVectorView::new(&query_vals, token_dim);
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
 
         // Doc 1: all high values (should score high)
-        let doc1_vals: Vec<f32> = vec![0.9f32; 1 * token_dim];
+        let doc1_vals: Vec<f32> = vec![0.9f32; token_dim];
         let doc1 = DenseMultiVectorView::new(&doc1_vals, token_dim);
         let mut enc1 = Vec::new();
         encoder.push_encoded(doc1, &mut enc1);
@@ -1271,7 +1277,7 @@ mod tests {
             .distance();
 
         // Doc 2: all low values (should score low)
-        let doc2_vals: Vec<f32> = vec![0.1f32; 1 * token_dim];
+        let doc2_vals: Vec<f32> = vec![0.1f32; token_dim];
         let doc2 = DenseMultiVectorView::new(&doc2_vals, token_dim);
         let mut enc2 = Vec::new();
         encoder.push_encoded(doc2, &mut enc2);
@@ -1293,7 +1299,7 @@ mod tests {
         // Query: all 1s
         let query_vals: Vec<f32> = vec![1.0f32; 32 * token_dim];
         let query = DenseMultiVectorView::new(&query_vals, token_dim);
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
 
         // Doc with mixed tokens: first is low, second is high
         let mut doc_vals = vec![0.01f32; token_dim]; // Token 1: all low
@@ -1321,12 +1327,12 @@ mod tests {
         let query_vals: Vec<f32> = vec![0.5f32; 32 * token_dim];
         let query = DenseMultiVectorView::new(&query_vals, token_dim);
 
-        let doc_vals: Vec<f32> = vec![0.5f32; 1 * token_dim]; // Single token
+        let doc_vals: Vec<f32> = vec![0.5f32; token_dim]; // Single token
         let doc = DenseMultiVectorView::new(&doc_vals, token_dim);
         let mut encoded = Vec::new();
         encoder.push_encoded(doc, &mut encoded);
 
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let score = evaluator
             .compute_distance(DenseMultiVectorView::new(&encoded, COARSE_ID_BYTES + M))
             .distance();

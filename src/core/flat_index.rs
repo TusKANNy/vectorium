@@ -28,8 +28,9 @@ impl<D: Dataset> FlatIndex<D> {
     pub fn search_nearest<'q>(
         &self,
         query: <D::Encoder as VectorEncoder>::QueryVector<'q>,
+        search_params: &<D::Encoder as VectorEncoder>::QueryParams,
     ) -> Option<ScoredVector<<D::Encoder as VectorEncoder>::Distance>> {
-        let evaluator = self.dataset.encoder().query_evaluator(query);
+        let evaluator = self.dataset.encoder().query_evaluator(query, search_params);
         self.dataset
             .iter()
             .enumerate()
@@ -70,19 +71,20 @@ where
 {
     type Query<'q> = <D::Encoder as VectorEncoder>::QueryVector<'q>;
     type Distance = <D::Encoder as VectorEncoder>::Distance;
-    type SearchParams = ();
+    /// The encoder's query parameters — `()` unless the encoder takes query-side configuration.
+    type SearchParams = <D::Encoder as VectorEncoder>::QueryParams;
 
     fn search<'q>(
         &self,
         query: Self::Query<'q>,
         k: usize,
-        _: &(),
+        search_params: &Self::SearchParams,
     ) -> Vec<ScoredVector<Self::Distance>> {
         if k == 0 {
             return Vec::new();
         }
 
-        let evaluator = self.dataset.encoder().query_evaluator(query);
+        let evaluator = self.dataset.encoder().query_evaluator(query, search_params);
 
         self.dataset
             .iter()

@@ -56,10 +56,24 @@ pub trait VectorEncoder: Send + Sync + SpaceUsage + Clone {
     where
         Self: 'e;
 
-    /// Create an evaluator from a *plain* query vector.
+    /// Query-side parameters, `()` for encoders whose scoring takes no configuration.
+    ///
+    /// These describe the *query*, not the stored data: varying them must never change how a
+    /// dataset decodes. Keeping them out of the encoder is what lets one stored index serve every
+    /// setting concurrently, without mutating shared state. [`FlatIndex`](crate::FlatIndex)
+    /// forwards its `SearchParams` straight to this type.
+    ///
+    /// `Send + Sync` because a parallel search shares one set of parameters across threads.
+    type QueryParams: Send + Sync;
+
+    /// Create an evaluator from a *plain* query vector, under `params`.
     ///
     /// This is designed for search-time queries provided by the user.
-    fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e>;
+    fn query_evaluator<'e>(
+        &'e self,
+        query: Self::QueryVector<'_>,
+        params: &Self::QueryParams,
+    ) -> Self::Evaluator<'e>;
 
     /// Create an evaluator from a dataset-internal vector.
     ///

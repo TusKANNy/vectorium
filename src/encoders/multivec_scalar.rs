@@ -97,8 +97,14 @@ where
     where
         Self: 'e;
 
+    type QueryParams = ();
+
     #[inline]
-    fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
+    fn query_evaluator<'e>(
+        &'e self,
+        query: Self::QueryVector<'_>,
+        _params: &(),
+    ) -> Self::Evaluator<'e> {
         assert_eq!(
             query.dim(),
             self.token_dim,
@@ -188,7 +194,7 @@ mod tests {
 
         // 1 query token of dim 3
         let query = DenseMultiVectorView::new(&[1.0f32, 2.0, 3.0], 3);
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
 
         // 1 doc token of dim 3: dot = 1*4 + 2*5 + 3*6 = 32
         let doc = DenseMultiVectorView::new(&[4.0f32, 5.0, 6.0], 3);
@@ -201,7 +207,7 @@ mod tests {
 
         // 2 query tokens: [1, 0] and [0, 1]
         let query = DenseMultiVectorView::new(&[1.0f32, 0.0, 0.0, 1.0], 2);
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
 
         // 1 doc token: [3, 4]
         // q0 max = dot([1,0], [3,4]) = 3
@@ -216,7 +222,7 @@ mod tests {
 
         // 2 query tokens: [1, 0] and [0, 1]
         let query = DenseMultiVectorView::new(&[1.0f32, 0.0, 0.0, 1.0], 2);
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
 
         // 2 doc tokens: [3, 0] and [0, 5]
         // q0: max(3, 0) = 3 ;  q1: max(0, 5) = 5  →  MaxSim = 8
@@ -242,7 +248,7 @@ mod tests {
         let encoder = PlainMultiVecQuantizer::<f32>::new(3);
         // dim=2 doesn't match token_dim=3
         let query = DenseMultiVectorView::new(&[1.0f32, 2.0], 2);
-        encoder.query_evaluator(query);
+        encoder.query_evaluator(query, &());
     }
 
     #[test]

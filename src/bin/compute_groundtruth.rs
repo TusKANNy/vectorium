@@ -12,8 +12,9 @@ use vectorium::distances;
 use vectorium::encoders::pq::{ProductQuantizer, ProductQuantizerDistance};
 use vectorium::readers;
 use vectorium::{
-    Dataset, FixedU8Q, FixedU16Q, FlatIndex, Index, PlainDenseDataset, PlainSparseDataset,
-    ScalarDenseDataset, SpaceUsage,
+    Dataset, DenseDataset, FixedU8Q, FixedU16Q, FlatIndex, Index, PlainDenseDataset,
+    PlainSparseDataset, RabitqConfig, RabitqExtConfig, RabitqExtQuantizer, RabitqQuantizer,
+    RabitqQueryParams, RabitqSupportedDistance, ScalarDenseDataset, SpaceUsage,
 };
 use vectorium::{Distance, Float};
 
@@ -57,7 +58,8 @@ struct Args {
     #[arg(default_value = "u32")]
     component_type: String,
 
-    /// Encoder: 'plain', 'pq' (dense only), 'binary' (dense, dotproduct only), or 'dotvbyte' (default: plain)
+    /// Encoder: 'plain', 'pq', 'rabitq', 'rabitq-ext' (dense only), or 'dotvbyte' (sparse only)
+    /// (default: plain)
     #[clap(long, value_parser)]
     #[arg(default_value = "plain")]
     encoder: String,
@@ -66,6 +68,33 @@ struct Args {
     #[clap(long, value_parser)]
     #[arg(default_value_t = 0)]
     pq_subspaces: usize,
+
+    /// Bits per component for the query, for `--encoder rabitq` only (1..=8). Documents are always
+    /// 1 bit. `rabitq-ext` scores against an unquantized query and ignores this.
+    #[clap(long, value_parser)]
+    #[arg(default_value_t = 1)]
+    rabitq_query_bits: u32,
+
+    /// Bits per component for the document code, for `--encoder rabitq-ext` only: 2, 4 or 8.
+    #[clap(long, value_parser)]
+    #[arg(default_value_t = 4)]
+    rabitq_total_bits: u32,
+
+    /// Seed for the RaBitQ random orthogonal rotation.
+    #[clap(long, value_parser)]
+    #[arg(default_value_t = 42)]
+    rabitq_seed: u64,
+
+    /// Apply the RaBitQ random orthogonal rotation. Pass `--rabitq-rotate false` to skip the
+    /// O(d log d) transform at encode and query time; recall on real data is expected to drop.
+    #[clap(long, default_value_t = true, action = clap::ArgAction::Set)]
+    rabitq_rotate: bool,
+
+    /// For `--encoder rabitq-ext`: estimate the rescale factor once at train time instead of
+    /// searching per vector. Pass `--rabitq-faster-quant false` for the exact per-vector search,
+    /// which costs a heap sweep per document for a small accuracy gain.
+    #[clap(long, default_value_t = true, action = clap::ArgAction::Set)]
+    rabitq_faster_quant: bool,
 }
 
 fn main() {
@@ -92,9 +121,12 @@ fn main() {
     if encoder == "dotvbyte" {
         println!("Dotvbyte encoder: quantizing values using FixedU8Q.");
     }
-    if encoder != "plain" && encoder != "dotvbyte" && encoder != "pq" && encoder != "binary" {
+    if !matches!(
+        encoder.as_str(),
+        "plain" | "dotvbyte" | "pq" | "rabitq" | "rabitq-ext"
+    ) {
         eprintln!(
-            "Unknown encoder='{}'. Use encoder='plain'|'dotvbyte'|'pq'|'binary' (dense only).",
+            "Unknown encoder='{}'. Use encoder='plain'|'pq'|'rabitq'|'rabitq-ext' (dense) or 'dotvbyte' (sparse).",
             encoder
         );
         return;
@@ -180,31 +212,43 @@ fn main() {
                     eprintln!("Failed to compute PQ groundtruth: {}", err);
                 }
             }
-            "binary" => {
+            "rabitq" | "rabitq-ext" => {
                 if value_type != "f32" {
-                    eprintln!("Encoder 'binary' requires value_type='f32'.");
+                    eprintln!("Encoder '{}' requires value_type='f32'.", encoder);
                     return;
                 }
-                if distance != "dotproduct" {
-                    eprintln!("Encoder 'binary' requires distance='dotproduct'.");
-                    return;
+                let config = RabitqCliConfig {
+                    query_bits: args.rabitq_query_bits,
+                    total_bits: args.rabitq_total_bits,
+                    seed: args.rabitq_seed,
+                    rotate: args.rabitq_rotate,
+                    faster_quant: args.rabitq_faster_quant,
+                };
+                if let Err(err) = compute_dense_groundtruth_rabitq(
+                    input_path,
+                    query_path,
+                    output_path,
+                    k,
+                    &encoder,
+                    &distance,
+                    config,
+                ) {
+                    eprintln!("Failed to compute RaBitQ groundtruth: {}", err);
                 }
-                compute_dense_groundtruth_binary(input_path, query_path, output_path, k);
             }
             _ => {
                 eprintln!(
-                    "Encoder '{}' is not supported for dense datasets. Use 'plain', 'pq', or 'binary'.",
+                    "Encoder '{}' is not supported for dense datasets. Use 'plain', 'pq', 'rabitq' or 'rabitq-ext'.",
                     encoder
                 );
             }
         },
         "sparse" => {
-            if encoder == "pq" {
-                eprintln!("Encoder 'pq' is only supported with dataset_type='dense'.");
-                return;
-            }
-            if encoder == "binary" {
-                eprintln!("Encoder 'binary' is only supported with dataset_type='dense'.");
+            if matches!(encoder.as_str(), "pq" | "rabitq" | "rabitq-ext") {
+                eprintln!(
+                    "Encoder '{}' is only supported with dataset_type='dense'.",
+                    encoder
+                );
                 return;
             }
             // Sparse dataset logic
@@ -368,7 +412,7 @@ fn compute_dense_groundtruth<V, D>(
     let queries = readers::read_npy_f32::<D>(&query_path).expect("failed to read queries");
 
     // Convert dataset from f32 to target value type V using ConvertInto
-    let dataset: ScalarDenseDataset<f32, V, D> = (&dataset_f32).convert_into();
+    let dataset: ScalarDenseDataset<f32, V, D> = (&dataset_f32).convert_into(());
 
     // Print dataset size in GiB
     let dataset_gib = dataset.space_usage_GiB();
@@ -408,77 +452,6 @@ fn compute_dense_groundtruth<V, D>(
 
     let mut output_file = File::create(output_path).expect("failed to create output file");
 
-    for (query_id, result) in results.iter().enumerate() {
-        for (idx, (score, doc_id)) in result.iter().enumerate() {
-            writeln!(
-                &mut output_file,
-                "{query_id}\t{doc_id}\t{}\t{score}",
-                idx + 1
-            )
-            .expect("failed to write result");
-        }
-    }
-}
-
-/// Ground truth for the 1-bit-per-component binary encoder (dense, dot product only).
-///
-/// Reads the dataset and queries as f32, learns per-component means and binarizes the
-/// dataset via `ConvertInto`, then scores each query exhaustively with the symmetric
-/// popcount dot product.
-fn compute_dense_groundtruth_binary(
-    input_path: String,
-    query_path: String,
-    output_path: String,
-    k: usize,
-) {
-    use vectorium::{BinaryQuantizer, DenseDataset, VectorEncoder};
-
-    let dataset_f32 = readers::read_npy_f32::<distances::DotProduct>(&input_path)
-        .expect("failed to read dataset");
-    let queries = readers::read_npy_f32::<distances::DotProduct>(&query_path)
-        .expect("failed to read queries");
-
-    let start_time = Instant::now();
-    let dataset: DenseDataset<BinaryQuantizer> = dataset_f32.convert_into();
-    println!(
-        "Binary encoding completed in {:.3}s",
-        start_time.elapsed().as_secs_f64()
-    );
-
-    println!("N documents: {}", dataset.len());
-    println!("N dims: {}", dataset.input_dim());
-    println!("N u64 words per vector: {}", dataset.encoder().output_dim());
-    println!("N queries: {}", queries.len());
-    println!("N dims: {}", queries.input_dim());
-    println!("Dataset size: {:.3} GiB", dataset.space_usage_GiB());
-    println!("Computing ground truth for {} queries...", queries.len());
-
-    let start_time = Instant::now();
-
-    let pb_style = ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec}, ETA: {eta})")
-        .unwrap()
-        .progress_chars("=>-");
-
-    let results: Vec<Vec<(f32, u64)>> = queries
-        .par_iter()
-        .progress_count(queries.len() as u64)
-        .with_style(pb_style)
-        .map(|qvec| {
-            let res: Vec<DatasetResult<distances::DotProduct>> =
-                FlatIndex::from(&dataset).search(qvec, k, &());
-            res.into_iter()
-                .map(|r| (r.distance.distance(), r.vector))
-                .collect()
-        })
-        .collect();
-
-    println!(
-        "Groundtruth computed in {:.3}s",
-        start_time.elapsed().as_secs_f64()
-    );
-
-    let mut output_file = File::create(output_path).expect("failed to create output file");
     for (query_id, result) in results.iter().enumerate() {
         for (idx, (score, doc_id)) in result.iter().enumerate() {
             writeln!(
@@ -698,7 +671,10 @@ fn run_dense_groundtruth_pq<const M: usize, D>(
     let start_time = Instant::now();
 
     // Convert dataset using ConvertFrom trait with automatic sampling
-    let pq_dataset: vectorium::DenseDataset<ProductQuantizer<M, D>> = dataset.convert_into();
+    let pq_dataset: vectorium::DenseDataset<ProductQuantizer<M, D>> = (&dataset).convert_into(());
+    // The plain f32 vectors are not needed past this point, and on a large collection they dwarf
+    // the codes; release them before the scan rather than holding both.
+    drop(dataset);
 
     let elapsed = start_time.elapsed();
     println!(
@@ -740,6 +716,205 @@ fn run_dense_groundtruth_pq<const M: usize, D>(
 
     let elapsed = start_time.elapsed();
     println!("Groundtruth computed in in {:.3}s", elapsed.as_secs_f64());
+
+    let mut output_file = File::create(output_path).expect("failed to create output file");
+
+    for (query_id, result) in results.iter().enumerate() {
+        for (idx, (score, doc_id)) in result.iter().enumerate() {
+            writeln!(
+                &mut output_file,
+                "{query_id}\t{doc_id}\t{}\t{score}",
+                idx + 1
+            )
+            .expect("failed to write result");
+        }
+    }
+}
+
+/// RaBitQ knobs collected from the command line. `query_bits` applies to `rabitq` only,
+/// `total_bits` and `faster_quant` to `rabitq-ext` only; the rest are shared.
+#[derive(Copy, Clone, Debug)]
+struct RabitqCliConfig {
+    query_bits: u32,
+    total_bits: u32,
+    seed: u64,
+    rotate: bool,
+    faster_quant: bool,
+}
+
+/// Validate the RaBitQ options against the dataset, then dispatch on metric and encoder.
+///
+/// Unlike PQ, neither encoder needs a const-generic ladder here: `total_bits` is a runtime field,
+/// so the only type-level choice is the metric.
+fn compute_dense_groundtruth_rabitq(
+    input_path: String,
+    query_path: String,
+    output_path: String,
+    k: usize,
+    encoder: &str,
+    distance: &str,
+    config: RabitqCliConfig,
+) -> Result<(), String> {
+    let dataset = readers::read_npy_f32::<distances::SquaredEuclideanDistance>(&input_path)
+        .expect("failed to read dataset");
+    let queries = readers::read_npy_f32::<distances::SquaredEuclideanDistance>(&query_path)
+        .expect("failed to read queries");
+
+    let dim = dataset.input_dim();
+    if !dim.is_multiple_of(64) {
+        return Err(format!(
+            "RaBitQ requires a dataset dimension that is a multiple of 64 (found {dim}); \
+             there is no bit-padding"
+        ));
+    }
+    match encoder {
+        "rabitq" if !(1..=8).contains(&config.query_bits) => {
+            return Err(format!(
+                "rabitq_query_bits must be in 1..=8 (found {})",
+                config.query_bits
+            ));
+        }
+        "rabitq-ext" if !matches!(config.total_bits, 2 | 4 | 8) => {
+            return Err(format!(
+                "rabitq_total_bits must be 2, 4 or 8 (found {}); for 1-bit codes use --encoder rabitq",
+                config.total_bits
+            ));
+        }
+        _ => {}
+    }
+
+    match (encoder, distance) {
+        ("rabitq", "euclidean") => run_dense_groundtruth_rabitq::<
+            distances::SquaredEuclideanDistance,
+        >(dataset, queries, k, output_path, config),
+        ("rabitq", "dotproduct") => run_dense_groundtruth_rabitq::<distances::DotProduct>(
+            dataset,
+            queries,
+            k,
+            output_path,
+            config,
+        ),
+        ("rabitq-ext", "euclidean") => run_dense_groundtruth_rabitq_ext::<
+            distances::SquaredEuclideanDistance,
+        >(dataset, queries, k, output_path, config),
+        ("rabitq-ext", "dotproduct") => run_dense_groundtruth_rabitq_ext::<distances::DotProduct>(
+            dataset,
+            queries,
+            k,
+            output_path,
+            config,
+        ),
+        _ => unreachable!("encoder and distance validated before"),
+    }
+
+    Ok(())
+}
+
+fn run_dense_groundtruth_rabitq<D>(
+    dataset: PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
+    queries: PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
+    k: usize,
+    output_path: String,
+    config: RabitqCliConfig,
+) where
+    D: RabitqSupportedDistance + 'static,
+{
+    let start_time = Instant::now();
+    let encoded: DenseDataset<RabitqQuantizer<D>> = (&dataset).convert_into(RabitqConfig {
+        seed: config.seed,
+        rotate: config.rotate,
+    });
+    // The plain f32 vectors are not needed past this point, and on a large collection they dwarf
+    // the codes; release them before the scan rather than holding both.
+    drop(dataset);
+    println!(
+        "RaBitQ encoding (query_bits={}, seed={}, rotate={}) completed in {:.3}s",
+        config.query_bits,
+        config.seed,
+        config.rotate,
+        start_time.elapsed().as_secs_f64()
+    );
+    scan_dense_and_write(
+        &encoded,
+        &queries,
+        k,
+        output_path,
+        &RabitqQueryParams::new(config.query_bits),
+    );
+}
+
+fn run_dense_groundtruth_rabitq_ext<D>(
+    dataset: PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
+    queries: PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
+    k: usize,
+    output_path: String,
+    config: RabitqCliConfig,
+) where
+    D: RabitqSupportedDistance + 'static,
+{
+    let start_time = Instant::now();
+    let encoded: DenseDataset<RabitqExtQuantizer<D>> = (&dataset).convert_into(RabitqExtConfig {
+        total_bits: config.total_bits,
+        seed: config.seed,
+        rotate: config.rotate,
+        faster_quant: config.faster_quant,
+    });
+    drop(dataset);
+    println!(
+        "Extended RaBitQ encoding (total_bits={}, seed={}, rotate={}, faster_quant={}) completed in {:.3}s",
+        config.total_bits,
+        config.seed,
+        config.rotate,
+        config.faster_quant,
+        start_time.elapsed().as_secs_f64()
+    );
+    scan_dense_and_write(&encoded, &queries, k, output_path, &());
+}
+
+/// Exhaustively score every query against an encoded dense dataset and write the ranked results.
+fn scan_dense_and_write<E>(
+    dataset: &DenseDataset<E>,
+    queries: &PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
+    k: usize,
+    output_path: String,
+    search_params: &E::QueryParams,
+) where
+    E: vectorium::DenseVectorEncoder + SpaceUsage,
+    E::Distance: Distance,
+    E::OutputValueType: SpaceUsage,
+{
+    println!("N documents: {}", dataset.len());
+    println!("N dims: {}", dataset.input_dim());
+    println!("N queries: {}", queries.len());
+    println!("Dataset size: {:.3} GiB", dataset.space_usage_GiB());
+    println!(
+        "Encoded: {} u64 words per vector",
+        dataset.encoder().output_dim()
+    );
+    println!("Computing ground truth for {} queries...", queries.len());
+
+    let start_time = Instant::now();
+
+    let pb_style = ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec}, ETA: {eta})")
+        .unwrap()
+        .progress_chars("=>-");
+
+    let results: Vec<Vec<(f32, u64)>> = queries
+        .par_iter()
+        .progress_count(queries.len() as u64)
+        .with_style(pb_style)
+        .map(|qvec| {
+            let res: Vec<DatasetResult<E::Distance>> =
+                FlatIndex::from(dataset).search(qvec, k, search_params);
+            res.into_iter()
+                .map(|r| (r.distance.distance(), r.vector))
+                .collect()
+        })
+        .collect();
+
+    let elapsed = start_time.elapsed();
+    println!("Computation completed in {:.3}s", elapsed.as_secs_f64());
 
     let mut output_file = File::create(output_path).expect("failed to create output file");
 

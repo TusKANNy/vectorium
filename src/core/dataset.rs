@@ -60,14 +60,25 @@ pub type ScoredVector<D> = ScoredItemGeneric<D, VectorId>;
 
 /// Conversion helper that enforces datasets must be constructible from other datasets.
 pub trait ConvertFrom<T: Dataset>: Dataset {
-    /// Build this dataset type from `value`.
-    fn convert_from(value: T) -> Self;
+    /// Construction parameters, `()` for encoders that learn everything from the source data.
+    ///
+    /// This mirrors [`Index::SearchParams`](crate::core::index::Index::SearchParams), down to
+    /// there being exactly one entry point: just as every search passes its params (`&()` when
+    /// there are none), every conversion passes its config. A caller therefore never has to know
+    /// which kind of encoder it is holding — `()` is a configuration, not the absence of one.
+    type Config;
+
+    /// Build this dataset type from `value` under `config`.
+    fn convert_from(value: T, config: Self::Config) -> Self;
 }
 
 /// Mirror helper that forwards into `ConvertFrom` implementations.
 pub trait ConvertInto<T: Dataset>: Dataset {
-    /// Consume this dataset and produce another dataset wired by `ConvertFrom`.
-    fn convert_into(self) -> T;
+    /// Construction parameters of the target dataset — see [`ConvertFrom::Config`].
+    type Config;
+
+    /// Consume this dataset and produce another dataset wired by `ConvertFrom`, under `config`.
+    fn convert_into(self, config: Self::Config) -> T;
 }
 
 impl<T, U> ConvertInto<U> for T
@@ -75,8 +86,10 @@ where
     T: Dataset,
     U: ConvertFrom<T>,
 {
-    fn convert_into(self) -> U {
-        U::convert_from(self)
+    type Config = <U as ConvertFrom<T>>::Config;
+
+    fn convert_into(self, config: Self::Config) -> U {
+        U::convert_from(self, config)
     }
 }
 

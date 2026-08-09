@@ -588,7 +588,7 @@ mod tests {
                 256 * 2,
             );
             for _ in 0..256 * 2 {
-                ds.push(DenseVectorView::new(&vec![0.0f32; 8]));
+                ds.push(DenseVectorView::new(&[0.0f32; 8]));
             }
             ds.into()
         });

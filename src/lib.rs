@@ -56,9 +56,8 @@ pub use core::vector_encoder::{
 
 pub use clustering::{KMeans, KMeansBuilder};
 
-pub use encoders::binary::{BinaryQuantizer, BinaryQueryEvaluator};
 pub use encoders::rabitq::{
-    RabitqConfig, RabitqQuantizer, RabitqQueryEvaluator, RabitqSupportedDistance,
+    RabitqConfig, RabitqQuantizer, RabitqQueryEvaluator, RabitqQueryParams, RabitqSupportedDistance,
 };
 pub use encoders::rabitq_ext::{RabitqExtConfig, RabitqExtQuantizer, RabitqExtQueryEvaluator};
 pub use transformations::fht_kac::FhtKacRotator;
@@ -109,17 +108,14 @@ pub type ScalarDenseDatasetGrowable<VIn, VOut, D> =
 pub type PlainDenseDataset<V, D> = ScalarDenseDataset<V, V, D>;
 pub type PlainDenseDatasetGrowable<V, D> = ScalarDenseDatasetGrowable<V, V, D>;
 
-/// Dense dataset backed by the 1-bit-per-component [`BinaryQuantizer`] (packed into `u64` words).
-pub type BinaryDenseDataset = DenseDataset<BinaryQuantizer>;
-
 /// RaBitQ-style binary dense dataset: rotated 1-bit sign codes with per-document factor/norm
 /// metadata, scored with the RaBitQ estimator.
 ///
 /// Defaults to inner-product scoring. Use [`RabitqDenseDatasetSquaredEuclidean`] for Euclidean
 /// search; document codes are identical either way, so the metric is purely a scoring choice.
 ///
-/// Built via [`RabitqQuantizer::encode_dataset`] with a [`RabitqConfig`]; stores `d/64` code
-/// words plus one metadata word per vector.
+/// Built by converting a [`PlainDenseDataset`] — `(&plain).convert_into(config)` with a
+/// [`RabitqConfig`]; stores `d/64` code words plus one metadata word per vector.
 pub type RabitqDenseDataset = DenseDataset<RabitqQuantizer<DotProduct>>;
 
 /// [`RabitqDenseDataset`] scored with the RaBitQ squared-Euclidean estimator.
@@ -127,13 +123,14 @@ pub type RabitqDenseDatasetSquaredEuclidean =
     DenseDataset<RabitqQuantizer<SquaredEuclideanDistance>>;
 
 /// Extended RaBitQ dense dataset: rotated multi-bit document codes (a configurable
-/// `total_bits ∈ 1..=9` per component, plane-major) with per-document scan metadata.
+/// `total_bits ∈ {2, 4, 8}` per component, component-major) with per-document scan metadata.
+/// For the 1-bit sign code use [`RabitqDenseDataset`].
 ///
 /// Defaults to inner-product scoring. Use [`RabitqExtDenseDatasetSquaredEuclidean`] for Euclidean
 /// search; document codes are identical either way, so the metric is purely a scoring choice.
 ///
-/// Built via [`RabitqExtQuantizer::encode_dataset`] with a [`RabitqExtConfig`]; stores
-/// `total_bits · d/64` code words plus one metadata word per vector.
+/// Built by converting a [`PlainDenseDataset`] — `(&plain).convert_into(config)` with a
+/// [`RabitqExtConfig`]; stores `total_bits · d/64` code words plus one metadata word per vector.
 pub type RabitqExtDenseDataset = DenseDataset<RabitqExtQuantizer<DotProduct>>;
 
 /// [`RabitqExtDenseDataset`] scored with the RaBitQ squared-Euclidean estimator.

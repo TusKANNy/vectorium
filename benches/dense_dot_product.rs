@@ -69,7 +69,7 @@ fn bench_f32_compute_distance_only(c: &mut Criterion) {
             let doc = DenseVectorView::new(&doc_data);
 
             // Create evaluator OUTSIDE the loop
-            let evaluator = encoder.query_evaluator(query);
+            let evaluator = encoder.query_evaluator(query, &());
 
             b.iter(|| {
                 // Measure ONLY compute_distance, not evaluator creation
@@ -95,7 +95,7 @@ fn bench_f32_evaluator_creation_only(c: &mut Criterion) {
 
             b.iter(|| {
                 // Measure ONLY evaluator creation, not distance computation
-                black_box(encoder.query_evaluator(query))
+                black_box(encoder.query_evaluator(query, &()))
             });
         });
     }
@@ -113,7 +113,7 @@ fn bench_f16_compute_distance_only(c: &mut Criterion) {
             let query_data_f32 = black_box(generate_random_data(dim));
             let doc_data_f32 = black_box(generate_random_data(dim));
 
-            let query_data: Vec<f32> = query_data_f32.iter().copied().collect();
+            let query_data: Vec<f32> = query_data_f32.to_vec();
             let doc_data: Vec<f16> = doc_data_f32.iter().map(|&x| f16::from_f32(x)).collect();
 
             let encoder = ScalarDenseQuantizer::<f32, f16, DotProduct>::new(dim);
@@ -121,7 +121,7 @@ fn bench_f16_compute_distance_only(c: &mut Criterion) {
             let doc = DenseVectorView::new(&doc_data);
 
             // Create evaluator OUTSIDE the loop
-            let evaluator = encoder.query_evaluator(query);
+            let evaluator = encoder.query_evaluator(query, &());
 
             b.iter(|| {
                 // Measure ONLY compute_distance, not evaluator creation
@@ -143,7 +143,7 @@ fn bench_raw_dot_product_f32_query_f16_doc(c: &mut Criterion) {
             let query_data_f32 = black_box(generate_random_data(dim));
             let doc_data_f32 = black_box(generate_random_data(dim));
 
-            let query_data: Vec<f32> = query_data_f32.iter().copied().collect();
+            let query_data: Vec<f32> = query_data_f32.to_vec();
             let doc_data: Vec<f16> = doc_data_f32.iter().map(|&x| f16::from_f32(x)).collect();
 
             let query = DenseVectorView::new(&query_data);

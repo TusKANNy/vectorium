@@ -229,7 +229,13 @@ impl VectorEncoder for DotVByteFixedU8Encoder {
     where
         Self: 'e;
 
-    fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
+    type QueryParams = ();
+
+    fn query_evaluator<'e>(
+        &'e self,
+        query: Self::QueryVector<'_>,
+        _params: &(),
+    ) -> Self::Evaluator<'e> {
         DotVByteFixedU8QueryEvaluator::new(query, self)
     }
 
@@ -289,7 +295,7 @@ mod tests {
         );
 
         let query = SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 1.0]);
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let packed = PackedVectorView::new(&data);
         assert_eq!(evaluator.compute_distance(packed), DotProduct::from(3.0));
 

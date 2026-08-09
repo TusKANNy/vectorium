@@ -121,17 +121,6 @@ where
         }
     }
 
-    /// Mutable access to the encoder.
-    ///
-    /// Intended for tuning *query-side* encoder settings on an already-built dataset, such as
-    /// [`RabitqQuantizer::set_query_bits`](crate::encoders::rabitq::RabitqQuantizer::set_query_bits).
-    /// Mutating state that the stored codes depend on (dimensions, centroids, rotation) invalidates
-    /// the dataset.
-    #[inline]
-    pub fn encoder_mut(&mut self) -> &mut E {
-        &mut self.encoder
-    }
-
     /// Access the contiguous storage backing the dataset.
     ///
     /// This is the same buffer that gets populated by `DenseDatasetGrowable::push`.
@@ -508,8 +497,11 @@ where
     SrcStorage: AsRef<[Mid]>,
     DstStorage: From<Box<[DstOut]>> + AsRef<[DstOut]>,
 {
+    type Config = ();
+
     fn convert_from(
         source: &DenseDatasetGeneric<ScalarDenseQuantizer<SrcIn, Mid, D>, SrcStorage>,
+        _config: (),
     ) -> Self {
         let m = source.encoder.output_dim();
         let encoder = ScalarDenseQuantizer::<Mid, DstOut, D>::new(m);
@@ -766,7 +758,7 @@ mod tests {
         let dataset =
             DenseDataset::from_raw(vec![5.0f32, 6.0, 7.0, 8.0].into_boxed_slice(), 2, encoder);
         let converted: DenseDatasetGeneric<MidEncoder, Vec<f32>> =
-            ConvertFrom::convert_from(&dataset);
+            ConvertFrom::convert_from(&dataset, ());
         assert_eq!(converted.len(), dataset.len());
         assert_eq!(converted.values(), dataset.values());
     }

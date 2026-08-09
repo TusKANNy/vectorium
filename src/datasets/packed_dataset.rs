@@ -397,7 +397,9 @@ impl<E> ConvertFrom<PackedSparseDatasetGrowable<E>> for PackedSparseDataset<E>
 where
     E: PackedSparseVectorEncoder,
 {
-    fn convert_from(dataset: PackedSparseDatasetGrowable<E>) -> Self {
+    type Config = ();
+
+    fn convert_from(dataset: PackedSparseDatasetGrowable<E>, _config: ()) -> Self {
         dataset.into()
     }
 }
@@ -420,7 +422,9 @@ impl<E> ConvertFrom<PackedSparseDataset<E>> for PackedSparseDatasetGrowable<E>
 where
     E: PackedSparseVectorEncoder,
 {
-    fn convert_from(dataset: PackedSparseDataset<E>) -> Self {
+    type Config = ();
+
+    fn convert_from(dataset: PackedSparseDataset<E>, _config: ()) -> Self {
         dataset.into()
     }
 }
@@ -488,8 +492,11 @@ where
     for<'a> EIn::EncodedVector<'a>: crate::VectorView,
     S: crate::core::storage::SparseStorage<EIn>,
 {
+    type Config = ();
+
     fn convert_from(
         dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>,
+        _config: (),
     ) -> Self {
         dataset.into()
     }
@@ -621,7 +628,7 @@ mod tests {
         let dataset: PackedSparseDataset<DotVByteFixedU8Encoder> = frozen.into();
 
         let query = SparseVectorView::new(&[1_u16, 10, 11][..], &[2.0_f32, 3.0, 4.0][..]);
-        let evaluator = dataset.encoder().query_evaluator(query);
+        let evaluator = dataset.encoder().query_evaluator(query, &());
 
         let d0 = evaluator.compute_distance(dataset.get(0)).distance();
         let d1 = evaluator.compute_distance(dataset.get(1)).distance();
@@ -687,7 +694,7 @@ mod tests {
         growable.push(SparseVectorView::new(&[1_u16, 3], &[3.0_f32, 4.0]));
 
         let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
-        let packed = PackedSparseDataset::convert_from(frozen.clone());
+        let packed = PackedSparseDataset::convert_from(frozen.clone(), ());
 
         assert_eq!(packed.nnz(), 4);
         assert_eq!(packed.len(), 2);
@@ -703,8 +710,8 @@ mod tests {
         assert_eq!(par_iter_values.len(), 2);
 
         let growable_again: PackedSparseDatasetGrowable<DotVByteFixedU8Encoder> =
-            PackedSparseDatasetGrowable::convert_from(packed.clone());
-        let packed_again = PackedSparseDataset::convert_from(growable_again);
+            PackedSparseDatasetGrowable::convert_from(packed.clone(), ());
+        let packed_again = PackedSparseDataset::convert_from(growable_again, ());
         assert_eq!(packed_again.nnz(), packed.nnz());
     }
 

@@ -88,6 +88,7 @@ use std::marker::PhantomData;
 use crate::core::distances::DotProduct;
 use crate::core::vector::{DenseVectorOwned, DenseVectorView};
 use crate::core::vector_encoder::{DenseVectorEncoder, QueryEvaluator, VectorEncoder};
+use crate::dataset::ConvertFrom;
 use crate::encoders::rabitq_common::{
     RabitqSpace, WORD_BITS, hamming, hamming_batch6, ip_signed_planes, ip_signed_planes_batch6,
     pack_bit_planes, pack_metadata, pack_signs_into, quantize_query_multibit, unpack_metadata,
@@ -99,12 +100,48 @@ use crate::{Dataset, PlainDenseDataset, ScalarDenseSupportedDistance, SpaceUsage
 /// public path is unchanged.
 pub use crate::encoders::rabitq_common::RabitqSupportedDistance;
 
-/// RaBitQ encoder parameters. See the module docs for the estimator math.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct RabitqConfig {
+/// Query width used by [`VectorEncoder::vector_evaluator`] on the graph-build path.
+///
+/// There is no user query there — both sides are stored documents — so the reconstructed document
+/// is scored symmetrically against the 1-bit codes, which is exactly what the squared-Euclidean
+/// branch already does by reusing the stored sign words directly.
+const BUILD_QUERY_BITS: u32 = 1;
+
+/// RaBitQ **query-side** parameters: how finely the query is quantized before scoring.
+///
+/// Document codes do not depend on this, so it is not encoder state and is not stored with the
+/// index: one dataset serves every setting, concurrently, by passing a different value here.
+/// [`FlatIndex`](crate::FlatIndex) takes it as its `SearchParams`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RabitqQueryParams {
     /// Bits per component for the scalar-quantized query (`1` = plain sign query). Values in
     /// `1..=8` are supported. Documents are always 1 bit per component.
     pub query_bits: u32,
+}
+
+impl Default for RabitqQueryParams {
+    fn default() -> Self {
+        Self { query_bits: 1 }
+    }
+}
+
+impl RabitqQueryParams {
+    /// Query quantized to `query_bits` bits per component.
+    ///
+    /// Panics unless `query_bits ∈ 1..=8`.
+    #[inline]
+    pub fn new(query_bits: u32) -> Self {
+        assert!(
+            (1..=8).contains(&query_bits),
+            "RaBitQ requires query_bits in 1..=8, got {query_bits}"
+        );
+        Self { query_bits }
+    }
+}
+
+/// RaBitQ encoder parameters. See the module docs for the estimator math.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RabitqConfig {
     /// Seed for the random orthogonal rotation ([`FhtKacRotator`](crate::FhtKacRotator)).
     pub seed: u64,
     /// Apply the random orthogonal rotation ([`FhtKacRotator`](crate::FhtKacRotator)) to residuals. Disabling skips the
@@ -117,7 +154,6 @@ pub struct RabitqConfig {
 impl Default for RabitqConfig {
     fn default() -> Self {
         Self {
-            query_bits: 1,
             seed: 42,
             rotate: true,
         }
@@ -141,28 +177,6 @@ pub struct RabitqQuantizer<D = DotProduct> {
 }
 
 impl<D: RabitqSupportedDistance> RabitqQuantizer<D> {
-    /// The number of bits currently used to quantize the query.
-    #[inline]
-    pub fn query_bits(&self) -> u32 {
-        self.config.query_bits
-    }
-
-    /// Set the number of bits used to quantize the *query*.
-    ///
-    /// Document codes do not depend on this value, so it is safe to change on an already-encoded
-    /// dataset: it trades scan cost for estimate accuracy without re-encoding. A single index can
-    /// therefore serve every `query_bits` setting.
-    ///
-    /// Panics unless `query_bits ∈ 1..=8`.
-    #[inline]
-    pub fn set_query_bits(&mut self, query_bits: u32) {
-        assert!(
-            (1..=8).contains(&query_bits),
-            "RabitqQuantizer requires query_bits in 1..=8, got {query_bits}"
-        );
-        self.config.query_bits = query_bits;
-    }
-
     /// Learn per-component means over `dataset` and build the rotation.
     ///
     /// Panics unless the dataset dimension is a multiple of 64.
@@ -170,28 +184,11 @@ impl<D: RabitqSupportedDistance> RabitqQuantizer<D> {
         dataset: &PlainDenseDataset<f32, Ds>,
         config: RabitqConfig,
     ) -> Self {
-        assert!(
-            (1..=8).contains(&config.query_bits),
-            "RabitqQuantizer requires 1 <= query_bits <= 8, got {}",
-            config.query_bits
-        );
         Self {
             space: RabitqSpace::train(dataset, config.rotate, config.seed),
             config,
             _distance: PhantomData,
         }
-    }
-
-    /// Train on `dataset` and encode every vector in parallel.
-    ///
-    /// The `ConvertFrom` idiom used by the other binary encoders can't carry a config, so this
-    /// helper is the entry point for building a RaBitQ dataset.
-    pub fn encode_dataset<Ds: ScalarDenseSupportedDistance>(
-        dataset: &PlainDenseDataset<f32, Ds>,
-        config: RabitqConfig,
-    ) -> crate::DenseDataset<Self> {
-        let encoder = Self::train(dataset, config);
-        crate::DenseDataset::<Self>::from_flat_par(encoder, dataset.values(), dataset.len())
     }
 
     /// Encode one `d`-long input vector into a full output record `out`
@@ -274,11 +271,11 @@ impl<D: RabitqSupportedDistance> RabitqQuantizer<D> {
         &'e self,
         q_r: &[f32],
         mean_dot_query: f32,
+        query_bits: u32,
     ) -> RabitqQueryEvaluator<'e, D> {
         let query_norm = q_r.iter().map(|&r| r * r).sum::<f32>().sqrt();
         let add = D::query_add(mean_dot_query, query_norm);
 
-        let query_bits = self.config.query_bits;
         // `scale` folds the whole query-side normalization so the scan is divide-free (see the
         // field docs): the multi-bit path already cancelled ‖q_r‖, the 1-bit path carries it here.
         let scale = if query_bits > 1 {
@@ -380,7 +377,7 @@ impl<'e, D> RabitqQueryEvaluator<'e, D> {
     #[inline]
     fn ip_signed(&self, code: &[u64]) -> f32 {
         // Dispatch on the (compile-time-known) plane count so `ip_signed_planes` fully unrolls.
-        // `query_bits` is validated to `1..=8` in `train` and this path only runs for `> 1`.
+        // `query_bits` is validated to `1..=8` in `query_evaluator`; this path only runs for `> 1`.
         let planes = &self.planes;
         let (ip, ppc) = match self.query_bits {
             2 => ip_signed_planes::<2>(code, planes),
@@ -445,7 +442,7 @@ impl<'e, 'v, D: RabitqSupportedDistance> QueryEvaluator<DenseVectorView<'v, u64>
 
     /// Fused six-candidate scan: the quantized query (sign words or bit planes) is broadcast once
     /// per chunk and interleaved against all six documents' popcount accumulators in a single pass
-    /// ([`hamming_batch6`] / [`ip_signed_planes_batch6`]) — cross-candidate ILP the default
+    /// (`hamming_batch6` / `ip_signed_planes_batch6`) — cross-candidate ILP the default
     /// six-single-calls dispatch can't reach. The scalar combine matches [`Self::compute_distance`]
     /// operation for operation, so batch and single scores are bit-identical.
     #[inline]
@@ -514,15 +511,26 @@ impl<D: RabitqSupportedDistance> VectorEncoder for RabitqQuantizer<D> {
     where
         Self: 'e;
 
+    type QueryParams = RabitqQueryParams;
+
     /// Build an evaluator by moving the `f32` query into the rotated space — centered by the mean
     /// or not, per the metric (see [`RabitqSupportedDistance::CENTER_QUERY`]) — then sign-packing
     /// it (`query_bits == 1`) or scalar-quantizing it into bit planes.
     #[inline]
-    fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
+    fn query_evaluator<'e>(
+        &'e self,
+        query: Self::QueryVector<'_>,
+        params: &RabitqQueryParams,
+    ) -> Self::Evaluator<'e> {
         assert_eq!(
             query.len(),
             self.d(),
             "Query vector length must equal encoder input dimension."
+        );
+        assert!(
+            (1..=8).contains(&params.query_bits),
+            "RaBitQ requires query_bits in 1..=8, got {}",
+            params.query_bits
         );
         let residual = if D::CENTER_QUERY {
             self.residual(query.values())
@@ -535,7 +543,7 @@ impl<D: RabitqSupportedDistance> VectorEncoder for RabitqQuantizer<D> {
         } else {
             self.mean_dot(query.values())
         };
-        self.rotated_query_evaluator(&residual, mean_dot_query)
+        self.rotated_query_evaluator(&residual, mean_dot_query, params.query_bits)
     }
 
     /// Treat an already-encoded document as a query (build-path only).
@@ -546,15 +554,16 @@ impl<D: RabitqSupportedDistance> VectorEncoder for RabitqQuantizer<D> {
     /// * [`SquaredEuclideanDistance`] — centering is L2-preserving, so residual-space scoring is
     ///   already the exact `‖x − y‖²`. The stored sign words are reused as the query verbatim (the
     ///   1-bit path), which is both the cheapest and the most faithful option.
-    /// * [`DotProduct`] — centering is **not** inner-product preserving. Scoring in residual space
-    ///   would return `⟨r_x, r_y⟩`, which drops `⟨P·mean, r_y⟩`; that term varies per candidate, so
-    ///   the ranking would be wrong rather than merely shifted. The residual is therefore
-    ///   reconstructed from the code and `P·mean` added back, rebuilding the un-centered rotated
-    ///   query `P·x̂ = r̂ + P·mean` and reducing this path to [`Self::query_evaluator`] on the
-    ///   reconstruction — without ever applying `Pᵀ` and `P` and letting them cancel. All four terms
-    ///   of `⟨x̂, ŷ⟩ = ‖mean‖² + ⟨P·mean, r̂⟩ + ⟨P·mean, r_y⟩ + ⟨r̂, r_y⟩` then survive: the first two
-    ///   as the per-query `add`, the last two out of a single scan pass, since the kernel estimates
-    ///   `⟨r_y, r̂ + P·mean⟩` and the dot product is linear in the query.
+    /// * [`DotProduct`] — centering is **not** inner-product preserving: residual-space scoring
+    ///   drops `⟨P·mean, r_y⟩`, which varies per candidate, so the ranking would be wrong rather
+    ///   than merely shifted. The residual is reconstructed from the code and `P·mean` added back,
+    ///   rebuilding the un-centered rotated query `P·x̂ = r̂ + P·mean`; this path then reduces to
+    ///   [`Self::query_evaluator`] on that reconstruction.
+    ///
+    /// **Cost.** The inner-product branch reconstructs and requantizes, `O(d)` per evaluator, where
+    /// the L2 branch reuses the stored words for nothing. Graph construction builds one evaluator
+    /// per candidate pair, so an inner-product index is slower to build. Build-time only — the
+    /// query path is unaffected.
     ///
     /// [`SquaredEuclideanDistance`]: crate::SquaredEuclideanDistance
     #[inline]
@@ -567,7 +576,7 @@ impl<D: RabitqSupportedDistance> VectorEncoder for RabitqQuantizer<D> {
             }
             // ⟨P·mean, P·x̂⟩ = ⟨mean, x̂⟩ — the centroid term, exactly as on the query path.
             let mean_dot_query = self.rotated_mean_dot(&q_r);
-            return self.rotated_query_evaluator(&q_r, mean_dot_query);
+            return self.rotated_query_evaluator(&q_r, mean_dot_query, BUILD_QUERY_BITS);
         }
         // The stored metadata is (f_add = ‖r‖², s); recover the residual norm as √f_add.
         let (f_add, _) = unpack_metadata(words[self.num_words()]);
@@ -579,7 +588,7 @@ impl<D: RabitqSupportedDistance> VectorEncoder for RabitqQuantizer<D> {
             delta: 0.0,
             vl: 0.0,
             q_const: 0.0,
-            query_bits: 1,
+            query_bits: BUILD_QUERY_BITS,
             scale: norm / self.d() as f32,
             add: D::query_add(0.0, norm),
             d: self.d(),
@@ -599,14 +608,10 @@ impl<D: RabitqSupportedDistance> VectorEncoder for RabitqQuantizer<D> {
     /// Score two stored documents directly, without building an evaluator.
     ///
     /// Only the centering (squared-Euclidean) metric gets the shortcut: `v1` plays the query on the
-    /// 1-bit sign path exactly as [`Self::vector_evaluator`] would, but its code words are read in
-    /// place instead of being copied into an owned evaluator — no allocation, and the arithmetic
-    /// matches operation for operation, so both routes give bit-identical scores.
-    ///
-    /// Under [`DotProduct`] there is nothing to shortcut: the effective query is `r̂ + P·mean` (see
-    /// [`Self::vector_evaluator`]), which has to be materialized and quantized whatever the entry
-    /// point, so this delegates. `D::CENTER_QUERY` is a constant, so the branch folds at compile
-    /// time.
+    /// 1-bit sign path exactly as [`Self::vector_evaluator`] would, but its words are read in place
+    /// rather than copied into an owned evaluator, so both routes give bit-identical scores with no
+    /// allocation. Under [`DotProduct`] the effective query `r̂ + P·mean` has to be materialized
+    /// whatever the entry point, so this delegates.
     #[inline]
     fn compute_distance_between(
         &self,
@@ -636,10 +641,33 @@ impl<D> SpaceUsage for RabitqQuantizer<D> {
     }
 }
 
+/// Train on a plain `f32` dataset and encode every vector in parallel.
+///
+/// Takes the source by reference, so the plain vectors survive the call. The source metric `Ds` is
+/// independent of the target metric `D`: document codes are identical either way, so one plain
+/// dataset can produce both.
+impl<D, Ds> ConvertFrom<&PlainDenseDataset<f32, Ds>> for crate::DenseDataset<RabitqQuantizer<D>>
+where
+    D: RabitqSupportedDistance,
+    Ds: ScalarDenseSupportedDistance,
+{
+    type Config = RabitqConfig;
+
+    fn convert_from(dataset: &PlainDenseDataset<f32, Ds>, config: RabitqConfig) -> Self {
+        let encoder = RabitqQuantizer::<D>::train(dataset, config);
+        crate::DenseDataset::<RabitqQuantizer<D>>::from_flat_par(
+            encoder,
+            dataset.values(),
+            dataset.len(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::distances::Distance;
+    use crate::dataset::ConvertInto;
     use crate::{
         DatasetGrowable, FlatIndex, Index, IndexSerializer, PlainDenseDatasetGrowable,
         PlainDenseQuantizer, SquaredEuclideanDistance,
@@ -674,6 +702,55 @@ mod tests {
             .collect()
     }
 
+    /// Conversion must equal training on the source and then encoding every row in parallel.
+    /// Compares the encoded storage word-for-word and the trained encoder, at a non-default config
+    /// so a config that failed to reach `train` could not pass.
+    #[test]
+    fn convert_into_matches_the_explicit_train_and_encode_path() {
+        let plain = plain_dataset(&varied_vectors());
+
+        for config in [
+            RabitqConfig {
+                seed: 7,
+                rotate: true,
+            },
+            RabitqConfig::default(),
+        ] {
+            let expected = {
+                let encoder = RabitqIp::train(&plain, config);
+                crate::DenseDataset::<RabitqIp>::from_flat_par(encoder, plain.values(), plain.len())
+            };
+            let converted: crate::DenseDataset<RabitqIp> = (&plain).convert_into(config);
+
+            assert_eq!(converted.values(), expected.values());
+            assert_eq!(converted.encoder(), expected.encoder());
+        }
+    }
+
+    /// The source metric is independent of the target metric: one plain dataset produces both
+    /// RaBitQ metrics, with byte-identical document codes.
+    #[test]
+    fn convert_into_is_independent_of_the_source_and_target_metrics() {
+        let vectors = varied_vectors();
+        let plain_ip = plain_dataset(&vectors);
+        let plain_l2: PlainDenseDataset<f32, SquaredEuclideanDistance> = {
+            let encoder = PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(64);
+            let mut growable = PlainDenseDatasetGrowable::new(encoder);
+            for v in &vectors {
+                growable.push(DenseVectorView::new(v));
+            }
+            growable.into()
+        };
+        let config = RabitqConfig::default();
+
+        let from_ip: crate::DenseDataset<RabitqL2> = (&plain_ip).convert_into(config);
+        let from_l2: crate::DenseDataset<RabitqL2> = (&plain_l2).convert_into(config);
+        let other_metric: crate::DenseDataset<RabitqIp> = (&plain_ip).convert_into(config);
+
+        assert_eq!(from_ip.values(), from_l2.values());
+        assert_eq!(from_ip.values(), other_metric.values());
+    }
+
     #[test]
     fn metadata_word_roundtrips_the_two_scan_constants() {
         let (f_add, s) = (123.456f32, 0.797_884_6_f32);
@@ -689,15 +766,12 @@ mod tests {
         query_bits: u32,
         rotate: bool,
     ) {
-        let config = RabitqConfig {
-            query_bits,
-            seed: 42,
-            rotate,
-        };
-        let rabitq = RabitqQuantizer::<D>::encode_dataset(dataset, config);
+        let config = RabitqConfig { seed: 42, rotate };
+        let qp = RabitqQueryParams::new(query_bits);
+        let rabitq: crate::DenseDataset<RabitqQuantizer<D>> = dataset.convert_into(config);
         let index = FlatIndex::from(&rabitq);
         for (i, q) in vectors.iter().enumerate() {
-            let top = index.search(DenseVectorView::new(q), vectors.len(), &());
+            let top = index.search(DenseVectorView::new(q), vectors.len(), &qp);
             let self_rank = top
                 .iter()
                 .position(|r| r.vector as usize == i)
@@ -735,15 +809,12 @@ mod tests {
     ) {
         for query_bits in [1, 2, 4, 8] {
             for seed in [1, 42] {
-                let config = RabitqConfig {
-                    query_bits,
-                    seed,
-                    rotate: true,
-                };
-                let ds = RabitqQuantizer::<D>::encode_dataset(dataset, config);
+                let config = RabitqConfig { seed, rotate: true };
+                let qp = RabitqQueryParams::new(query_bits);
+                let ds: crate::DenseDataset<RabitqQuantizer<D>> = dataset.convert_into(config);
                 let index = FlatIndex::from(&ds);
                 for q in vectors {
-                    for r in index.search(DenseVectorView::new(q), 3, &()) {
+                    for r in index.search(DenseVectorView::new(q), 3, &qp) {
                         assert!(
                             r.distance.distance().is_finite(),
                             "non-finite score with {config:?}"
@@ -771,13 +842,21 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "query_bits")]
-    fn train_rejects_out_of_range_query_bits() {
-        let dataset = plain_dataset(&[vec![0.0f32; 64]]);
-        let config = RabitqConfig {
-            query_bits: 9,
-            ..Default::default()
-        };
-        let _ = RabitqIp::train(&dataset, config);
+    fn query_params_reject_out_of_range_query_bits() {
+        let _ = RabitqQueryParams::new(9);
+    }
+
+    /// The width is checked on the search path too, so a struct literal that bypasses
+    /// [`RabitqQueryParams::new`] cannot reach the kernels with an unsupported width.
+    #[test]
+    #[should_panic(expected = "query_bits")]
+    fn query_evaluator_rejects_out_of_range_query_bits() {
+        let dataset = plain_dataset(&varied_vectors());
+        let ds: crate::DenseDataset<RabitqIp> = (&dataset).convert_into(RabitqConfig::default());
+        let _ = ds.encoder().query_evaluator(
+            DenseVectorView::new(&vec![0.0f32; 64]),
+            &RabitqQueryParams { query_bits: 9 },
+        );
     }
 
     #[test]
@@ -855,11 +934,10 @@ mod tests {
         let vectors = varied_vectors();
         let dataset = plain_dataset(&vectors);
         let config = RabitqConfig {
-            query_bits: 4,
             ..Default::default()
         };
         let encoder = RabitqL2::train(&dataset, config);
-        let ds = RabitqL2::encode_dataset(&dataset, config);
+        let ds: crate::DenseDataset<RabitqL2> = (&dataset).convert_into(config);
 
         let d = 64usize;
 
@@ -874,7 +952,8 @@ mod tests {
             let (codes, delta, vl) = quantize_query_multibit(&q_res, 4);
             let q_hat: Vec<f32> = codes.iter().map(|&c| delta * c as f32 + vl).collect();
 
-            let evaluator = encoder.query_evaluator(DenseVectorView::new(q));
+            let evaluator =
+                encoder.query_evaluator(DenseVectorView::new(q), &RabitqQueryParams::new(4));
             for (i, doc) in vectors.iter().enumerate() {
                 let doc_res = encoder.residual(doc);
                 let (factor, norm_o) = encoder.metadata(&doc_res);
@@ -942,12 +1021,11 @@ mod tests {
         let vectors = varied_vectors();
         let dataset = plain_dataset(&vectors);
         let config = RabitqConfig {
-            query_bits: 4,
             seed: 42,
             rotate: true,
         };
         let encoder = RabitqIp::train(&dataset, config);
-        let ds = RabitqIp::encode_dataset(&dataset, config);
+        let ds: crate::DenseDataset<RabitqIp> = (&dataset).convert_into(config);
         let d = 64usize;
 
         for q in &vectors {
@@ -960,7 +1038,8 @@ mod tests {
             let (codes, delta, vl) = quantize_query_multibit(&q_rot, 4);
             let q_hat: Vec<f32> = codes.iter().map(|&c| delta * c as f32 + vl).collect();
 
-            let evaluator = encoder.query_evaluator(DenseVectorView::new(q));
+            let evaluator =
+                encoder.query_evaluator(DenseVectorView::new(q), &RabitqQueryParams::new(4));
             for (i, doc) in vectors.iter().enumerate() {
                 let doc_res = encoder.residual(doc);
                 let (factor, norm_o) = encoder.metadata(&doc_res);
@@ -997,12 +1076,11 @@ mod tests {
         let vectors = varied_vectors();
         let dataset = plain_dataset(&vectors);
         let config = RabitqConfig {
-            query_bits: 4,
             seed: 42,
             rotate: true,
         };
         let encoder = RabitqL2::train(&dataset, config);
-        let ds = RabitqL2::encode_dataset(&dataset, config);
+        let ds: crate::DenseDataset<RabitqL2> = (&dataset).convert_into(config);
 
         for q in &vectors {
             let q_res = encoder.residual(q);
@@ -1016,7 +1094,8 @@ mod tests {
             let sumq_hat: f32 = q_hat.iter().sum();
             let k1xsumq = -0.5 * sumq_hat; // library c_1 = -1/2, on the reconstructed residual sum
 
-            let evaluator = encoder.query_evaluator(DenseVectorView::new(q));
+            let evaluator =
+                encoder.query_evaluator(DenseVectorView::new(q), &RabitqQueryParams::new(4));
             for (i, doc) in vectors.iter().enumerate() {
                 let r = encoder.residual(doc);
                 let norm_o: f32 = r.iter().map(|v| v * v).sum::<f32>().sqrt();
@@ -1063,13 +1142,13 @@ mod tests {
     ) {
         for query_bits in [1, 2, 4, 8] {
             let config = RabitqConfig {
-                query_bits,
                 seed: 42,
                 rotate: true,
             };
-            let ds = RabitqQuantizer::<D>::encode_dataset(dataset, config);
+            let ds: crate::DenseDataset<RabitqQuantizer<D>> = dataset.convert_into(config);
+            let qp = RabitqQueryParams::new(query_bits);
             for q in vectors {
-                let evaluator = ds.encoder().query_evaluator(DenseVectorView::new(q));
+                let evaluator = ds.encoder().query_evaluator(DenseVectorView::new(q), &qp);
                 let views = std::array::from_fn(|k| ds.get(k as u64));
                 let batch = evaluator.compute_distances_batch6(views);
                 let singles = std::array::from_fn(|k| evaluator.compute_distance(ds.get(k as u64)));
@@ -1091,7 +1170,8 @@ mod tests {
     fn assert_distance_between_matches_evaluator<D: RabitqSupportedDistance + std::fmt::Debug>(
         dataset: &PlainDenseDataset<f32, DotProduct>,
     ) {
-        let ds = RabitqQuantizer::<D>::encode_dataset(dataset, RabitqConfig::default());
+        let ds: crate::DenseDataset<RabitqQuantizer<D>> =
+            dataset.convert_into(RabitqConfig::default());
         let encoder = ds.encoder();
         for i in 0..ds.len() as u64 {
             for j in 0..ds.len() as u64 {
@@ -1119,28 +1199,28 @@ mod tests {
         // since `vector_evaluator` skips only the Pᵀ/P pair that cancels.
         let vectors = varied_vectors();
         let dataset = plain_dataset(&vectors);
-        for query_bits in [1, 4] {
-            let config = RabitqConfig {
-                query_bits,
-                seed: 42,
-                rotate: false,
-            };
-            let ds = RabitqIp::encode_dataset(&dataset, config);
-            let encoder = ds.encoder();
-            for i in 0..ds.len() as u64 {
-                let mut recon = encoder.reconstruct_residual(ds.get(i).values());
-                for (v, &m) in recon.iter_mut().zip(encoder.space.means().iter()) {
-                    *v += m;
-                }
-                let build = encoder.vector_evaluator(ds.get(i));
-                let query = encoder.query_evaluator(DenseVectorView::new(&recon));
-                for j in 0..ds.len() as u64 {
-                    assert_eq!(
-                        build.compute_distance(ds.get(j)),
-                        query.compute_distance(ds.get(j)),
-                        "pair ({i}, {j}), query_bits {query_bits}"
-                    );
-                }
+        let config = RabitqConfig {
+            seed: 42,
+            rotate: false,
+        };
+        let ds: crate::DenseDataset<RabitqIp> = (&dataset).convert_into(config);
+        let encoder = ds.encoder();
+        // The build path has no user query, so it scores at `BUILD_QUERY_BITS`; the query route
+        // must be asked for the same width to be the same evaluator.
+        let qp = RabitqQueryParams::new(BUILD_QUERY_BITS);
+        for i in 0..ds.len() as u64 {
+            let mut recon = encoder.reconstruct_residual(ds.get(i).values());
+            for (v, &m) in recon.iter_mut().zip(encoder.space.means().iter()) {
+                *v += m;
+            }
+            let build = encoder.vector_evaluator(ds.get(i));
+            let query = encoder.query_evaluator(DenseVectorView::new(&recon), &qp);
+            for j in 0..ds.len() as u64 {
+                assert_eq!(
+                    build.compute_distance(ds.get(j)),
+                    query.compute_distance(ds.get(j)),
+                    "pair ({i}, {j})"
+                );
             }
         }
     }
@@ -1151,7 +1231,7 @@ mod tests {
         // end: a reloaded index must equal the original *and* score identically.
         let vectors = varied_vectors();
         let dataset = plain_dataset(&vectors);
-        let ds = RabitqIp::encode_dataset(&dataset, RabitqConfig::default());
+        let ds: crate::DenseDataset<RabitqIp> = (&dataset).convert_into(RabitqConfig::default());
 
         let mut path = std::env::temp_dir();
         path.push(format!("vectorium_rabitq_{}.bin", std::process::id()));
@@ -1162,14 +1242,70 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(ds, loaded);
+        let qp = RabitqQueryParams::new(4);
         for q in &vectors {
-            let before = ds.encoder().query_evaluator(DenseVectorView::new(q));
-            let after = loaded.encoder().query_evaluator(DenseVectorView::new(q));
+            let before = ds.encoder().query_evaluator(DenseVectorView::new(q), &qp);
+            let after = loaded
+                .encoder()
+                .query_evaluator(DenseVectorView::new(q), &qp);
             for i in 0..ds.len() as u64 {
                 assert_eq!(
                     before.compute_distance(ds.get(i)),
                     after.compute_distance(loaded.get(i)),
                     "vector {i}"
+                );
+            }
+        }
+    }
+
+    /// The squared-Euclidean alias serializes through a different scoring type parameter and, on the
+    /// build path, a different evaluator (`vector_evaluator` reconstructs and requantizes). Round-trip
+    /// it separately, at a non-default config so a serde field that silently reverts to its default
+    /// cannot pass.
+    #[test]
+    fn dataset_serialization_round_trip_squared_euclidean() {
+        let vectors = varied_vectors();
+        let dataset = plain_dataset(&vectors);
+        let config = RabitqConfig {
+            seed: 7,
+            ..RabitqConfig::default()
+        };
+        let ds: crate::DenseDataset<RabitqL2> = (&dataset).convert_into(config);
+
+        let mut path = std::env::temp_dir();
+        path.push(format!("vectorium_rabitq_l2_{}.bin", std::process::id()));
+        let path = path.to_str().unwrap().to_string();
+
+        ds.save_index(&path).unwrap();
+        let loaded = crate::DenseDataset::<RabitqL2>::load_index(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(ds, loaded);
+        assert_eq!(loaded.encoder().config, config, "config survived serde");
+
+        let qp = RabitqQueryParams::new(4);
+        for q in &vectors {
+            let before = ds.encoder().query_evaluator(DenseVectorView::new(q), &qp);
+            let after = loaded
+                .encoder()
+                .query_evaluator(DenseVectorView::new(q), &qp);
+            for i in 0..ds.len() as u64 {
+                assert_eq!(
+                    before.compute_distance(ds.get(i)),
+                    after.compute_distance(loaded.get(i)),
+                    "query-side score, vector {i}"
+                );
+            }
+        }
+        // The build path scores encoded-vs-encoded; it must survive the round-trip too.
+        for i in 0..ds.len() as u64 {
+            let before = ds.encoder().vector_evaluator(ds.get(i));
+            let after = loaded.encoder().vector_evaluator(loaded.get(i));
+            for j in 0..ds.len() as u64 {
+                assert_eq!(
+                    before.compute_distance(ds.get(j)),
+                    after.compute_distance(loaded.get(j)),
+                    "build-path score, pair ({i}, {j})"
                 );
             }
         }
@@ -1190,7 +1326,7 @@ mod tests {
             .collect();
         let dataset = plain_dataset(&vectors);
         let config = RabitqConfig::default();
-        let ds = RabitqIp::encode_dataset(&dataset, config);
+        let ds: crate::DenseDataset<RabitqIp> = (&dataset).convert_into(config);
         let encoder = ds.encoder();
         for (i, v) in vectors.iter().enumerate() {
             let mut pushed = Vec::new();
@@ -1213,5 +1349,73 @@ mod tests {
         let dataset = plain_dataset(&vectors);
         assert_batch6_matches_singles::<SquaredEuclideanDistance>(&vectors, &dataset);
         assert_batch6_matches_singles::<DotProduct>(&vectors, &dataset);
+    }
+
+    /// A derangement over the ten `varied_vectors` rows, so no row stays where it started.
+    const PERMUTATION: [usize; 10] = [2, 0, 3, 1, 5, 4, 7, 6, 9, 8];
+
+    /// `permute` copies encoded rows verbatim at a stride of `output_dim()`, so a RaBitQ record —
+    /// `num_words()` sign words followed by the metadata word — must survive the move intact.
+    /// kANNolo's edge-compressed graph types (`permuted`, `streamvbyte`) reorder nodes this way.
+    #[test]
+    fn rabitq_permute_moves_each_row_to_its_target_slot() {
+        let dataset: crate::DenseDataset<RabitqIp> =
+            (&plain_dataset(&varied_vectors())).convert_into(Default::default());
+
+        let permuted = dataset.permute(&PERMUTATION);
+
+        assert_eq!(permuted.len(), dataset.len());
+        for (old_id, &new_id) in PERMUTATION.iter().enumerate() {
+            assert_eq!(
+                permuted.get(new_id as u64).values(),
+                dataset.get(old_id as u64).values(),
+                "row {old_id} did not land at slot {new_id}"
+            );
+        }
+    }
+
+    /// Permuting then applying the inverse must reproduce the dataset exactly — codes, metadata
+    /// words and the cloned encoder (means, rotation, config) alike.
+    #[test]
+    fn rabitq_permute_then_inverse_round_trips() {
+        let dataset: crate::DenseDataset<RabitqIp> =
+            (&plain_dataset(&varied_vectors())).convert_into(Default::default());
+        let inverse = crate::core::dataset::invert_permutation(&PERMUTATION);
+
+        assert_eq!(dataset.permute(&PERMUTATION).permute(&inverse), dataset);
+    }
+
+    /// The property kANNolo actually depends on: reordering nodes relabels results but does not
+    /// change them. Same scores, same neighbours, just under permuted ids.
+    #[test]
+    fn rabitq_permute_relabels_search_results_without_changing_them() {
+        let vectors = varied_vectors();
+        let dataset: crate::DenseDataset<RabitqIp> =
+            (&plain_dataset(&vectors)).convert_into(Default::default());
+        let permuted = dataset.permute(&PERMUTATION);
+
+        let index = FlatIndex::from(&dataset);
+        let permuted_index = FlatIndex::from(&permuted);
+
+        let qp = RabitqQueryParams::default();
+        for (i, q) in vectors.iter().enumerate() {
+            let base = index.search(DenseVectorView::new(q), 5, &qp);
+            let moved = permuted_index.search(DenseVectorView::new(q), 5, &qp);
+
+            let expected: Vec<u64> = base
+                .iter()
+                .map(|r| PERMUTATION[r.vector as usize] as u64)
+                .collect();
+            let got: Vec<u64> = moved.iter().map(|r| r.vector).collect();
+            assert_eq!(got, expected, "query {i} returned different neighbours");
+
+            for (b, m) in base.iter().zip(moved.iter()) {
+                assert_eq!(
+                    b.distance.distance(),
+                    m.distance.distance(),
+                    "query {i} scored a neighbour differently after permutation"
+                );
+            }
+        }
     }
 }

@@ -152,12 +152,22 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release --features cli
   - Sparse queries are always `f32` (dataset values may be quantized).
 - `--dataset-type <dense|sparse>`: dataset format (default: `dense`).
 - `--component-type <u16|u32>`: sparse component type (default: `u32`).
-- `--encoder <plain|pq|dotvbyte>`: encoder (default: `plain`).
+- `--encoder <plain|pq|rabitq|rabitq-ext|dotvbyte>`: encoder (default: `plain`).
   - `pq`: dense‑only, requires `--value-type f32`, and uses `--pq-subspaces`.
+  - `rabitq` / `rabitq-ext`: dense‑only, require `--value-type f32` and a dataset dimension that is a multiple of 64. Both metrics are supported.
   - `dotvbyte`: sparse‑only, requires `--component-type u16` and `--distance dotproduct`.
 - `--pq-subspaces <M>`: number of PQ subspaces (`0` auto‑selects a supported value that divides the dataset dimension).
   - Product Quantization splits vectors into `M` equal‑sized chunks, so `dim % M == 0` is required.
   - Supported values are currently `{128, 96, 64, 32, 16, 8, 4}`.
+- `--rabitq-query-bits <N>`: query bits for `--encoder rabitq` (`1..=8`, default `1`). Documents are always 1 bit; `rabitq-ext` scores an unquantized query and ignores this.
+- `--rabitq-total-bits <N>`: document bits for `--encoder rabitq-ext` (`2`, `4` or `8`, default `4`).
+- `--rabitq-seed <N>`: seed for the random orthogonal rotation (default: `42`).
+- `--rabitq-rotate <true|false>`: apply the rotation (default: `true`).
+- `--rabitq-faster-quant <true|false>`: for `rabitq-ext`, estimate the rescale factor once at train time rather than searching per vector (default: `true`).
+
+Since these encoders are lossy, the output is what that encoder retrieves rather than exact
+neighbours — use `--encoder plain --value-type f32` for true ground truth, and the lossy encoders to
+measure how far a compression scheme falls short of it.
 
 
 ## Rust library
@@ -217,7 +227,8 @@ growable.push(DenseVectorView::new(&[0.5, 1.5, 0.0]));
 let dataset: DenseDataset<_> = growable.into();
 
 let query = DenseVectorView::new(&[0.2, 0.1, 0.7]);
-let evaluator = dataset.encoder().query_evaluator(query);
+// The second argument is the encoder's query parameters; this encoder has none, so `()`.
+let evaluator = dataset.encoder().query_evaluator(query, &());
 
 let candidate: VectorId = 0;
 let score = evaluator.compute_distance(dataset.get(candidate));
@@ -312,6 +323,131 @@ dataset.prefetch_with_range(range.clone());
 let view = dataset.get_with_range(range);
 assert_eq!(view.values(), &[1.0, 0.0, 2.0]);
 ```
+
+### 8) Encoders: choosing a compression scheme
+
+Every encoder implements the same `VectorEncoder`/`QueryEvaluator` contract, so datasets, `FlatIndex`
+and any index built on top behave identically whichever one you pick — only the evaluator changes.
+What differs is footprint and accuracy.
+
+| Encoder | Layout | Stored as | Metric | Bytes / vector | Built with |
+|---|---|---|---|---|---|
+| `PlainDenseQuantizer` | dense | `f32` | ℓ₂ / IP | `4d` | `push` |
+| `ScalarDenseQuantizer` | dense | `f16` / `bf16` / `FixedU8Q` / `FixedU16Q` | ℓ₂ / IP | `2d` / `2d` / `d` / `2d` | `convert_into(())` |
+| `ProductQuantizer<M, D>` | dense | `M` × `u8` codes | ℓ₂ / IP | `M` | `convert_into(())` |
+| `RabitqQuantizer<D>` | dense | 1 bit/comp + metadata | ℓ₂ / IP | `d/8 + 8` | `convert_into(config)` |
+| `RabitqExtQuantizer<D>` | dense | `total_bits`/comp + metadata | ℓ₂ / IP | `total_bits·d/8 + 8` | `convert_into(config)` |
+| `PlainSparseQuantizer` | sparse | `f32` / `f16` | IP | varies with nnz | `push` |
+| `DotVByteFixedU8Encoder` | packed sparse | group-varint `u64` blob | IP | varies with nnz | `convert_into(())` |
+
+(The multi-vector encoders behind the `multivec` feature are covered in section 6.)
+
+**One construction pattern, for every encoder.** Every encoded dataset is built by converting an
+existing one — `plain.convert_into(config)` — which learns whatever else it needs (PQ's codebooks,
+a scalar range, RaBitQ's means and rotation) from the source data. You never have to look up how a
+particular encoder is constructed: it is always this call, and what changes is only the associated
+`Config` it asks for. Some encoders take a real config (`RabitqConfig`, `RabitqExtConfig`); the
+rest take `()`, written out as `convert_into(())`. This is how `Index::search(query, k, &params)`
+already treats search parameters — one entry point, and `()` is a configuration rather than the
+absence of one.
+
+Passing the config explicitly is the point for the configured encoders: `query_bits` and
+`total_bits` *are* the footprint/accuracy dial, so a build site that silently defaulted them would
+hide the decision that matters most. `RabitqConfig::default()` is still one expression away.
+
+#### Empty config: convert an existing dataset
+
+```rust
+use vectorium::dataset::ConvertInto;
+use vectorium::{
+    Dataset, DatasetGrowable, DenseDataset, DenseVectorView, DotProduct, FlatIndex, Index,
+    PlainDenseDataset, PlainDenseDatasetGrowable, PlainDenseQuantizer, ProductQuantizer,
+    VectorEncoder,
+};
+
+let d = 64;
+let mut growable = PlainDenseDatasetGrowable::new(PlainDenseQuantizer::<f32, DotProduct>::new(d));
+for i in 0..512usize {
+    let mut v = vec![-1.0f32; d];
+    v[..(i % d)].fill(1.0);
+    growable.push(DenseVectorView::new(&v));
+}
+let plain: PlainDenseDataset<f32, DotProduct> = growable.into();
+
+// 8 subspaces, one u8 code each: 8 bytes/vector instead of 256. Requires d % M == 0.
+// `plain` is borrowed, not consumed, so it is still usable afterwards.
+let pq: DenseDataset<ProductQuantizer<8, DotProduct>> = (&plain).convert_into(());
+assert_eq!(pq.encoder().output_dim(), 8);
+
+let mut query = vec![-1.0f32; d];
+query[..56].fill(1.0);
+let top1 = FlatIndex::from(&pq).search(DenseVectorView::new(&query), 1, &());
+assert_eq!(top1.len(), 1);
+```
+
+The same `convert_into(())` call builds an `f16` dataset (`ScalarDenseDataset<f32, f16, D>`) or, for
+sparse data, a DotVByte-compressed one.
+
+#### Configured: RaBitQ and Extended RaBitQ
+
+`RabitqQuantizer` stores 1 bit per component: it subtracts the per-component means, applies a seeded
+random orthogonal rotation, and keeps the sign of each rotated residual, packed 64 bits per `u64`.
+Two per-document floats (the residual norm and the code/residual cosine) turn the raw sign agreement
+into an *unbiased distance estimate*, which is what separates it from a plain sign code.
+`RabitqExtQuantizer` generalizes this to `total_bits ∈ {2, 4, 8}` bits per component (1 sign bit plus
+`total_bits - 1` magnitude bits), making `total_bits` the footprint/accuracy dial; `total_bits = 1`
+is rejected rather than duplicating the 1-bit encoder. **Both require `dim % 64 == 0`** (asserted in
+`train`; there is no bit-padding).
+
+The metric is a type parameter — `RabitqDenseDataset` for inner product,
+`RabitqDenseDatasetSquaredEuclidean` for Euclidean (and likewise for `RabitqExt…`). Document codes
+are **identical** either way, so the metric is a free choice at build time.
+
+```rust
+use vectorium::dataset::ConvertInto;
+use vectorium::{
+    Dataset, DatasetGrowable, DenseVectorView, DotProduct, FlatIndex, Index, PlainDenseDataset,
+    PlainDenseDatasetGrowable, PlainDenseQuantizer, RabitqConfig, RabitqDenseDataset,
+    RabitqExtConfig, RabitqExtDenseDataset, RabitqQueryParams, VectorEncoder,
+};
+
+let d = 64;
+let mut growable = PlainDenseDatasetGrowable::new(PlainDenseQuantizer::<f32, DotProduct>::new(d));
+for ones in [8usize, 24, 56] {
+    let mut v = vec![-1.0f32; d];
+    v[..ones].fill(1.0);
+    growable.push(DenseVectorView::new(&v));
+}
+let plain: PlainDenseDataset<f32, DotProduct> = growable.into();
+
+let mut query = vec![-1.0f32; d];
+query[..56].fill(1.0);
+
+// 1 bit per component. Documents are always 1 bit; `query_bits` scalar-quantizes the *query*
+// only, so it is a search parameter rather than part of the stored index.
+let rabitq: RabitqDenseDataset = (&plain).convert_into(RabitqConfig::default());
+assert_eq!(rabitq.encoder().output_dim(), d / 64 + 1); // code words + 1 metadata word
+let params = RabitqQueryParams::new(4);
+let top1 = FlatIndex::from(&rabitq).search(DenseVectorView::new(&query), 1, &params);
+assert_eq!(top1[0].vector, 2);
+
+// 4 bits per component. `faster_quant` (the default) estimates the rescale factor once at train
+// time instead of searching per vector — far faster to encode, for a marginal accuracy cost.
+let config = RabitqExtConfig { total_bits: 4, ..RabitqExtConfig::default() };
+let ext: RabitqExtDenseDataset = (&plain).convert_into(config);
+assert_eq!(ext.encoder().output_dim(), 4 * (d / 64) + 1);
+let top1 = FlatIndex::from(&ext).search(DenseVectorView::new(&query), 1, &());
+assert_eq!(top1[0].vector, 2);
+```
+
+Two things worth knowing. `query_bits` is query-side state, so a single stored index serves every
+setting — retune it on a loaded dataset with `encoder_mut().set_query_bits(n)` instead of
+re-encoding. And the extended encoder stores codes **component-major** at those three byte-aligned
+widths, scoring against an **unquantized** query: one widen plus one fused multiply-add per 16
+components, with no query-side error term and no `query_bits` dial. The intermediate widths
+(3, 5, 6, 7, 9) are not supported — a space-exact code would have to be split into aligned parts,
+which costs throughput without buying a useful accuracy/footprint point.
+
 
 ## Design notes
 

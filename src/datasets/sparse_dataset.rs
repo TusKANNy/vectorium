@@ -593,8 +593,11 @@ where
     DstStorage: SparseStorage<crate::ScalarSparseQuantizer<C, Mid, DstOut, D>>
         + From<GrowableSparseStorage<crate::ScalarSparseQuantizer<C, Mid, DstOut, D>>>,
 {
+    type Config = ();
+
     fn convert_from(
         source: &SparseDatasetGeneric<crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>, SrcStorage>,
+        _config: (),
     ) -> Self {
         let n_vecs = source.len();
         let nnz = source.nnz();
@@ -644,8 +647,13 @@ where
             OutputValueType = DstOut,
         >,
 {
-    fn convert_from(source: SparseDataset<crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>>) -> Self {
-        Self::convert_from(&source)
+    type Config = ();
+
+    fn convert_from(
+        source: SparseDataset<crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>>,
+        _config: (),
+    ) -> Self {
+        Self::convert_from(&source, ())
     }
 }
 
@@ -671,10 +679,13 @@ where
             OutputValueType = DstOut,
         >,
 {
+    type Config = ();
+
     fn convert_from(
         source: SparseDatasetGrowable<crate::ScalarSparseQuantizer<C, SrcIn, Mid, D>>,
+        _config: (),
     ) -> Self {
-        Self::convert_from(&source)
+        Self::convert_from(&source, ())
     }
 }
 
@@ -1137,7 +1148,7 @@ mod tests {
 
         let frozen: SparseDataset<SrcQuant> = growable.into();
 
-        let converted: SparseDataset<DstQuant> = frozen.convert_into();
+        let converted: SparseDataset<DstQuant> = frozen.convert_into(());
 
         let first = converted.get(0);
         assert_eq!(first.components(), &[0_u16, 2]);
@@ -1288,7 +1299,7 @@ mod tests {
         growable.push(SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 2.0_f32]));
         growable.push(SparseVectorView::new(&[1_u16, 3], &[3.0_f32, 4.0_f32]));
 
-        let converted: SparseDatasetGrowable<DstQuant> = ConvertFrom::convert_from(&growable);
+        let converted: SparseDatasetGrowable<DstQuant> = ConvertFrom::convert_from(&growable, ());
 
         assert_eq!(converted.len(), growable.len());
         assert_eq!(converted.nnz(), growable.nnz());
