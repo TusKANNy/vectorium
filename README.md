@@ -13,7 +13,7 @@ If you are new to KNN: *exhaustive* KNN searches score every vector in the datas
 That is accurate but slow at scale. ANN indexes (HNSW, IVF, Seismic, etc.) trade a bit of accuracy for speed by building extra data structures (e.g., proximity graphs, inverted indexes) on top of the same dataset/encoder primitives.
 
 Vectorium includes an exhaustive search API (`FlatIndex`, which implements the `Index` trait over any dataset) and a binary executable for ground-truth computation on CPU. For state‑of‑the‑art dense, sparse and multivector indexing, use these tools: [Seismic](https://github.com/TusKANNy/seismic), [kANNolo](https://github.com/TusKANNy/kannolo), [TACHIOM](https://github.com/TusKANNy/tachiom).
-s
+
 ## Cargo features
 
 | Feature | What it enables | Default |
