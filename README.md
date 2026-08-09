@@ -12,8 +12,8 @@ The main goal is to provide a unified dataset/encoder interface that can be shar
 If you are new to KNN: *exhaustive* KNN searches score every vector in the dataset and return the top‑k closest results.
 That is accurate but slow at scale. ANN indexes (HNSW, IVF, Seismic, etc.) trade a bit of accuracy for speed by building extra data structures (e.g., proximity graphs, inverted indexes) on top of the same dataset/encoder primitives.
 
-Vectorium includes an exhaustive search API (`FlatIndex`, which implements the `Index` trait over any dataset) and a binary executable for ground-truth computation on CPU. For state‑of‑the‑art ANN indexing, use these tools: [Seismic](https://github.com/TusKANNy/seismic) and [kANNolo](https://github.com/TusKANNy/kannolo).
-
+Vectorium includes an exhaustive search API (`FlatIndex`, which implements the `Index` trait over any dataset) and a binary executable for ground-truth computation on CPU. For state‑of‑the‑art dense, sparse and multivector indexing, use these tools: [Seismic](https://github.com/TusKANNy/seismic), [kANNolo](https://github.com/TusKANNy/kannolo), [TACHIOM](https://github.com/TusKANNy/tachiom).
+s
 ## Cargo features
 
 | Feature | What it enables | Default |
@@ -440,10 +440,9 @@ let top1 = FlatIndex::from(&ext).search(DenseVectorView::new(&query), 1, &());
 assert_eq!(top1[0].vector, 2);
 ```
 
-Two things worth knowing. `query_bits` is query-side state and is not stored with the index: pass a
+Two things worth knowing. `query_bits` is query-side state: pass a
 different `RabitqQueryParams` to `search` to change it, on a loaded dataset, with no re-encoding and
-no mutation of the encoder. Because nothing shared is retuned, one index serves every setting
-*concurrently* — parallel searches at different widths are fine. And the extended encoder stores
+no mutation of the encoder, one index serves every setting. And the extended encoder stores
 codes **component-major** at those three byte-aligned widths, scoring against an **unquantized**
 query: one widen plus one fused multiply-add per 16 components, with no query-side error term and
 no `query_bits` dial. The intermediate widths
