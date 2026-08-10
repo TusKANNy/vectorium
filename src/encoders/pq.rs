@@ -43,6 +43,15 @@ impl ProductQuantizerDistance for DotProduct {
 
 /// Number of centroids per subspace (always 256 = 2^8)
 const KSUB: usize = 256;
+/// Centroids processed per tile in the distance-table build. Must divide `KSUB`.
+///
+/// The `TILE` accumulators stay in registers across all `dsub` dimension passes,
+/// so each table element is written exactly once rather than read-modify-written
+/// on every pass. The width balances two costs: the per-(tile, dimension) setup
+/// -- broadcasting `q_k`, address computation, loop bookkeeping -- is paid once
+/// per step regardless of `TILE`, so a narrow tile amortizes it over too little
+/// arithmetic, while a wide one raises register pressure.
+const TILE: usize = 32;
 const DEFAULT_KMEANS_N_ITER: usize = 25;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -297,26 +306,26 @@ where
         let dsub = self.dsub;
         let mut table = vec![0.0_f32; KSUB * M];
 
-        // Tiled loop: process 8 centroids at a time.
-        // The 8 partial accumulators `acc` are kept in registers across all dsub
-        // dimension passes, so table_sub is written exactly once per element —
-        // no read-modify-write.
+        // Tiled loop: process TILE centroids at a time.
+        // The TILE partial accumulators `acc` are kept in registers across all
+        // dsub dimension passes, so table_sub is written exactly once per
+        // element — no read-modify-write. See TILE's docs for the width choice.
         for (m, (table_sub, query_sub)) in table
             .chunks_mut(KSUB)
             .zip(query.values().chunks(dsub))
             .enumerate()
         {
             let centroids = self.subspace_centroids(m);
-            for i in (0..KSUB).step_by(8) {
-                let mut acc = [0.0_f32; 8];
+            for i in (0..KSUB).step_by(TILE) {
+                let mut acc = [0.0_f32; TILE];
                 for (k, &q_k) in query_sub.iter().enumerate() {
-                    let col8 = &centroids[k * KSUB + i..k * KSUB + i + 8];
-                    for (a, &c) in acc.iter_mut().zip(col8) {
+                    let col = &centroids[k * KSUB + i..k * KSUB + i + TILE];
+                    for (a, &c) in acc.iter_mut().zip(col) {
                         let d = q_k - c;
                         *a += d * d;
                     }
                 }
-                table_sub[i..i + 8].copy_from_slice(&acc);
+                table_sub[i..i + TILE].copy_from_slice(&acc);
             }
         }
         table
@@ -327,7 +336,7 @@ where
         let dsub = self.dsub;
         let mut table = vec![0.0_f32; KSUB * M];
 
-        // Same tiling strategy as the euclidean table: 8-wide accumulators in
+        // Same tiling strategy as the euclidean table: TILE-wide accumulators in
         // registers across all dsub passes → single write per table element.
         for (m, (table_sub, query_sub)) in table
             .chunks_mut(KSUB)
@@ -335,15 +344,15 @@ where
             .enumerate()
         {
             let centroids = self.subspace_centroids(m);
-            for i in (0..KSUB).step_by(8) {
-                let mut acc = [0.0_f32; 8];
+            for i in (0..KSUB).step_by(TILE) {
+                let mut acc = [0.0_f32; TILE];
                 for (k, &q_k) in query_sub.iter().enumerate() {
-                    let col8 = &centroids[k * KSUB + i..k * KSUB + i + 8];
-                    for (a, &c) in acc.iter_mut().zip(col8) {
+                    let col = &centroids[k * KSUB + i..k * KSUB + i + TILE];
+                    for (a, &c) in acc.iter_mut().zip(col) {
                         *a += q_k * c;
                     }
                 }
-                table_sub[i..i + 8].copy_from_slice(&acc);
+                table_sub[i..i + TILE].copy_from_slice(&acc);
             }
         }
         table
@@ -524,12 +533,7 @@ use crate::dataset::ConvertFrom;
 ///
 /// The source is taken by **reference**, so the plain vectors survive the call — a caller that
 /// still needs them (to compute ground truth, or to encode a second time at another `M`) does not
-/// have to clone the dataset first. Consuming would buy nothing: the PQ codes are a fresh
-/// allocation in a different representation, so none of the source's storage can be reused.
-///
-/// The source metric is irrelevant to training — PQ's k-means always runs in squared Euclidean
-/// space over the sub-vectors it builds itself — so one impl serves both `ℓ₂` and inner-product
-/// sources, and the target metric `D` is independent of both.
+/// have to clone the dataset first.
 impl<const M: usize, D, Ds> ConvertFrom<&PlainDenseDataset<f32, Ds>>
     for crate::DenseDataset<ProductQuantizer<M, D>>
 where
@@ -596,6 +600,60 @@ mod tests {
 
         let pq = ProductQuantizer::<M_TEST, SquaredEuclideanDistance>::train(&training_data);
         (pq, seed_vecs)
+    }
+
+    /// The table-build tile loop steps by TILE with no remainder handling, so
+    /// TILE must divide KSUB exactly.
+    #[test]
+    fn tile_divides_ksub() {
+        assert_eq!(KSUB % TILE, 0, "TILE ({TILE}) must divide KSUB ({KSUB})");
+    }
+
+    /// The tiled table build must agree with a straightforward untiled
+    /// reference, for both metrics. This is what pins the tile width as a pure
+    /// performance knob with no effect on results.
+    #[test]
+    fn tiled_table_matches_untiled_reference() {
+        let (pq, vecs) = make_pq_and_data();
+        let query = DenseVectorView::new(&vecs[2]);
+
+        let dsub = pq.dsub();
+        let l2 = pq.compute_euclidean_distance_table(query);
+        for m in 0..M_TEST {
+            let centroids = pq.subspace_centroids(m);
+            let q_sub = &vecs[2][m * dsub..(m + 1) * dsub];
+            for i in 0..KSUB {
+                let mut want = 0.0_f32;
+                for (k, &q_k) in q_sub.iter().enumerate() {
+                    let d = q_k - centroids[k * KSUB + i];
+                    want += d * d;
+                }
+                let got = l2[m * KSUB + i];
+                assert!(
+                    (got - want).abs() <= 1e-4 * want.abs().max(1e-3),
+                    "euclidean table m={m} i={i}: got {got}, want {want}"
+                );
+            }
+        }
+
+        let pq_dot =
+            ProductQuantizer::<M_TEST, DotProduct>::from_pretrained(D_TEST, pq.centroids_as_aos());
+        let dot = pq_dot.compute_dot_product_table(query);
+        for m in 0..M_TEST {
+            let centroids = pq_dot.subspace_centroids(m);
+            let q_sub = &vecs[2][m * dsub..(m + 1) * dsub];
+            for i in 0..KSUB {
+                let mut want = 0.0_f32;
+                for (k, &q_k) in q_sub.iter().enumerate() {
+                    want += q_k * centroids[k * KSUB + i];
+                }
+                let got = dot[m * KSUB + i];
+                assert!(
+                    (got - want).abs() <= 1e-4 * want.abs().max(1e-3),
+                    "dot table m={m} i={i}: got {got}, want {want}"
+                );
+            }
+        }
     }
 
     /// Building a PQ dataset borrows its source and accepts a source of either metric. The
