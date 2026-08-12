@@ -12,6 +12,10 @@
 //! 2. **Second Stage**: Reranks the retrieved candidates using a higher-quality dataset
 //!    (e.g., full-precision vectors or multi-vector representations) to compute exact scores
 //!    and return the top k_final results.
+//!
+//! By default the second-stage score *replaces* the first-stage one. The optional residual mode
+//! (the `residuals` flag of [`RerankIndex::search`]) instead *sums* the two, for stages that split
+//! one score between them.
 
 use super::dataset::ScoredVector;
 use super::distances::Distance;
@@ -23,6 +27,19 @@ use crate::VectorId;
 use serde::{Deserialize, Serialize};
 use std::collections::BinaryHeap;
 use std::fmt;
+
+/// Sums a first-stage score into a rerank score, for residual reranking.
+///
+/// `first_stage` is `None` when residual reranking is off, in which case the rerank score passes
+/// through untouched. See [`RerankIndex::search`] for what the caller must guarantee about the two
+/// scores being summable.
+#[inline]
+fn add_first_stage_score<D: Distance + From<f32>>(rerank: D, first_stage: Option<f32>) -> D {
+    match first_stage {
+        Some(score) => (rerank.distance() + score).into(),
+        None => rerank,
+    }
+}
 
 /// A reranking index that combines a first-stage index for candidate retrieval
 /// with a higher-quality dataset for reranking.
@@ -80,6 +97,23 @@ where
     /// - `first_stage_search_params`: Search parameters for the first-stage index
     /// - `alpha`: Optional Candidates Pruning (CP) threshold parameter (None for no pruning)
     /// - `beta`: Optional early-exit (EE) parameter for reranking (None for no early exit)
+    /// - `residuals`: When `true`, score each candidate as the *sum* of its first-stage and rerank
+    ///   scores instead of the rerank score alone (see below). Pass `false` for the plain two-stage
+    ///   behaviour.
+    ///
+    /// # Residual reranking
+    /// With `residuals = true` the returned score of a candidate is
+    /// `first_stage_score + rerank_score`, and that combined value drives both the final ordering
+    /// and the early-exit comparisons. This is meant for setups where the rerank dataset holds the
+    /// *residual* part of a decomposed representation (e.g. a first stage scoring centroids and a
+    /// rerank dataset scoring what the centroids left out), so the two scores add up to the full
+    /// score.
+    ///
+    /// **The caller is responsible for the two scores being summable.** Nothing here checks that
+    /// they share a metric, a scale, or even a sign convention: summing an unrelated first-stage
+    /// score into the rerank score produces a well-ordered but meaningless ranking. In particular
+    /// the sum is a genuine decomposition only for an additive metric such as dot product — adding
+    /// two squared Euclidean distances is not the distance to anything.
     ///
     /// # Returns
     /// - results: Vector of scored vectors, sorted by distance using the Distance type's Ord implementation
@@ -94,9 +128,10 @@ where
         rerank_search_params: &<RerankDataset::Encoder as VectorEncoder>::QueryParams,
         alpha: Option<f32>,
         beta: Option<usize>,
+        residuals: bool,
     ) -> Vec<ScoredVector<<RerankDataset::Encoder as VectorEncoder>::Distance>>
     where
-        <RerankDataset::Encoder as VectorEncoder>::Distance: Distance,
+        <RerankDataset::Encoder as VectorEncoder>::Distance: Distance + From<f32>,
     {
         // Stage 1: Get candidates from first stage index using its own search method
         let first_stage_results = self.first_stage_index.search(
@@ -105,27 +140,37 @@ where
             first_stage_search_params,
         );
 
-        // Extract candidate IDs from first-stage search results
-        let mut candidates: Vec<VectorId> = first_stage_results
-            .iter()
-            .map(|result| result.vector)
-            .collect();
+        // Alpha-based filtering threshold, if provided (based on first-stage distance scores)
+        let threshold = match alpha {
+            Some(alpha_val)
+                if k_final > 0
+                    && !first_stage_results.is_empty()
+                    && k_final <= first_stage_results.len() =>
+            {
+                Some(first_stage_results[k_final - 1].distance.distance() * (1.0 - alpha_val))
+            }
+            _ => None,
+        };
 
-        // Apply alpha-based filtering if provided (based on first-stage distance scores)
-        if let Some(alpha_val) = alpha
-            && !first_stage_results.is_empty()
-            && k_final <= first_stage_results.len()
-        {
-            let threshold =
-                first_stage_results[k_final - 1].distance.distance() * (1.0 - alpha_val);
-            candidates.retain(|&id| {
-                if let Some(scored_vec) = first_stage_results.iter().find(|r| r.vector == id) {
-                    scored_vec.distance.distance() >= threshold
-                } else {
-                    false
-                }
-            });
+        // Extract candidate IDs from first-stage search results, keeping their first-stage scores
+        // alongside when residual reranking needs them.
+        let mut candidates: Vec<VectorId> = Vec::with_capacity(first_stage_results.len());
+        let mut scores: Vec<f32> = Vec::with_capacity(if residuals {
+            first_stage_results.len()
+        } else {
+            0
+        });
+        for result in &first_stage_results {
+            let score = result.distance.distance();
+            if threshold.is_some_and(|t| score < t) {
+                continue;
+            }
+            candidates.push(result.vector);
+            if residuals {
+                scores.push(score);
+            }
         }
+        let first_stage_scores = residuals.then_some(scores.as_slice());
 
         // Stage 2: Rerank candidates using the rerank dataset
         if let Some(beta_val) = beta {
@@ -135,9 +180,16 @@ where
                 &candidates,
                 k_final,
                 beta_val,
+                first_stage_scores,
             )
         } else {
-            self.rerank_candidates(rerank_query, rerank_search_params, &candidates, k_final)
+            self.rerank_candidates(
+                rerank_query,
+                rerank_search_params,
+                &candidates,
+                k_final,
+                first_stage_scores,
+            )
         }
     }
 
@@ -150,6 +202,8 @@ where
     /// - `rerank_query`: Query vector for reranking
     /// - `candidates`: List of vector IDs from initial search
     /// - `k_final`: Number of final results to return
+    /// - `first_stage_scores`: First-stage scores of `candidates`, in the same order, when residual
+    ///   reranking is on; `None` to score by the rerank dataset alone
     ///
     /// # Returns
     /// Vector of scored vectors, sorted by distance using the Distance type's Ord implementation
@@ -159,10 +213,13 @@ where
         rerank_search_params: &<RerankDataset::Encoder as VectorEncoder>::QueryParams,
         candidates: &[VectorId],
         k_final: usize,
+        first_stage_scores: Option<&[f32]>,
     ) -> Vec<ScoredVector<<RerankDataset::Encoder as VectorEncoder>::Distance>>
     where
-        <RerankDataset::Encoder as VectorEncoder>::Distance: Distance,
+        <RerankDataset::Encoder as VectorEncoder>::Distance: Distance + From<f32>,
     {
+        debug_assert!(first_stage_scores.is_none_or(|s| s.len() == candidates.len()));
+
         // Create query evaluator for the rerank dataset
         let encoder = self.rerank_dataset.encoder();
         let query_evaluator = encoder.query_evaluator(rerank_query, rerank_search_params);
@@ -171,11 +228,12 @@ where
         let mut reranked: Vec<ScoredVector<<RerankDataset::Encoder as VectorEncoder>::Distance>> =
             candidates
                 .iter()
-                .map(|vector_id| {
+                .enumerate()
+                .map(|(i, vector_id)| {
                     let encoded_vector = self.rerank_dataset.get(*vector_id);
                     let distance = query_evaluator.compute_distance(encoded_vector);
                     ScoredVector {
-                        distance,
+                        distance: add_first_stage_score(distance, first_stage_scores.map(|s| s[i])),
                         vector: *vector_id,
                     }
                 })
@@ -195,10 +253,13 @@ where
         candidates: &[VectorId],
         k_final: usize,
         beta: usize,
+        first_stage_scores: Option<&[f32]>,
     ) -> Vec<ScoredVector<<RerankDataset::Encoder as VectorEncoder>::Distance>>
     where
-        <RerankDataset::Encoder as VectorEncoder>::Distance: Distance,
+        <RerankDataset::Encoder as VectorEncoder>::Distance: Distance + From<f32>,
     {
+        debug_assert!(first_stage_scores.is_none_or(|s| s.len() == candidates.len()));
+
         // Ensure there are enough candidates
         if candidates.len() < k_final {
             return Vec::new();
@@ -211,11 +272,12 @@ where
         let first_reranked: Vec<ScoredVector<<RerankDataset::Encoder as VectorEncoder>::Distance>> =
             candidates[..k_final]
                 .iter()
-                .map(|vector_id| {
+                .enumerate()
+                .map(|(i, vector_id)| {
                     let encoded_vector = self.rerank_dataset.get(*vector_id);
                     let distance = query_evaluator.compute_distance(encoded_vector);
                     ScoredVector {
-                        distance,
+                        distance: add_first_stage_score(distance, first_stage_scores.map(|s| s[i])),
                         vector: *vector_id,
                     }
                 })
@@ -227,11 +289,14 @@ where
         > = BinaryHeap::from(first_reranked);
 
         let mut n_stalls = 0;
-        for vector_id in &candidates[k_final..] {
+        for (i, vector_id) in candidates[k_final..].iter().enumerate() {
             let encoded_vector = self.rerank_dataset.get(*vector_id);
             let distance = query_evaluator.compute_distance(encoded_vector);
             let candidate = ScoredVector {
-                distance,
+                distance: add_first_stage_score(
+                    distance,
+                    first_stage_scores.map(|s| s[k_final + i]),
+                ),
                 vector: *vector_id,
             };
 
@@ -283,5 +348,201 @@ where
             .field("first_stage_index", &self.first_stage_index)
             .field("rerank_dataset", &self.rerank_dataset)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::flat_index::FlatIndex;
+    use crate::core::vector::DenseVectorView;
+    use crate::datasets::dense_dataset::DenseDatasetGrowable;
+    use crate::distances::DotProduct;
+    use crate::{DatasetGrowable, DenseDataset, PlainDenseQuantizer};
+
+    type Enc = PlainDenseQuantizer<f32, DotProduct>;
+
+    fn dataset(vectors: &[[f32; 2]]) -> DenseDataset<Enc> {
+        let mut growable = DenseDatasetGrowable::new(Enc::new(2));
+        for vector in vectors {
+            growable.push(DenseVectorView::new(vector));
+        }
+        growable.into()
+    }
+
+    /// First stage scores the "centroid" part of each vector, the rerank dataset the "residual"
+    /// part, so under dot product the two scores sum to the score of the full vector.
+    ///
+    /// For the query `[1, 0]` used by the tests below, first-stage scores are `[3, 0, 0.5]` and
+    /// rerank scores `[0, 2, 1]` — the two rank the candidates in opposite orders, and their sums
+    /// `[3, 2, 1.5]` in a third one.
+    fn index() -> RerankIndex<FlatIndex<DenseDataset<Enc>>, DenseDataset<Enc>> {
+        let centroids = dataset(&[[3.0, 0.0], [0.0, 0.0], [0.5, 0.0]]);
+        let residuals = dataset(&[[0.0, 0.0], [2.0, 0.0], [1.0, 0.0]]);
+        RerankIndex::new(FlatIndex::from(centroids), residuals)
+    }
+
+    fn scored(results: &[ScoredVector<DotProduct>]) -> Vec<(VectorId, f32)> {
+        results
+            .iter()
+            .map(|r| (r.vector, r.distance.distance()))
+            .collect()
+    }
+
+    #[test]
+    fn residuals_off_scores_by_rerank_dataset_alone() {
+        let index = index();
+        let query = DenseVectorView::new(&[1.0f32, 0.0]);
+
+        let results = index.search(query, query, 3, 3, &(), &(), None, None, false);
+
+        assert_eq!(scored(&results), vec![(1, 2.0), (2, 1.0), (0, 0.0)]);
+    }
+
+    #[test]
+    fn residuals_on_sums_both_stages() {
+        let index = index();
+        let query = DenseVectorView::new(&[1.0f32, 0.0]);
+
+        let results = index.search(query, query, 3, 3, &(), &(), None, None, true);
+
+        assert_eq!(scored(&results), vec![(0, 3.0), (1, 2.0), (2, 1.5)]);
+    }
+
+    #[test]
+    fn residuals_on_with_early_exit_sums_both_stages() {
+        let index = index();
+        let query = DenseVectorView::new(&[1.0f32, 0.0]);
+
+        // Only one candidate is left to scan past the initial k_final, so beta = 3 can never
+        // trigger: this checks that the early-exit path ranks on the combined score just like the
+        // plain path, with no candidate cut short.
+        let results = index.search(query, query, 3, 2, &(), &(), None, Some(3), true);
+
+        assert_eq!(scored(&results), vec![(0, 3.0), (1, 2.0)]);
+    }
+
+    /// `k_final = 0` used to underflow while computing the alpha threshold, which indexes
+    /// `first_stage_results[k_final - 1]`.
+    #[test]
+    fn alpha_with_zero_k_final_returns_empty() {
+        let index = index();
+        let query = DenseVectorView::new(&[1.0f32, 0.0]);
+
+        for beta in [None, Some(1)] {
+            for residuals in [false, true] {
+                let results =
+                    index.search(query, query, 3, 0, &(), &(), Some(0.1), beta, residuals);
+                assert!(results.is_empty(), "beta {beta:?}, residuals {residuals}");
+            }
+        }
+    }
+
+    /// The mismatched-stage case: a dense PQ first stage and a sparse second stage, i.e. two
+    /// different encoders over two different representations, whose only common ground is the dot
+    /// product convention and the vector ids. The scores here are not hand-predictable — the PQ
+    /// score is an estimate — so the test asserts the relation between the two runs instead: every
+    /// combined score must be the residuals-off score plus the first-stage score of that same id.
+    #[test]
+    fn sum_a_pq_first_stage_into_a_sparse_rerank() {
+        use crate::core::vector::SparseVectorView;
+        use crate::encoders::pq::ProductQuantizer;
+        use crate::{PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer};
+        use std::collections::HashMap;
+
+        const M: usize = 4;
+        const DENSE_DIM: usize = 8;
+        const SPARSE_DIM: usize = 16;
+        const KSUB: usize = 256;
+
+        // Pretrained centroids rather than k-means: instant, deterministic, and the PQ's accuracy
+        // is irrelevant here. Layout is [M × KSUB × dsub].
+        let dsub = DENSE_DIM / M;
+        let centroids: Vec<f32> = (0..M * KSUB * dsub)
+            .map(|i| (i % 97) as f32 * 0.05 - 2.0)
+            .collect();
+        let pq = ProductQuantizer::<M, DotProduct>::from_pretrained(DENSE_DIM, centroids);
+
+        let dense_docs = [
+            [0.9f32, -0.3, 0.5, 0.1, -0.7, 0.2, 0.4, -0.1],
+            [-0.2f32, 0.8, -0.4, 0.6, 0.3, -0.9, 0.1, 0.5],
+            [0.4f32, 0.4, 0.9, -0.5, 0.2, 0.7, -0.3, 0.8],
+        ];
+        let mut first_stage = DenseDatasetGrowable::new(pq);
+        for doc in &dense_docs {
+            first_stage.push(DenseVectorView::new(doc));
+        }
+        let first_stage: DenseDataset<ProductQuantizer<M, DotProduct>> = first_stage.into();
+
+        let sparse_docs: [(&[u16], &[f32]); 3] = [
+            (&[0, 3, 9], &[1.0, -2.0, 0.5]),
+            (&[1, 3, 12], &[2.0, 1.5, -1.0]),
+            (&[0, 7, 15], &[-0.5, 3.0, 2.0]),
+        ];
+        let mut rerank = PlainSparseDatasetGrowable::<u16, f32, DotProduct>::new(
+            PlainSparseQuantizer::new(SPARSE_DIM, SPARSE_DIM),
+        );
+        for (components, values) in &sparse_docs {
+            rerank.push(SparseVectorView::new(components, values));
+        }
+        let rerank: PlainSparseDataset<u16, f32, DotProduct> = rerank.into();
+
+        let index = RerankIndex::new(FlatIndex::from(first_stage), rerank);
+
+        let dense_query = [0.6f32, 0.2, -0.5, 0.9, 0.1, 0.3, -0.8, 0.4];
+        let dense_query = DenseVectorView::new(&dense_query);
+        let sparse_query_components: Vec<u16> = (0..SPARSE_DIM as u16).collect();
+        let sparse_query_values: Vec<f32> =
+            (0..SPARSE_DIM).map(|i| 0.25 * (i as f32) - 1.0).collect();
+        let sparse_query = SparseVectorView::new(&sparse_query_components, &sparse_query_values);
+
+        let first_stage_scores: HashMap<VectorId, f32> = index
+            .first_stage_index()
+            .search(dense_query, 3, &())
+            .iter()
+            .map(|r| (r.vector, r.distance.distance()))
+            .collect();
+
+        // Without this the two runs would agree and the test would prove nothing.
+        assert!(
+            first_stage_scores.values().any(|s| s.abs() > 1e-3),
+            "first-stage scores are all ~0: {first_stage_scores:?}"
+        );
+
+        let rerank_only =
+            index.search(dense_query, sparse_query, 3, 3, &(), &(), None, None, false);
+        let combined = index.search(dense_query, sparse_query, 3, 3, &(), &(), None, None, true);
+        assert_eq!(rerank_only.len(), 3);
+        assert_eq!(combined.len(), 3);
+
+        for result in &combined {
+            let rerank_score = rerank_only
+                .iter()
+                .find(|r| r.vector == result.vector)
+                .expect("id missing from the residuals-off run")
+                .distance
+                .distance();
+            let expected = rerank_score + first_stage_scores[&result.vector];
+            assert!(
+                (result.distance.distance() - expected).abs() <= 1e-4,
+                "id {}: combined {} != rerank {} + first stage {}",
+                result.vector,
+                result.distance.distance(),
+                rerank_score,
+                first_stage_scores[&result.vector]
+            );
+        }
+    }
+
+    #[test]
+    fn residuals_stay_aligned_with_alpha_pruned_candidates() {
+        let index = index();
+        let query = DenseVectorView::new(&[1.0f32, 0.0]);
+
+        // First-stage order is 0 (3.0), 2 (0.5), 1 (0.0); the threshold 0.5 × (1 − 0.1) drops
+        // candidate 1. Candidate 2 must keep its own first-stage score, giving 0.5 + 1.0.
+        let results = index.search(query, query, 3, 2, &(), &(), Some(0.1), None, true);
+
+        assert_eq!(scored(&results), vec![(0, 3.0), (2, 1.5)]);
     }
 }
