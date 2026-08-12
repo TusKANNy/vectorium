@@ -14,10 +14,16 @@ use rayon::prelude::*;
 use std::time::Instant;
 
 /// Plain dense dataset over value type `V`, used for both training storage and
-/// centroids in [`KMeans::train_with_index`]. Prefer `T = f16` for the (large)
-/// training set and `C = f32` for centroids / the ANN index: means still
-/// accumulate in `f32`, queries are always `f32`, and an `f32` centroid index
-/// keeps HNSW distance SIMD-friendly while f16 halves the training footprint.
+/// centroids in [`KMeans::train_with_index`]. Means always accumulate in `f32`
+/// and queries are always `f32`; `T`/`C` only choose the stored layout.
+///
+/// Precision guidance: `T = f16` halves the training-corpus footprint at equal
+/// clustering quality. For `C`, it depends on how the binary is compiled: with
+/// hardware f16 conversion enabled (e.g. `-C target-cpu=native` on x86 with
+/// F16C), an f16 index is both smaller and faster than f32 (distance kernels
+/// are memory-bound, and half the bytes means half the traffic); without those
+/// target features the f16 -> f32 conversion falls back to slow scalar code and
+/// an f16 index regresses badly, so portable builds should keep `C = f32`.
 type Centroids<V> = PlainDenseDataset<V, SquaredEuclideanDistance>;
 
 pub struct KMeans {
@@ -428,7 +434,8 @@ impl KMeans {
     /// # Type parameters
     /// * `T` — storage precision of the **training** vectors (e.g. `f16` to halve the corpus).
     /// * `C` — storage precision of the **centroids** and of the dataset the index is built on
-    ///   (prefer `f32`: the centroid set is small, and an `f32` index keeps distance SIMD-friendly).
+    ///   (`f32` is the safe portable default; `f16` is faster and smaller when the binary is
+    ///   built with hardware f16 conversion, e.g. `-C target-cpu=native` — see [`Centroids`]).
     /// * `Q` — centroid index type; must accept `f32` queries.
     ///
     /// Means still accumulate in `f32` inside [`update_and_split`]. Training vectors of type `T`
