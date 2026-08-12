@@ -237,7 +237,7 @@ impl KMeans {
         // Convert f32 means into the caller-chosen centroid storage type.
         let centroids_out: Vec<VCent> = centroids
             .iter()
-            .map(|&x| VCent::from_f32(x).unwrap())
+            .map(|&x| VCent::from_f32_saturating(x))
             .collect();
 
         (
@@ -438,6 +438,12 @@ impl KMeans {
     ///
     /// This is a breaking change vs the previous single-generic `train_with_index::<Q>`: callers
     /// must supply or infer `T` and `C`.
+    ///
+    /// **Reproducibility caveat:** with a fixed [`KMeansBuilder::seed`], initialization and the
+    /// update step are deterministic, but end-to-end reproducibility additionally requires the
+    /// index produced by `build_centroid_index` to be deterministic in build and search. A
+    /// parallel HNSW build generally is not, so assignments (and thus centroids) may still vary
+    /// run to run. [`train`] (flat assignment) does not have this caveat.
     pub fn train_with_index<Q, T, C>(
         &self,
         training_dataset: &Centroids<T>,
@@ -466,6 +472,22 @@ impl KMeans {
         let n = training_dataset.len();
         let d = training_dataset.output_dim();
 
+        if n == k {
+            if self.verbose {
+                println!("WARNING: number of training data is equal to the number of clusters.");
+            }
+            let cast = Self::cast_dense_values::<T, C>(training_dataset.values());
+            return Centroids::<C>::from_raw(
+                cast.into_boxed_slice(),
+                n,
+                ScalarDenseQuantizer::new(d),
+            );
+        }
+        assert!(
+            k < n,
+            "k ({k}) must not exceed the number of training vectors ({n})"
+        );
+
         if self.verbose {
             println!(
                 "Clustering {} points in {}D to {} clusters (ANN assignment), redo {} times, {} iterations",
@@ -489,8 +511,10 @@ impl KMeans {
         for redo in 0..self.n_redo {
             let mut centroids_builder: PlainDenseDatasetGrowable<C, SquaredEuclideanDistance> =
                 PlainDenseDatasetGrowable::with_capacity(ScalarDenseQuantizer::new(d), k);
+            // Offset by `redo` so each restart draws a different initial sample
+            // (a fixed `s + 1` would make every redo identical under a fixed seed).
             let mut init_rng = match self.seed {
-                Some(s) => StdRng::seed_from_u64(s + 1),
+                Some(s) => StdRng::seed_from_u64(s + 1 + redo as u64),
                 None => StdRng::from_entropy(),
             };
             for i in index::sample(&mut init_rng, n, k).into_iter() {
