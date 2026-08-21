@@ -34,9 +34,6 @@ use std::time::Instant;
 /// produce `inf` centroids, an `inf` objective, and — because `best_obj` starts
 /// at `f32::MAX` — a silently empty return instead of a failure. Callers must
 /// ensure stored means stay in the finite range of `C` (or keep `C = f32`).
-/// Fixed-point `C` (e.g. unsigned `FixedU8`/`FixedU16`) *does* saturate, but
-/// negatives collapse to zero — fine for non-negative data, wrong for centred
-/// embeddings. A crate-wide clamp belongs in a separate change.
 type Centroids<V> = PlainDenseDataset<V, SquaredEuclideanDistance>;
 
 pub struct KMeans {
@@ -449,8 +446,7 @@ impl KMeans {
     /// * `T` — storage precision of the **training** vectors (e.g. `f16` to halve the corpus).
     /// * `C` — storage precision of the **centroids** and of the dataset the index is built on
     ///   (`f32` is the safe portable default; `f16` is faster and smaller when the binary is
-    ///   built with hardware f16 conversion, e.g. `-C target-cpu=native` — see [`Centroids`]
-    ///   for the finite-range precondition on `C`).
+    ///   built with hardware f16 conversion, e.g. `-C target-cpu=native` — see [`Centroids`]).
     /// * `Q` — centroid index type; must accept `f32` queries.
     ///
     /// Means still accumulate in `f32` inside [`update_and_split`]. Training vectors of type `T`
@@ -460,6 +456,16 @@ impl KMeans {
     ///
     /// This is a breaking change vs the previous single-generic `train_with_index::<Q>`: callers
     /// must supply or infer `T` and `C`.
+    ///
+    /// # Range precondition on `C`
+    ///
+    /// Means are cast into `C` with [`FromF32::from_f32_saturating`]. For `f16`/`bf16` that
+    /// method does **not** clamp: it is IEEE `from_f32`, so values outside the finite range
+    /// become `±inf`. With `T = f32` and `C = f16`, an unbounded training corpus can therefore
+    /// produce `inf` centroids and an `inf` objective; because `best_obj` starts at `f32::MAX`
+    /// and `inf < f32::MAX` is false, this method then returns an **empty** centroid set instead
+    /// of failing. Callers must keep stored means inside the finite range of `C`, or use
+    /// `C = f32`.
     ///
     /// **Reproducibility caveat:** with a fixed [`KMeansBuilder::seed`], initialization and the
     /// update step are deterministic, but end-to-end reproducibility additionally requires the
