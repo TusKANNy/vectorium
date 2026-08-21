@@ -24,6 +24,19 @@ use std::time::Instant;
 /// are memory-bound, and half the bytes means half the traffic); without those
 /// target features the f16 -> f32 conversion falls back to slow scalar code and
 /// an f16 index regresses badly, so portable builds should keep `C = f32`.
+///
+/// # Range precondition on `C`
+///
+/// Means are written into `C` via [`FromF32::from_f32_saturating`]. For IEEE
+/// half types that name is misleading: `f16`/`bf16` use `from_f32` rounding, so
+/// magnitudes above the type's finite max become `±inf` rather than clamping.
+/// With `T = f32` and `C = f16`, an unbounded training corpus can therefore
+/// produce `inf` centroids, an `inf` objective, and — because `best_obj` starts
+/// at `f32::MAX` — a silently empty return instead of a failure. Callers must
+/// ensure stored means stay in the finite range of `C` (or keep `C = f32`).
+/// Fixed-point `C` (e.g. unsigned `FixedU8`/`FixedU16`) *does* saturate, but
+/// negatives collapse to zero — fine for non-negative data, wrong for centred
+/// embeddings. A crate-wide clamp belongs in a separate change.
 type Centroids<V> = PlainDenseDataset<V, SquaredEuclideanDistance>;
 
 pub struct KMeans {
@@ -354,9 +367,10 @@ impl KMeans {
             let mut centroids_builder =
                 PlainDenseDatasetGrowable::with_capacity(ScalarDenseQuantizer::new(output_dim), k);
 
-            // Initial centroid selection
+            // Offset by `redo` so each restart draws a different initial sample
+            // (a fixed `s + 1` would make every redo identical under a fixed seed).
             let mut init_rng = match self.seed {
-                Some(s) => StdRng::seed_from_u64(s + 1),
+                Some(s) => StdRng::seed_from_u64(s + 1 + redo as u64),
                 None => StdRng::from_entropy(),
             };
             for i in index::sample(&mut init_rng, n, k).into_iter() {
@@ -435,7 +449,8 @@ impl KMeans {
     /// * `T` — storage precision of the **training** vectors (e.g. `f16` to halve the corpus).
     /// * `C` — storage precision of the **centroids** and of the dataset the index is built on
     ///   (`f32` is the safe portable default; `f16` is faster and smaller when the binary is
-    ///   built with hardware f16 conversion, e.g. `-C target-cpu=native` — see [`Centroids`]).
+    ///   built with hardware f16 conversion, e.g. `-C target-cpu=native` — see [`Centroids`]
+    ///   for the finite-range precondition on `C`).
     /// * `Q` — centroid index type; must accept `f32` queries.
     ///
     /// Means still accumulate in `f32` inside [`update_and_split`]. Training vectors of type `T`
@@ -1035,129 +1050,5 @@ mod tests {
         for (a, b) in c1.iter().zip([11.0f32, 10.0].iter()) {
             assert!((a - b).abs() < 1e-5, "cluster 1 weighted mean {a} != {b}");
         }
-    }
-
-    // ---- scale benchmark: scatter speedup + f16 memory ----------------------
-
-    /// Build a `Centroids<T>` from raw f32 rows.
-    fn build_dataset<T>(raw: &[f32], n: usize, d: usize) -> Centroids<T>
-    where
-        T: Float
-            + ValueType
-            + FromF32
-            + num_traits::ToPrimitive
-            + num_traits::FromPrimitive
-            + Clone,
-    {
-        let enc = PlainDenseQuantizer::<T, SquaredEuclideanDistance>::new(d);
-        let mut b = PlainDenseDatasetGrowable::new(enc);
-        for i in 0..n {
-            let v: Vec<T> = raw[i * d..(i + 1) * d]
-                .iter()
-                .map(|&x| T::from_f32_saturating(x))
-                .collect();
-            b.push(DenseVectorView::new(&v[..]));
-        }
-        b.into()
-    }
-
-    /// The pre-scatter O(n*k) mean computation, kept as a reference to A/B against.
-    fn brute_force_means(
-        dataset: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
-        assignments: &[(f32, usize)],
-        k: usize,
-        d: usize,
-    ) -> Vec<f32> {
-        let n = dataset.len();
-        let results: Vec<Vec<f32>> = (0..k)
-            .into_par_iter()
-            .map(|ci| {
-                let mut centroid = vec![0.0f32; d];
-                let mut count = 0.0f32;
-                for i in 0..n {
-                    if assignments[i].1 == ci {
-                        count += 1.0;
-                        let vec = dataset.get(i as VectorId);
-                        for (c, x) in centroid.iter_mut().zip(vec.values().iter()) {
-                            *c += *x;
-                        }
-                    }
-                }
-                if count > 0.0 {
-                    for c in &mut centroid {
-                        *c /= count;
-                    }
-                }
-                centroid
-            })
-            .collect();
-        results.into_iter().flatten().collect()
-    }
-
-    #[test]
-    #[ignore = "scale benchmark; run: cargo test --release -- --ignored --nocapture bench_kmeans_fixes"]
-    fn bench_kmeans_fixes() {
-        use std::time::Instant;
-        let n = 200_000usize;
-        let d = 128usize;
-        let k = 8_000usize;
-
-        // Deterministic pseudo-random rows.
-        let mut rng = StdRng::seed_from_u64(1234);
-        let mut raw = vec![0.0f32; n * d];
-        for x in raw.iter_mut() {
-            *x = rng.gen_range(-1.0f32..1.0);
-        }
-        // Balanced, all-non-empty assignment so scatter == brute (no splits).
-        let assignments: Vec<(f32, usize)> = (0..n).map(|i| (0.0f32, i % k)).collect();
-
-        let ds_f32: Centroids<f32> = build_dataset(&raw, n, d);
-        let ds_f16: Centroids<half::f16> = build_dataset(&raw, n, d);
-
-        let mut rng2 = StdRng::seed_from_u64(0);
-        let t = Instant::now();
-        let (_, _, scat) =
-            KMeans::update_and_split(&ds_f32, None, k, &assignments, &mut rng2, false);
-        let t_scatter = t.elapsed();
-
-        let t = Instant::now();
-        let bmeans = brute_force_means(&ds_f32, &assignments, k, d);
-        let t_brute = t.elapsed();
-
-        let scat_vals: Vec<f32> = (0..k)
-            .flat_map(|ci| scat.get(ci as VectorId).values().to_vec())
-            .collect();
-        let max_diff = scat_vals
-            .iter()
-            .zip(bmeans.iter())
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0f32, f32::max);
-        assert!(max_diff < 1e-3, "scatter vs brute means differ by {max_diff}");
-
-        let mut rng3 = StdRng::seed_from_u64(0);
-        let t = Instant::now();
-        let (_, _, _scat_f16): (_, _, Centroids<half::f16>) =
-            KMeans::update_and_split(&ds_f16, None, k, &assignments, &mut rng3, false);
-        let t_scatter_f16 = t.elapsed();
-
-        let mb = |bytes: usize| bytes as f64 / 1e6;
-        let bytes_f32 = n * d * std::mem::size_of::<f32>();
-        let bytes_f16 = n * d * std::mem::size_of::<half::f16>();
-
-        println!("\n=== kmeans fixes benchmark (n={n}, d={d}, k={k}) ===");
-        println!("[scatter fix]  update f32 brute : {t_brute:>10.3?}");
-        println!("[scatter fix]  update f32 scatter: {t_scatter:>10.3?}");
-        println!(
-            "[scatter fix]  speedup          : {:.1}x   (max centroid diff {:.1e})",
-            t_brute.as_secs_f64() / t_scatter.as_secs_f64(),
-            max_diff
-        );
-        println!("[f16 fix]      update f16 scatter: {t_scatter_f16:>10.3?}  (bandwidth)");
-        println!(
-            "[f16 fix]      dataset f32 = {:.1} MB, f16 = {:.1} MB ({:.0}% of f32)",
-            mb(bytes_f32),
-            mb(bytes_f16),
-            100.0 * bytes_f16 as f64 / bytes_f32 as f64
-        );
     }
 }
