@@ -65,7 +65,7 @@ const fn gen_block8_table() -> [Block8Constants; 16] {
 }
 
 pub fn encode_blocks(gaps: &[u32]) -> (Vec<u8>, Vec<u8>) {
-    debug_assert!(N <= 8); // below we assume N gaps fit in a u128.
+    const { assert!(N <= 8) }; // below we assume N gaps fit in a u128.
 
     let n_blocks = (gaps.len() + N - 1) / N;
     let mut selectors = vec![0u8; (n_blocks + 1) / 2];
