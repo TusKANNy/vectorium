@@ -66,11 +66,90 @@ struct Args {
     #[clap(long, value_parser)]
     #[arg(default_value_t = 0)]
     pq_subspaces: usize,
+
+    /// Optional reference ground-truth TSV. When given, recall@k of the computed
+    /// results against this file is reported after the run.
+    #[clap(long, value_parser)]
+    groundtruth: Option<String>,
+
+    /// Skip component reordering for encoders that support it (dotpacking8).
+    /// Training only permutes components, so it never changes scores -- it trades
+    /// build time for a smaller, faster index.
+    #[clap(long, action)]
+    no_train: bool,
 }
 
 fn main() {
     let args = Args::parse();
+    let output_path = args.output_path.clone().expect("output_path is required");
+    let groundtruth = args.groundtruth.clone();
+    let k = args.k;
 
+    if !dispatch(args) {
+        std::process::exit(2);
+    }
+
+    if let Some(gt_path) = groundtruth {
+        report_recall(&output_path, &gt_path, k);
+    }
+}
+
+/// Reads two result TSVs (`query_id\tdoc_id\trank\tscore`) and reports the mean
+/// recall@k of `results_path` against `gt_path`, over the queries present in both.
+fn report_recall(results_path: &str, gt_path: &str, k: usize) {
+    fn load(path: &str, k: usize) -> std::collections::HashMap<usize, Vec<u64>> {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("failed to read '{path}': {e}"));
+        let mut map: std::collections::HashMap<usize, Vec<u64>> = std::collections::HashMap::new();
+        for line in text.lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() < 2 {
+                continue;
+            }
+            let (Ok(qid), Ok(did)) = (f[0].parse::<usize>(), f[1].parse::<u64>()) else {
+                continue;
+            };
+            let e = map.entry(qid).or_default();
+            if e.len() < k {
+                e.push(did);
+            }
+        }
+        map
+    }
+
+    let got = load(results_path, k);
+    let gt = load(gt_path, k);
+
+    let mut sum = 0.0f64;
+    let mut n = 0usize;
+    let mut exact = 0usize;
+    for (qid, gt_ids) in gt.iter() {
+        if gt_ids.is_empty() {
+            continue;
+        }
+        let empty = Vec::new();
+        let got_ids = got.get(qid).unwrap_or(&empty);
+        let hits = vectorium::utils::intersection(got_ids, gt_ids);
+        if hits == gt_ids.len() {
+            exact += 1;
+        }
+        sum += hits as f64 / gt_ids.len() as f64;
+        n += 1;
+    }
+
+    if n == 0 {
+        println!("Recall: no overlapping query ids between results and ground truth.");
+        return;
+    }
+    println!(
+        "Recall@{k} vs '{gt_path}': {:.4} over {n} queries ({exact} exact, {:.1}%)",
+        sum / n as f64,
+        100.0 * exact as f64 / n as f64
+    );
+}
+
+/// Runs the requested computation. Returns false if the configuration was rejected.
+fn dispatch(args: Args) -> bool {
     let input_path = args.input_file.expect("input_file is required");
     let query_path = args.query_file.expect("query_file is required");
     let output_path = args.output_path.expect("output_path is required");
@@ -92,12 +171,19 @@ fn main() {
     if encoder == "dotvbyte" {
         println!("Dotvbyte encoder: quantizing values using FixedU8Q.");
     }
-    if encoder != "plain" && encoder != "dotvbyte" && encoder != "pq" {
+    if encoder == "dotpacking8" {
+        println!("Dotpacking8 encoder: quantizing values using FixedU8Q.");
+        println!(
+            "Component reordering (graph bisection): {}",
+            if args.no_train { "disabled" } else { "enabled" }
+        );
+    }
+    if encoder != "plain" && encoder != "dotvbyte" && encoder != "dotpacking8" && encoder != "pq" {
         eprintln!(
-            "Unknown encoder='{}'. Use encoder='plain'|'dotvbyte'|'pq' (dense only).",
+            "Unknown encoder='{}'. Use encoder='plain'|'dotvbyte'|'dotpacking8'|'pq' (dense only).",
             encoder
         );
-        return;
+        return false;
     }
 
     match dataset_type.as_str() {
@@ -162,12 +248,13 @@ fn main() {
                         "Unknown combination: distance='{}', value_type='{}'. Use distance='euclidean'|'dotproduct' and value_type='f32'|'f16'|'bf16'|'fixedu8'|'fixedu16'.",
                         distance, value_type
                     );
+                    return false;
                 }
             },
             "pq" => {
                 if value_type != "f32" {
                     eprintln!("Encoder 'pq' requires value_type='f32'.");
-                    return;
+                    return false;
                 }
                 if let Err(err) = compute_dense_groundtruth_pq(
                     input_path,
@@ -178,6 +265,7 @@ fn main() {
                     &distance,
                 ) {
                     eprintln!("Failed to compute PQ groundtruth: {}", err);
+                    return false;
                 }
             }
             _ => {
@@ -185,25 +273,55 @@ fn main() {
                     "Encoder '{}' is not supported for dense datasets. Use 'plain' or 'pq'.",
                     encoder
                 );
+                return false;
             }
         },
         "sparse" => {
             if encoder == "pq" {
                 eprintln!("Encoder 'pq' is only supported with dataset_type='dense'.");
-                return;
+                return false;
             }
             // Sparse dataset logic
+            if encoder == "dotpacking8" {
+                if component_type != "u16" {
+                    eprintln!(
+                        "Dotpacking8 encoder requires component_type='u16' (found '{}').",
+                        component_type
+                    );
+                    return false;
+                }
+                if distance != "dotproduct" {
+                    eprintln!("Dotpacking8 encoder supports only distance='dotproduct'.");
+                    return false;
+                }
+                if value_type != "f32" {
+                    eprintln!(
+                        "Dotpacking8 encoder reads f32 inputs and quantizes internally; \
+                         use value_type='f32' (found '{}').",
+                        value_type
+                    );
+                    return false;
+                }
+                compute_sparse_groundtruth_dotpacking8(
+                    input_path,
+                    query_path,
+                    output_path,
+                    k,
+                    !args.no_train,
+                );
+                return true;
+            }
             if encoder == "dotvbyte" {
                 if component_type != "u16" {
                     eprintln!(
                         "Dotvbyte encoder requires component_type='u16' (found '{}').",
                         component_type
                     );
-                    return;
+                    return false;
                 }
                 if distance != "dotproduct" {
                     eprintln!("Dotvbyte encoder supports only distance='dotproduct'.");
-                    return;
+                    return false;
                 }
                 match value_type.as_str() {
                     "f32" => compute_sparse_groundtruth_dotvbyte::<f32>(
@@ -243,7 +361,7 @@ fn main() {
                         );
                     }
                 }
-                return;
+                return false;
             }
             match (
                 component_type.as_str(),
@@ -327,6 +445,7 @@ fn main() {
                         and value_type='f32'|'f16'|'bf16'|'fixedu8'|'fixedu16'.",
                         component_type, distance, value_type
                     );
+                    return false;
                 }
             }
         }
@@ -335,8 +454,11 @@ fn main() {
                 "Unknown dataset_type='{}'. Use dataset_type='dense' or 'sparse'.",
                 dataset_type
             );
+            return false;
         }
     }
+
+    true
 }
 
 fn compute_dense_groundtruth<V, D>(
@@ -795,6 +917,101 @@ fn compute_sparse_groundtruth_dotvbyte<V>(
 
     let elapsed = start_time.elapsed();
     println!("Computation completed in {:.3}s", elapsed.as_secs_f64());
+
+    let mut output_file = File::create(output_path).expect("failed to create output file");
+
+    for (query_id, result) in results.iter().enumerate() {
+        for (idx, (score, doc_id)) in result.iter().enumerate() {
+            writeln!(
+                &mut output_file,
+                "{query_id}\t{doc_id}\t{}\t{score}",
+                idx + 1
+            )
+            .expect("failed to write result");
+        }
+    }
+}
+
+fn compute_sparse_groundtruth_dotpacking8(
+    input_path: String,
+    query_path: String,
+    output_path: String,
+    k: usize,
+    train: bool,
+) {
+    use vectorium::DatasetGrowable;
+    use vectorium::{
+        DotPacking8FixedU8Dataset, DotPacking8FixedU8DatasetGrowable, DotPacking8FixedU8Encoder,
+    };
+
+    let dataset_plain: PlainSparseDataset<u16, f32, distances::DotProduct> =
+        readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
+    let queries: PlainSparseDataset<u16, f32, distances::DotProduct> =
+        readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
+
+    let plain_bytes = dataset_plain.space_usage_bytes();
+    let nnz = dataset_plain.nnz();
+
+    let mut encoder = DotPacking8FixedU8Encoder::new(dataset_plain.output_dim());
+    if train {
+        let start = Instant::now();
+        // NOTE: the encoder's own `train` takes a SquaredEuclideanDistance dataset, which a
+        // DotProduct collection cannot satisfy, so go through `train_components` directly.
+        encoder.train_components(dataset_plain.iter());
+        println!(
+            "Component reordering computed in {:.3}s",
+            start.elapsed().as_secs_f64()
+        );
+    }
+
+    let start = Instant::now();
+    let mut growable = DotPacking8FixedU8DatasetGrowable::new(encoder);
+    for v in dataset_plain.iter() {
+        growable.push(v);
+    }
+    let dataset: DotPacking8FixedU8Dataset = growable.into();
+    println!("Encoding completed in {:.3}s", start.elapsed().as_secs_f64());
+
+    println!("N documents: {}", dataset.len());
+    println!("N dims: {}", dataset.input_dim());
+    println!("N packed words: {}", dataset.nnz());
+    println!("N queries: {}", queries.len());
+
+    println!("Dataset size: {:.3} GiB", dataset.space_usage_GiB());
+    println!(
+        "Bits per entry: {:.3} (plain f32 sparse: {:.3}, {:.2}x smaller)",
+        (dataset.space_usage_bytes() * 8) as f32 / nnz as f32,
+        (plain_bytes * 8) as f32 / nnz as f32,
+        plain_bytes as f32 / dataset.space_usage_bytes() as f32
+    );
+    println!("Computing ground truth for {} queries...", queries.len());
+
+    let start_time = Instant::now();
+
+    let pb_style = ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec}, ETA: {eta})")
+        .unwrap()
+        .progress_chars("=>-");
+
+    let results: Vec<Vec<(f32, u64)>> = queries
+        .par_iter()
+        .progress_count(queries.len() as u64)
+        .with_style(pb_style)
+        .map(|qvec| {
+            let res: Vec<DatasetResult<distances::DotProduct>> =
+                FlatIndex::from(&dataset).search(qvec, k, &());
+            res.into_iter()
+                .map(|r| (r.distance.distance(), r.vector))
+                .collect()
+        })
+        .collect();
+
+    let elapsed = start_time.elapsed();
+    println!(
+        "Computation completed in {:.3}s ({:.3} ms/query)",
+        elapsed.as_secs_f64(),
+        elapsed.as_secs_f64() * 1000.0 / queries.len() as f64
+    );
 
     let mut output_file = File::create(output_path).expect("failed to create output file");
 
