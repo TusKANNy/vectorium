@@ -41,12 +41,12 @@ mod tests {
         query: &SparseVectorView<u16, f32>,
     ) -> f32 {
         let mut expected = 0.0f32;
-        let mut vec_iter = vector.iter().peekable(); // Usiamo peekable per non "perdere" l'elemento
+        let mut vec_iter = vector.iter().peekable(); // Peekable so we never consume an element early
 
         for (comp, val) in query.iter() {
             while let Some(&(vec_comp, _)) = vec_iter.peek() {
                 if vec_comp < comp {
-                    vec_iter.next(); // Salta questo elemento del vettore, è troppo indietro
+                    vec_iter.next(); // Skip this vector element: it lags behind the query component
                 } else {
                     break;
                 }
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn compute_distance_only_bulk() {
-        // 1. Istanziamo l'encoder passando proprio FixedU8Quantizer!
+        // Instantiate the encoder with FixedU8Quantizer.
         let encoder = DotPacking8Encoder {
             dim: 100,
             quantizer: FixedU8Quantizer,
@@ -234,5 +234,50 @@ mod tests {
 
         same_when_quantized(&input0, &decoded0.as_view());
         same_when_quantized(&input1, &decoded1.as_view());
+    }
+
+    #[test]
+    fn dataset_alias_scores_and_round_trips() {
+        use crate::core::dataset::Dataset;
+        use crate::{
+            DotPacking8FixedU8Dataset, DotPacking8FixedU8DatasetGrowable, IndexSerializer,
+        };
+
+        let dim = 128;
+        let mut growable =
+            DotPacking8FixedU8DatasetGrowable::new(DotPacking8FixedU8Encoder::new(dim));
+
+        let c0 = [1_u16, 10, 100];
+        let v0 = [1.5_f32, 2.0, 2.5];
+        let c1 = [2_u16, 11];
+        let v1 = [0.5_f32, 1.0];
+        growable.push(SparseVectorView::new(&c0, &v0));
+        growable.push(SparseVectorView::new(&c1, &v1));
+
+        let dataset: DotPacking8FixedU8Dataset = growable.into();
+        assert_eq!(dataset.len(), 2);
+        assert_eq!(dataset.nnz(), 5);
+
+        let q_components = [1_u16, 10, 11];
+        let q_values = [2.0_f32, 3.0, 4.0];
+        let evaluator = dataset
+            .encoder()
+            .query_evaluator(SparseVectorView::new(&q_components, &q_values));
+
+        let q = |v: f32| FixedU8Q::from_f32_saturating(v).to_f32().unwrap();
+        let expected0 = q(1.5) * 2.0 + q(2.0) * 3.0;
+        let expected1 = q(1.0) * 4.0;
+
+        let d0 = evaluator.compute_distance(dataset.get(0)).distance();
+        let d1 = evaluator.compute_distance(dataset.get(1)).distance();
+        assert!((d0 - expected0).abs() < 1e-5, "d0={d0} expected={expected0}");
+        assert!((d1 - expected1).abs() < 1e-5, "d1={d1} expected={expected1}");
+
+        // The alias must also satisfy the blanket `IndexSerializer for T: Dataset`.
+        let path = std::env::temp_dir().join("vectorium_dotpacking8_fixedu8_round_trip.bin");
+        dataset.save_index(path.to_str().unwrap()).unwrap();
+        let loaded = DotPacking8FixedU8Dataset::load_index(path.to_str().unwrap()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(dataset, loaded);
     }
 }

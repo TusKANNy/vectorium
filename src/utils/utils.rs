@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::hash::Hash;
+use std::simd::Simd;
 
-use crate::ComponentType;
+use crate::{ComponentType, Dataset, PlainSparseDataset, SquaredEuclideanDistance};
 use rgb::forward::Doc;
 
 #[inline]
@@ -99,9 +100,159 @@ where
     permutation.into_boxed_slice()
 }
 
+/// Train per-component scalar quantization steps from percentile bounds.
+///
+/// Returns one step per component of `training_data`'s output dimension: the value `v` of a
+/// component `c` encodes to `(v / quants[c]).clamp(0, 255)`. A step of `0.0` marks a component
+/// that never occurs in the training data.
+///
+/// `lower_percentile` must be in `[0.0, 1.0)` and `upper_percentile` in
+/// `(lower_percentile, 1.0]`.
+///
+/// Ported from branch feature/quantization (135e42e, extended in 72c2395), originally by
+/// CosimoRulli.
+pub fn train_sparse_scalar_quantizer<C>(
+    training_data: &PlainSparseDataset<C, f32, SquaredEuclideanDistance>,
+    lower_percentile: f32,
+    upper_percentile: f32,
+) -> Vec<f32>
+where
+    C: ComponentType,
+{
+    assert!(
+        (0.0..1.0).contains(&lower_percentile),
+        "lower_percentile must be in [0.0, 1.0), got {lower_percentile}"
+    );
+    assert!(
+        (0.0..=1.0).contains(&upper_percentile) && upper_percentile > lower_percentile,
+        "upper_percentile must be in (lower_percentile, 1.0], got {upper_percentile}"
+    );
+
+    let dim = training_data.output_dim();
+
+    // Fast path: classic min-max quantization. Sorting every per-component bucket
+    // is wasteful when we only need the maximum, and on high-dim sparse datasets
+    // (e.g. SPLADE on MS MARCO) that sort dominates training time. Single pass,
+    // no per-component allocations.
+    if lower_percentile == 0.0 && upper_percentile >= 1.0 {
+        let mut maxes = vec![0.0f32; dim];
+        for doc in training_data.iter() {
+            for (&c, &v) in doc.components().iter().zip(doc.values()) {
+                let idx: usize = c.as_();
+                if v > maxes[idx] {
+                    maxes[idx] = v;
+                }
+            }
+        }
+        for q in maxes.iter_mut() {
+            if *q > 0.0 {
+                *q /= 255.0;
+            }
+        }
+        return maxes;
+    }
+
+    // Collect per-component values
+    let mut per_component: Vec<Vec<f32>> = vec![Vec::new(); dim];
+    for doc in training_data.iter() {
+        for (&c, &v) in doc.components().iter().zip(doc.values()) {
+            let idx: usize = c.as_();
+            per_component[idx].push(v);
+        }
+    }
+
+    let mut quants = vec![0.0f32; dim];
+
+    for i in 0..dim {
+        let vals = &mut per_component[i];
+        if vals.is_empty() {
+            continue;
+        }
+        vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let min = if lower_percentile <= 0.0 {
+            vals[0]
+        } else {
+            let idx = ((vals.len() as f32) * lower_percentile) as usize;
+            let idx = idx.min(vals.len() - 1);
+            vals[idx]
+        };
+
+        let max = if upper_percentile >= 1.0 {
+            *vals.last().unwrap()
+        } else {
+            let idx = ((vals.len() as f32) * upper_percentile) as usize;
+            let idx = idx.min(vals.len() - 1);
+            vals[idx]
+        };
+
+        // This quantizer stores only a per-component step (no per-component offset),
+        // so we fit the step to the robust span [min, max].
+        let span = (max - min).max(0.0);
+        if span > 0.0 {
+            quants[i] = span / 255.0;
+        } else if max > 0.0 {
+            // Degenerate bucket (or identical percentiles): keep previous behavior.
+            quants[i] = max / 255.0;
+        }
+    }
+
+    quants
+}
+
+/// Load 16 bytes from `ptr` and broadcast them into both halves of a 256-bit vector.
+///
+/// The load is unaligned, so `ptr` only needs 16 readable bytes.
+///
+/// Ported from branch feature/quantization (7e5f5a0), originally by luca.rizzo.
+#[inline(always)]
+pub fn load128_and_broadcast_to_256(ptr: *const u8) -> Simd<u8, 32> {
+    use std::simd::simd_swizzle;
+    const BROADCAST_MASK: [usize; 32] = [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+        12, 13, 14, 15,
+    ];
+    let raw = unsafe { ptr.cast::<Simd<u8, 16>>().read_unaligned() };
+    simd_swizzle!(raw, BROADCAST_MASK)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{intersection, is_strictly_sorted, permute_components_with_bisection};
+    use super::{
+        intersection, is_strictly_sorted, permute_components_with_bisection,
+        train_sparse_scalar_quantizer,
+    };
+    use crate::core::dataset::DatasetGrowable;
+    use crate::core::vector::SparseVectorView;
+    use crate::{
+        PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer,
+        SquaredEuclideanDistance,
+    };
+
+    fn build_1d_training_data(
+        values: &[f32],
+    ) -> PlainSparseDataset<u16, f32, SquaredEuclideanDistance> {
+        let q = PlainSparseQuantizer::<u16, f32, SquaredEuclideanDistance>::new(1, 1);
+        let mut g = PlainSparseDatasetGrowable::new(q);
+        for &v in values {
+            g.push(SparseVectorView::new(&[0_u16], &[v]));
+        }
+        g.into()
+    }
+
+    #[test]
+    fn lower_percentile_affects_trained_quant_step() {
+        let td = build_1d_training_data(&[1.0, 2.0, 3.0, 4.0]);
+
+        let q0 = train_sparse_scalar_quantizer(&td, 0.0, 1.0);
+        let q50 = train_sparse_scalar_quantizer(&td, 0.5, 1.0);
+        assert!(
+            q50[0] < q0[0],
+            "expected lower_percentile=0.5 to reduce quant step: q0={} q50={}",
+            q0[0],
+            q50[0]
+        );
+    }
 
     #[test]
     fn permute_components_with_bisection_returns_permutation() {

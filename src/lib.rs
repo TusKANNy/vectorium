@@ -60,6 +60,9 @@ pub use encoders::dense_scalar::{
     ScalarDenseQuantizer, ScalarDenseQuantizerDotProduct, ScalarDenseQuantizerSame,
     ScalarDenseQuantizerSquaredEuclidean, ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
 };
+pub use encoders::dotpacking8_fixedu8::{
+    DotPacking8FixedU8Encoder, DotPacking8Fixedu8QueryEvaluator,
+};
 pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Encoder, DotVByteFixedU8QueryEvaluator};
 #[cfg(feature = "multivec")]
 pub use encoders::multivec_pq::{MultiVecPQQueryEvaluator, MultiVecProductQuantizer};
@@ -108,6 +111,11 @@ pub type ScalarSparseDatasetGrowable<C, W, V, D> =
 
 pub type PlainSparseDataset<C, V, D> = SparseDataset<PlainSparseQuantizer<C, V, D>>;
 pub type PlainSparseDatasetGrowable<C, V, D> = SparseDatasetGrowable<PlainSparseQuantizer<C, V, D>>;
+
+// Useful type aliases for packed sparse dataset types
+pub type DotPacking8FixedU8Dataset = PackedSparseDataset<DotPacking8FixedU8Encoder>;
+pub type DotPacking8FixedU8DatasetGrowable =
+    PackedSparseDatasetGrowable<DotPacking8FixedU8Encoder>;
 
 pub use core::dataset::{ScoredRange, ScoredVector};
 

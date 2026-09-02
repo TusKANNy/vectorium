@@ -65,6 +65,8 @@ const fn gen_block8_table() -> [Block8Constants; 16] {
 }
 
 pub fn encode_blocks(gaps: &[u32]) -> (Vec<u8>, Vec<u8>) {
+    debug_assert!(N <= 8); // below we assume N gaps fit in a u128.
+
     let n_blocks = (gaps.len() + N - 1) / N;
     let mut selectors = vec![0u8; (n_blocks + 1) / 2];
     let mut payloads = Vec::new();
@@ -83,6 +85,7 @@ pub fn encode_blocks(gaps: &[u32]) -> (Vec<u8>, Vec<u8>) {
             selectors[idx / 2] |= (selector_b & 0x0F) << 4;
         }
 
+        // Here we assume that b <= 16, this way N (<= 8) values fit in a u128
         let mut acc = 0u128;
         for (i, &g) in chunk.iter().enumerate() {
             acc |= (g as u128) << (i as u8 * b);

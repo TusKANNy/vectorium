@@ -1,4 +1,6 @@
 pub mod dense_scalar;
+pub mod dotpacking8;
+pub mod dotpacking8_fixedu8;
 pub mod dotvbyte_fixedu8;
 #[cfg(feature = "multivec")]
 pub mod multivec_pq;
