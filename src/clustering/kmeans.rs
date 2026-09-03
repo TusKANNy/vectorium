@@ -34,6 +34,9 @@ use std::time::Instant;
 /// produce `inf` centroids, an `inf` objective, and — because `best_obj` starts
 /// at `f32::MAX` — a silently empty return instead of a failure. Callers must
 /// ensure stored means stay in the finite range of `C` (or keep `C = f32`).
+/// The fixed-point types satisfy the bounds too, but `FixedU8`/`FixedU16` are
+/// *unsigned*: their `from_f32_saturating` really does clamp, yet every negative
+/// component clamps to `0`, so they silently destroy centred data as `T` or `C`.
 type Centroids<V> = PlainDenseDataset<V, SquaredEuclideanDistance>;
 
 pub struct KMeans {
@@ -154,8 +157,10 @@ impl KMeans {
         let n = dataset.len();
         let d = dataset.output_dim();
 
-        // Counting-sort + cluster-parallel mean: a single O(n*d) pass over the points,
-        // but scratch is one u32 per point (the grouping permutation) plus O(k) offsets
+        // Counting-sort + cluster-parallel mean: two serial O(n) passes over the
+        // assignments (the histogram and the scatter) followed by a single parallel
+        // O(n*d) pass over the points.
+        // Scratch is one u32 per point (the grouping permutation) plus O(k) offsets
         // — independent of thread count — instead of n_threads * k * d private
         // accumulators. Clusters are processed in parallel into one shared (sums, counts)
         // output; each cluster's members are visited in ascending point order from the
@@ -174,8 +179,7 @@ impl KMeans {
 
             let mut grouped = vec![0u32; n];
             let mut cursor = offsets.clone();
-            for i in 0..n {
-                let ci = assignments[i].1;
+            for (i, &(_, ci)) in assignments.iter().enumerate().take(n) {
                 grouped[cursor[ci]] = i as u32;
                 cursor[ci] += 1;
             }
@@ -277,10 +281,7 @@ impl KMeans {
         values
             .iter()
             .map(|x| {
-                C::from_f32_saturating(
-                    x.to_f32()
-                        .expect("value type is not representable as f32"),
-                )
+                C::from_f32_saturating(x.to_f32().expect("value type is not representable as f32"))
             })
             .collect()
     }
@@ -466,6 +467,10 @@ impl KMeans {
     /// and `inf < f32::MAX` is false, this method then returns an **empty** centroid set instead
     /// of failing. Callers must keep stored means inside the finite range of `C`, or use
     /// `C = f32`.
+    ///
+    /// The fixed-point scalar types satisfy `T`/`C`'s bounds as well, and for them
+    /// `from_f32_saturating` really does clamp — but `FixedU8`/`FixedU16` are *unsigned*,
+    /// so every negative component clamps to `0`. Centred data must not be stored in them.
     ///
     /// **Reproducibility caveat:** with a fixed [`KMeansBuilder::seed`], initialization and the
     /// update step are deterministic, but end-to-end reproducibility additionally requires the
@@ -853,7 +858,7 @@ mod tests {
             &dataset,
             2,
             None,
-            |c| FlatIndex::from(c),
+            FlatIndex::from,
             &(),
         );
         assert_eq!(centroids.len(), 2, "expected exactly 2 centroids");
@@ -936,7 +941,14 @@ mod tests {
         }
         let dataset: PlainDenseDataset<f32, SquaredEuclideanDistance> = builder.into();
 
-        let assignments = vec![(0.0, 0usize), (0.0, 0), (0.0, 0), (0.0, 1), (0.0, 1), (0.0, 1)];
+        let assignments = vec![
+            (0.0, 0usize),
+            (0.0, 0),
+            (0.0, 0),
+            (0.0, 1),
+            (0.0, 1),
+            (0.0, 1),
+        ];
         let mut rng = StdRng::seed_from_u64(0);
         let (n_splits, hist, centroids): (_, _, Centroids<f32>) =
             KMeans::update_and_split(&dataset, None, 2, &assignments, &mut rng, false);
@@ -1015,10 +1027,9 @@ mod tests {
                 });
             match &reference {
                 None => reference = Some(bits),
-                Some(ref_bits) => assert_eq!(
-                    &bits, ref_bits,
-                    "centroid bits differ at thread count {t}"
-                ),
+                Some(ref_bits) => {
+                    assert_eq!(&bits, ref_bits, "centroid bits differ at thread count {t}")
+                }
             }
         }
     }
@@ -1037,14 +1048,8 @@ mod tests {
         let weights = [1.0f32, 3.0, 2.0, 2.0];
         let assignments = vec![(0.0, 0usize), (0.0, 0), (0.0, 1), (0.0, 1)];
         let mut rng = StdRng::seed_from_u64(0);
-        let (n_splits, hist, centroids): (_, _, Centroids<f32>) = KMeans::update_and_split(
-            &dataset,
-            Some(&weights),
-            2,
-            &assignments,
-            &mut rng,
-            false,
-        );
+        let (n_splits, hist, centroids): (_, _, Centroids<f32>) =
+            KMeans::update_and_split(&dataset, Some(&weights), 2, &assignments, &mut rng, false);
 
         assert_eq!(n_splits, 0);
         assert_eq!(hist, vec![4.0, 4.0]);
