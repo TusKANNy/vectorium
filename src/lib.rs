@@ -219,6 +219,17 @@ pub trait IndexSerializer: Sized {
 
 impl<T> IndexSerializer for T where T: Dataset {}
 
+/// A [`RerankIndex`](core::rerank_index::RerankIndex) is not a [`Dataset`], so the blanket impl
+/// above does not reach it, but it derives `Serialize`/`Deserialize` and therefore serializes
+/// through the same single-file bincode format as every other index.
+impl<FirstStageIndex, RerankDataset> IndexSerializer
+    for core::rerank_index::RerankIndex<FirstStageIndex, RerankDataset>
+where
+    FirstStageIndex: core::index::Index,
+    RerankDataset: Dataset,
+{
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +269,45 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(dataset, loaded);
+    }
+
+    /// A `RerankIndex` round-trips as one file, carrying both stages.
+    ///
+    /// It is not a `Dataset`, so it reaches `IndexSerializer` through its own impl rather than
+    /// the blanket one; this pins that the impl is present and that both stages survive.
+    #[test]
+    fn index_serializer_round_trip_rerank_index() {
+        use crate::core::flat_index::FlatIndex;
+        use crate::core::rerank_index::RerankIndex;
+        use crate::encoders::dense_scalar::PlainDenseQuantizer;
+
+        type Enc = PlainDenseQuantizer<f32, DotProduct>;
+        fn dataset(vectors: &[[f32; 2]]) -> DenseDataset<Enc> {
+            let mut growable = DenseDatasetGrowable::new(Enc::new(2));
+            for vector in vectors {
+                growable.push(DenseVectorView::new(vector));
+            }
+            growable.into()
+        }
+
+        let first_stage = dataset(&[[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]);
+        let rerank = dataset(&[[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]);
+        let index = RerankIndex::new(FlatIndex::from(first_stage), rerank);
+
+        let query = DenseVectorView::new(&[1.0f32, 1.0]);
+        let expected = index.search(query, query, 3, 3, &(), &(), None, None, false);
+
+        let path = temp_path("rerank_round_trip");
+        index.save_index(path.to_str().unwrap()).unwrap();
+        let loaded: RerankIndex<FlatIndex<DenseDataset<Enc>>, DenseDataset<Enc>> =
+            RerankIndex::load_index(path.to_str().unwrap()).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(loaded.len(), index.len());
+        let actual = loaded.search(query, query, 3, 3, &(), &(), None, None, false);
+        let expected_ids: Vec<_> = expected.iter().map(|s| s.vector).collect();
+        let actual_ids: Vec<_> = actual.iter().map(|s| s.vector).collect();
+        assert_eq!(actual_ids, expected_ids);
     }
 
     #[test]
