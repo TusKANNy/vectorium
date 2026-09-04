@@ -464,14 +464,13 @@ fn compute_dense_groundtruth<V, D>(
     }
 }
 
-const PQ_SUPPORTED_SUBSPACES: [usize; 11] = [256, 192, 128, 96, 64, 48, 32, 24, 16, 8, 4];
-
-/// Candidates considered when `--pq-subspaces 0` asks for automatic selection.
+/// Order matters: `--pq-subspaces 0` picks the first entry that divides the dimension.
 ///
-/// Deliberately *not* `PQ_SUPPORTED_SUBSPACES`: the wider widths (256, 192, 48, 24) were added
-/// so they can be requested explicitly, and folding them into the auto path would silently
-/// change the `M` picked by default for every dimension that they divide.
-const PQ_AUTO_SUBSPACES: [usize; 7] = [128, 96, 64, 32, 16, 8, 4];
+/// The four widest values sit at the end so that adding them cannot change what auto-selection
+/// returns. Each is a multiple of an earlier entry (`8 | 24`, `16 | 48`, `64 | 192`, `128 | 256`),
+/// so any dimension one of them divides is already matched further up the list and the search
+/// never reaches them. They are only ever selected by being asked for explicitly.
+const PQ_SUPPORTED_SUBSPACES: [usize; 11] = [128, 96, 64, 32, 16, 8, 4, 256, 192, 48, 24];
 
 #[derive(Copy, Clone, Debug)]
 enum PqDistanceKind {
@@ -507,12 +506,12 @@ fn choose_pq_subspaces(dim: usize, requested: usize) -> Result<usize, String> {
         return Ok(requested);
     }
 
-    PQ_AUTO_SUBSPACES
+    PQ_SUPPORTED_SUBSPACES
         .iter()
         .copied()
         .find(|&m| m <= dim && dim.is_multiple_of(m))
         .ok_or_else(|| {
-            let supported = PQ_AUTO_SUBSPACES
+            let supported = PQ_SUPPORTED_SUBSPACES
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
