@@ -191,6 +191,21 @@ impl<D: RabitqSupportedDistance> RabitqQuantizer<D> {
         }
     }
 
+    /// [`train`](Self::train) over a source stored at a narrower value type, e.g. `f16`.
+    ///
+    /// Means are accumulated in `f32` exactly as above; only the source buffer is narrower.
+    pub fn train_narrow<V, Ds>(dataset: &PlainDenseDataset<V, Ds>, config: RabitqConfig) -> Self
+    where
+        V: crate::ValueType + crate::Float + crate::FromF32,
+        Ds: ScalarDenseSupportedDistance,
+    {
+        Self {
+            space: RabitqSpace::train_narrow(dataset, config.rotate, config.seed),
+            config,
+            _distance: PhantomData,
+        }
+    }
+
     /// Encode one `d`-long input vector into a full output record `out`
     /// (`output_dim() = num_words() + 1` words): the sign code of `r = P·(x − mean)` followed by the
     /// metadata word.
@@ -206,6 +221,40 @@ impl<D: RabitqSupportedDistance> RabitqQuantizer<D> {
         pack_signs_into(scratch, &mut out[..num_words]);
         // Scan-ready constants: f_add = ‖r‖² and s = ‖r‖/factor (see `pack_metadata`).
         out[num_words] = pack_metadata(norm * norm, norm / factor);
+    }
+
+    /// Reconstruct a stored code back into the **original data space**: `x̂ = mean + P⁻¹·r̂`.
+    ///
+    /// [`decode_vector`](DenseVectorEncoder::decode_vector) returns bare `±1` signs, which are the
+    /// code but not a reconstruction — they carry no scale. The estimator supplies it: with
+    /// `factor = Σ|r_i| / (√d·‖r‖)` and the stored `s = ‖r‖/factor`, the RaBitQ estimate is
+    /// `⟨r, q_r⟩ ≈ s·⟨signs, q_r⟩/√d`, so the vector being scored against the query is
+    ///
+    /// ```text
+    /// r̂ = s · signs / √d
+    /// ```
+    ///
+    /// i.e. the sign pattern rescaled to the norm the estimator attributes to it.
+    ///
+    /// **Unlike the RaBitQ-ext case, this does NOT make the first-stage score exactly `⟨q, x̂⟩`.**
+    /// This encoder quantizes the *query* too (`query_bits`), so its score is bilinear in the two
+    /// codes and carries query-side error that no choice of `x̂` absorbs. A residual built on this
+    /// reconstruction is therefore a heuristic, not the exact decomposition `rabitq-ext` admits —
+    /// and the residual sum *keeps* that query-side error where a plain rerank stage would have
+    /// replaced it. Expect the gap to close as `query_bits` rises. Provided so the question can be
+    /// settled by measurement rather than by this argument.
+    pub fn reconstruct(&self, code: &[u64]) -> Vec<f32> {
+        let (_, s) = unpack_metadata(code[self.num_words()]);
+        let inv_sqrt_d = 1.0 / (self.d() as f32).sqrt();
+        let mut r_hat = Vec::with_capacity(self.d());
+        for &word in &code[..self.num_words()] {
+            for i in 0..WORD_BITS {
+                let set = (word >> i) & 1 == 1;
+                r_hat.push(if set { s * inv_sqrt_d } else { -s * inv_sqrt_d });
+            }
+        }
+        r_hat.truncate(self.d());
+        self.space.from_residual(&r_hat)
     }
 
     /// Input dimensionality.
@@ -663,6 +712,29 @@ where
     }
 }
 
+/// Same, from a source held at half precision.
+///
+/// Lets a caller that already has the collection as `f16` — which is how the graph indexes store
+/// it — encode without first materializing an `f32` copy. Means are still accumulated in `f32`;
+/// each vector is upcast as it is encoded.
+impl<D, Ds> ConvertFrom<&PlainDenseDataset<half::f16, Ds>>
+    for crate::DenseDataset<RabitqQuantizer<D>>
+where
+    D: RabitqSupportedDistance,
+    Ds: ScalarDenseSupportedDistance,
+{
+    type Config = RabitqConfig;
+
+    fn convert_from(dataset: &PlainDenseDataset<half::f16, Ds>, config: RabitqConfig) -> Self {
+        let encoder = RabitqQuantizer::<D>::train_narrow(dataset, config);
+        crate::DenseDataset::<RabitqQuantizer<D>>::from_flat_par_upcast(
+            encoder,
+            dataset.values(),
+            dataset.len(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -749,6 +821,72 @@ mod tests {
 
         assert_eq!(from_ip.values(), from_l2.values());
         assert_eq!(from_ip.values(), other_metric.values());
+    }
+
+    #[test]
+    fn one_bit_reconstruction_is_informative_and_norm_matched() {
+        // `r̂ = s·signs/√d` is a derivation from the estimator, so check it against the data: the
+        // reconstruction must (a) be closer to `x` than the mean alone is -- otherwise there is no
+        // residual worth encoding -- and (b) carry roughly the right norm rather than an arbitrary
+        // scale, which is what would break a residual built on it.
+        let (n, d) = (300usize, 128usize);
+        let centres: Vec<Vec<f32>> = (0..6)
+            .map(|c| {
+                (0..d)
+                    .map(|i| (((i * 37 + c * 811) % 241) as f32 / 241.0) - 0.5)
+                    .collect()
+            })
+            .collect();
+        let vectors: Vec<Vec<f32>> = (0..n)
+            .map(|j| {
+                let c = &centres[j % 6];
+                (0..d)
+                    .map(|i| c[i] + 0.1 * (((i * 19 + j * 71) % 89) as f32 / 89.0 - 0.5))
+                    .collect()
+            })
+            .collect();
+        let plain = plain_dataset(&vectors);
+        let encoder = RabitqIp::train(
+            &plain,
+            RabitqConfig {
+                seed: 9,
+                ..Default::default()
+            },
+        );
+        let data = crate::DenseDataset::<RabitqIp>::from_flat_par(encoder, plain.values(), n);
+
+        let mean: Vec<f32> = (0..d)
+            .map(|i| vectors.iter().map(|v| v[i]).sum::<f32>() / n as f32)
+            .collect();
+
+        let (mut err_hat, mut err_mean) = (0.0f64, 0.0f64);
+        for (id, x) in vectors.iter().enumerate() {
+            let x_hat = data.encoder().reconstruct(data.get(id as u64).values());
+            assert_eq!(x_hat.len(), d);
+            err_hat += x
+                .iter()
+                .zip(&x_hat)
+                .map(|(a, b)| ((a - b) * (a - b)) as f64)
+                .sum::<f64>()
+                .sqrt();
+            err_mean += x
+                .iter()
+                .zip(&mean)
+                .map(|(a, b)| ((a - b) * (a - b)) as f64)
+                .sum::<f64>()
+                .sqrt();
+        }
+        println!(
+            "1-bit: mean ||x - x̂|| {:.5}   mean ||x - mean|| {:.5}   ratio {:.3}",
+            err_hat / n as f64,
+            err_mean / n as f64,
+            err_hat / err_mean,
+        );
+        assert!(
+            err_hat < err_mean,
+            "the 1-bit reconstruction is no better than the centroid, so there is no residual \
+             worth encoding: ||x - x̂|| {err_hat} vs ||x - mean|| {err_mean}"
+        );
     }
 
     #[test]
@@ -1417,5 +1555,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Encoding an `f16` collection must give exactly the codes the `f32` path gives for the same
+    /// (already-rounded) values: the `f16` source changes the input precision, never the encoder.
+    /// The residual means are accumulated in `f32` on both paths, so the trained space is identical
+    /// too.
+    #[test]
+    fn f16_source_encodes_exactly_like_the_equivalent_f32_source() {
+        use crate::dataset::ConvertFrom;
+        use half::f16;
+
+        let d = 64;
+        let n = 120;
+        let rows: Vec<Vec<f32>> = (0..n)
+            .map(|i| {
+                (0..d)
+                    .map(|j| f16::from_f32(((i * d + j) as f32 * 0.13).sin() * 2.0).to_f32())
+                    .collect()
+            })
+            .collect();
+
+        let plain_f32 = plain_dataset(&rows);
+        let mut growable =
+            crate::PlainDenseDatasetGrowable::<f16, DotProduct>::new(crate::PlainDenseQuantizer::<
+                f16,
+                DotProduct,
+            >::new(d));
+        for row in &rows {
+            let half: Vec<f16> = row.iter().map(|&v| f16::from_f32(v)).collect();
+            growable.push(DenseVectorView::new(&half));
+        }
+        let plain_f16: crate::PlainDenseDataset<f16, DotProduct> = growable.into();
+
+        let config = RabitqConfig::default();
+        let from_f32: crate::DenseDataset<RabitqIp> = ConvertFrom::convert_from(&plain_f32, config);
+        let from_f16: crate::DenseDataset<RabitqIp> = ConvertFrom::convert_from(&plain_f16, config);
+
+        assert_eq!(from_f16.len(), from_f32.len());
+        assert_eq!(from_f16.values(), from_f32.values());
     }
 }

@@ -430,6 +430,55 @@ where
     }
 }
 
+impl<E> DenseDataset<E>
+where
+    E: DenseVectorEncoder<InputValueType = f32>,
+{
+    /// [`from_flat_par`](Self::from_flat_par) for a source held at half precision.
+    ///
+    /// The compressing encoders (PQ, RaBitQ) take `f32` input, so a caller holding an `f16`
+    /// collection would otherwise have to materialize a full `f32` copy
+    /// Each worker upcasts one vector at a time into a reusable scratch buffer, so
+    /// the extra memory is `output_dim` floats per thread.
+    ///
+    /// The resulting codes are those of the `f16` values, which differ from codes derived from
+    /// the original `f32` collection by at most the `f16` rounding of the input.
+    pub fn from_flat_par_upcast<S>(encoder: E, flat_input: &[S], n_vecs: usize) -> Self
+    where
+        E: Sync,
+        E::OutputValueType: Send,
+        S: crate::ValueType + Sync,
+    {
+        let input_dim = encoder.input_dim();
+        let output_dim = encoder.output_dim();
+
+        assert_eq!(
+            flat_input.len(),
+            n_vecs * input_dim,
+            "flat_input length must equal n_vecs * input_dim"
+        );
+
+        let mut data = vec![num_traits::Zero::zero(); n_vecs * output_dim];
+        data.par_chunks_mut(output_dim)
+            .zip(flat_input.par_chunks_exact(input_dim))
+            .for_each_init(
+                || vec![0.0f32; input_dim],
+                |scratch, (out, chunk)| {
+                    for (dst, src) in scratch.iter_mut().zip(chunk) {
+                        *dst = src
+                            .to_f32()
+                            .expect("source value is not representable as f32");
+                    }
+                    let mut sink = crate::utils::SliceSink::new(out);
+                    encoder.push_encoded(DenseVectorView::new(scratch), &mut sink);
+                    sink.finish();
+                },
+            );
+
+        Self::from_raw(data.into_boxed_slice(), n_vecs, encoder)
+    }
+}
+
 impl<E> From<DenseDatasetGrowable<E>> for DenseDataset<E>
 where
     E: DenseVectorEncoder,
@@ -761,5 +810,28 @@ mod tests {
             ConvertFrom::convert_from(&dataset, ());
         assert_eq!(converted.len(), dataset.len());
         assert_eq!(converted.values(), dataset.values());
+    }
+
+    /// The upcasting encode path must produce exactly what the `f32` path produces when handed
+    /// the same values. This is the contract that lets a caller hold the collection as `f16`
+    /// without a full `f32` copy: the only difference from the `f32` path is the source's
+    /// precision, never the encoding.
+    #[test]
+    fn from_flat_par_upcast_matches_from_flat_par_on_the_same_values() {
+        use half::f16;
+
+        let d = 8;
+        let n = 40;
+        let source_f16: Vec<f16> = (0..n * d)
+            .map(|i| f16::from_f32((i as f32 * 0.37).sin() * 3.0))
+            .collect();
+        let source_f32: Vec<f32> = source_f16.iter().map(|v| v.to_f32()).collect();
+
+        let encoder = ScalarDenseQuantizer::<f32, f16, DotProduct>::new(d);
+        let from_f32 = DenseDataset::from_flat_par(encoder.clone(), &source_f32, n);
+        let from_f16 = DenseDataset::from_flat_par_upcast(encoder, &source_f16, n);
+
+        assert_eq!(from_f16.len(), from_f32.len());
+        assert_eq!(from_f16.values(), from_f32.values());
     }
 }

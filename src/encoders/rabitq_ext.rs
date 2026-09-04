@@ -335,7 +335,28 @@ impl<D: RabitqSupportedDistance> RabitqExtQuantizer<D> {
             config.total_bits
         );
         let space = RabitqSpace::train(dataset, config.rotate, config.seed);
+        Self::from_space(space, config)
+    }
 
+    /// [`train`](Self::train) over a source stored at a narrower value type, e.g. `f16`.
+    ///
+    /// Means are accumulated in `f32` exactly as above; only the source buffer is narrower.
+    pub fn train_narrow<V, Ds>(dataset: &PlainDenseDataset<V, Ds>, config: RabitqExtConfig) -> Self
+    where
+        V: crate::ValueType + crate::Float + crate::FromF32,
+        Ds: ScalarDenseSupportedDistance,
+    {
+        assert!(
+            matches!(config.total_bits, 2 | 4 | 8),
+            "RabitqExtQuantizer requires total_bits in {{2, 4, 8}}, got {}; \
+             for total_bits = 1 use RabitqQuantizer (the 1-bit encoder) instead",
+            config.total_bits
+        );
+        let space = RabitqSpace::train_narrow(dataset, config.rotate, config.seed);
+        Self::from_space(space, config)
+    }
+
+    fn from_space(space: RabitqSpace, config: RabitqExtConfig) -> Self {
         // Constant rescale factor for the fast build path, estimated once here (negligible vs. the
         // per-vector encode). `ex_bits = total_bits − 1 ≥ 1` always holds (total_bits ∈ {2,4,8}).
         let t_const = config
@@ -414,6 +435,21 @@ impl<D: RabitqSupportedDistance> RabitqExtQuantizer<D> {
             .into_iter()
             .map(|u| s_ext * (u as f32 + cb))
             .collect()
+    }
+
+    /// Reconstruct a stored code back into the **original data space**: `x̂ = mean + P⁻¹·r̂`.
+    ///
+    /// [`decode_vector`](DenseVectorEncoder::decode_vector) stops at `r̂`, which lives in the
+    /// rotated, centered residual space and so cannot be subtracted from an input vector. This is
+    /// the form residual reranking needs: the second stage encodes `x − x̂`, and by orthogonality of
+    /// `P` the estimator's own first-stage score is exactly `⟨q, x̂⟩` plus the per-query additive
+    /// term — so `⟨q, x⟩ = first_stage_score + ⟨q, x − x̂⟩` is an exact decomposition under an
+    /// additive metric.
+    ///
+    /// `code` is one stored vector's words, `total_bits · num_words` planes followed by the packed
+    /// metadata word — exactly what `DenseDataset` hands back for a vector id.
+    pub fn reconstruct(&self, code: &[u64]) -> Vec<f32> {
+        self.space.from_residual(&self.reconstruct_residual(code))
     }
 
     fn rotated_query_evaluator<'e>(
@@ -751,6 +787,29 @@ where
     }
 }
 
+/// Same, from a source held at half precision.
+///
+/// Lets a caller that already has the collection as `f16` — which is how the graph indexes store
+/// it — encode without first materializing an `f32` copy. Means are still accumulated in `f32`;
+/// each vector is upcast as it is encoded.
+impl<D, Ds> ConvertFrom<&PlainDenseDataset<half::f16, Ds>>
+    for crate::DenseDataset<RabitqExtQuantizer<D>>
+where
+    D: RabitqSupportedDistance,
+    Ds: ScalarDenseSupportedDistance,
+{
+    type Config = RabitqExtConfig;
+
+    fn convert_from(dataset: &PlainDenseDataset<half::f16, Ds>, config: RabitqExtConfig) -> Self {
+        let encoder = RabitqExtQuantizer::<D>::train_narrow(dataset, config);
+        crate::DenseDataset::<RabitqExtQuantizer<D>>::from_flat_par_upcast(
+            encoder,
+            dataset.values(),
+            dataset.len(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -837,6 +896,194 @@ mod tests {
                     "total_bits {total_bits}"
                 );
                 assert_eq!(converted.encoder(), expected.encoder());
+            }
+        }
+    }
+
+    /// The premise residual reranking stands on: the estimator's score IS the inner product with
+    /// the reconstruction, not a statistical estimate of the inner product with the *original*.
+    ///
+    /// If it were the latter, `⟨q,x⟩ = first_stage_score + ⟨q, x − x̂⟩` would double-count and a
+    /// residual second stage would be worse than an independent one. Because it is the former, the
+    /// decomposition is exact under dot product and 8 bits spent on `x − x̂` strictly beat 8 bits
+    /// spent on `x`.
+    #[test]
+    fn estimator_score_equals_the_inner_product_with_the_reconstruction() {
+        use crate::core::vector_encoder::VectorEncoder;
+
+        let vectors: Vec<Vec<f32>> = (0..12)
+            .map(|j| {
+                (0..64)
+                    .map(|i| ((i * 7 + j * 13) as f32 * 0.11).sin() * (1.0 + j as f32 * 0.05))
+                    .collect()
+            })
+            .collect();
+        let plain = plain_dataset(&vectors);
+
+        for total_bits in [2u32, 4, 8] {
+            let config = RabitqExtConfig {
+                total_bits,
+                seed: 11,
+                ..Default::default()
+            };
+            let encoder = RabitqExtIp::train(&plain, config);
+            let data = crate::DenseDataset::<RabitqExtIp>::from_flat_par(
+                encoder.clone(),
+                plain.values(),
+                plain.len(),
+            );
+
+            let query: Vec<f32> = (0..64).map(|i| ((i as f32) * 0.37).cos()).collect();
+            let evaluator = data
+                .encoder()
+                .query_evaluator(DenseVectorView::new(&query), &());
+
+            // Reconstruct every stored vector, then score the reconstructions through the PLAIN
+            // encoder's own evaluator -- so the sign and offset conventions are the metric's, not
+            // this test's guess at them.
+            let reconstructions: Vec<Vec<f32>> = (0..plain.len())
+                .map(|id| data.encoder().reconstruct(data.get(id as u64).values()))
+                .collect();
+            let plain_hat = plain_dataset(&reconstructions);
+            let plain_eval = plain_hat
+                .encoder()
+                .query_evaluator(DenseVectorView::new(&query), &());
+
+            for id in 0..plain.len() {
+                let code = data.get(id as u64);
+                let estimated = evaluator.compute_distance(code).distance();
+                let direct = plain_eval
+                    .compute_distance(plain_hat.get(id as u64))
+                    .distance();
+                let scale = estimated.abs().max(direct.abs()).max(1.0);
+                assert!(
+                    (estimated - direct).abs() / scale < 2e-3,
+                    "total_bits {total_bits}, id {id}: estimator {estimated} vs \
+                     plain score of reconstruct(code) {direct}"
+                );
+            }
+        }
+    }
+
+    /// Is `first_stage + rerank(x − x̂)` actually a better estimate of `⟨q,x⟩` than `rerank(x)`?
+    ///
+    /// This is the arithmetic of residual reranking with every index and heap removed: score each
+    /// vector three ways against the exact plain score and compare the ERRORS. If the residual sum
+    /// is not more accurate here, no amount of plumbing above it can make it so, and the idea is
+    /// wrong rather than merely mis-wired.
+    #[test]
+    fn residual_sum_beats_encoding_the_whole_vector() {
+        use crate::core::vector_encoder::VectorEncoder;
+
+        // Clustered, so the first stage has structure to capture and `x̂` is informative.
+        let (n, d) = (400usize, 128usize);
+        let centres: Vec<Vec<f32>> = (0..8)
+            .map(|c| {
+                (0..d)
+                    .map(|i| (((i * 31 + c * 977) % 251) as f32 / 251.0) - 0.5)
+                    .collect()
+            })
+            .collect();
+        let vectors: Vec<Vec<f32>> = (0..n)
+            .map(|j| {
+                let c = &centres[j % 8];
+                (0..d)
+                    .map(|i| c[i] + 0.08 * (((i * 17 + j * 53) % 97) as f32 / 97.0 - 0.5))
+                    .collect()
+            })
+            .collect();
+        let plain = plain_dataset(&vectors);
+        let query: Vec<f32> = (0..d).map(|i| ((i as f32) * 0.21).sin() * 0.5).collect();
+
+        let exact_eval = plain
+            .encoder()
+            .query_evaluator(DenseVectorView::new(&query), &());
+
+        for first_bits in [2u32, 4] {
+            // Stage 1, and the reconstruction it implies.
+            let cfg1 = RabitqExtConfig {
+                total_bits: first_bits,
+                seed: 3,
+                ..Default::default()
+            };
+            let first = crate::DenseDataset::<RabitqExtIp>::from_flat_par(
+                RabitqExtIp::train(&plain, cfg1),
+                plain.values(),
+                n,
+            );
+            let residuals: Vec<Vec<f32>> = (0..n)
+                .map(|id| {
+                    let x_hat = first.encoder().reconstruct(first.get(id as u64).values());
+                    vectors[id].iter().zip(&x_hat).map(|(a, b)| a - b).collect()
+                })
+                .collect();
+
+            // Seed sweep: kannolo gives BOTH stages `..Default::default()`, so the rerank
+            // encoder re-rotates the residual by the very `P` that produced it. `seed: 3` here is
+            // the first stage's seed, i.e. that same-rotation case; `seed: 5` is an independent
+            // rotation. If the two differ, the shared rotation is the defect.
+            for rr_seed in [3u64, 5] {
+                let cfg8 = RabitqExtConfig {
+                    total_bits: 8,
+                    seed: rr_seed,
+                    ..Default::default()
+                };
+                // Second stage over the residuals, and — as the control — over the whole vectors.
+                let resid_plain = plain_dataset(&residuals);
+                let rr_resid = crate::DenseDataset::<RabitqExtIp>::from_flat_par(
+                    RabitqExtIp::train(&resid_plain, cfg8),
+                    resid_plain.values(),
+                    n,
+                );
+                let rr_full = crate::DenseDataset::<RabitqExtIp>::from_flat_par(
+                    RabitqExtIp::train(&plain, cfg8),
+                    plain.values(),
+                    n,
+                );
+
+                let e1 = first
+                    .encoder()
+                    .query_evaluator(DenseVectorView::new(&query), &());
+                let er = rr_resid
+                    .encoder()
+                    .query_evaluator(DenseVectorView::new(&query), &());
+                let ef = rr_full
+                    .encoder()
+                    .query_evaluator(DenseVectorView::new(&query), &());
+
+                let (mut err_sum, mut err_full, mut norm_r, mut norm_x) =
+                    (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+                for id in 0..n {
+                    let exact = exact_eval.compute_distance(plain.get(id as u64)).distance();
+                    let s1 = e1.compute_distance(first.get(id as u64)).distance();
+                    let sr = er.compute_distance(rr_resid.get(id as u64)).distance();
+                    let sf = ef.compute_distance(rr_full.get(id as u64)).distance();
+                    err_sum += ((s1 + sr) - exact).abs() as f64;
+                    err_full += (sf - exact).abs() as f64;
+                    norm_r += residuals[id]
+                        .iter()
+                        .map(|v| (v * v) as f64)
+                        .sum::<f64>()
+                        .sqrt();
+                    norm_x += vectors[id]
+                        .iter()
+                        .map(|v| (v * v) as f64)
+                        .sum::<f64>()
+                        .sqrt();
+                }
+                println!(
+                    "first={first_bits}b rerank_seed={rr_seed}{}  mean|err| residual-sum {:.6}  \
+                 whole-vector {:.6}  ratio {:.3}   mean||r||/||x|| {:.3}",
+                    if rr_seed == 3 {
+                        " (SAME rotation as stage 1)"
+                    } else {
+                        " (independent)      "
+                    },
+                    err_sum / n as f64,
+                    err_full / n as f64,
+                    err_sum / err_full,
+                    norm_r / norm_x,
+                );
             }
         }
     }
@@ -1500,6 +1747,50 @@ mod tests {
                 dataset.permute(&PERMUTATION).permute(&inverse),
                 dataset,
                 "round trip failed at total_bits={total_bits}"
+            );
+        }
+    }
+
+    /// Same contract as the 1-bit encoder: an `f16` source must yield exactly the codes the `f32`
+    /// path yields for the same (already-rounded) values.
+    #[test]
+    fn f16_source_encodes_exactly_like_the_equivalent_f32_source() {
+        use crate::dataset::ConvertFrom;
+        use half::f16;
+
+        let d = 64;
+        let n = 120;
+        let rows: Vec<Vec<f32>> = (0..n)
+            .map(|i| {
+                (0..d)
+                    .map(|j| f16::from_f32(((i * d + j) as f32 * 0.13).sin() * 2.0).to_f32())
+                    .collect()
+            })
+            .collect();
+
+        let plain_f32 = plain_dataset(&rows);
+        let mut growable =
+            crate::PlainDenseDatasetGrowable::<f16, DotProduct>::new(crate::PlainDenseQuantizer::<
+                f16,
+                DotProduct,
+            >::new(d));
+        for row in &rows {
+            let half: Vec<f16> = row.iter().map(|&v| f16::from_f32(v)).collect();
+            growable.push(DenseVectorView::new(&half));
+        }
+        let plain_f16: crate::PlainDenseDataset<f16, DotProduct> = growable.into();
+
+        for total_bits in [2u32, 4, 8] {
+            let config = ext_config(total_bits, true);
+            let from_f32: crate::DenseDataset<RabitqExtIp> =
+                ConvertFrom::convert_from(&plain_f32, config);
+            let from_f16: crate::DenseDataset<RabitqExtIp> =
+                ConvertFrom::convert_from(&plain_f16, config);
+
+            assert_eq!(
+                from_f16.values(),
+                from_f32.values(),
+                "codes differ at total_bits={total_bits}"
             );
         }
     }

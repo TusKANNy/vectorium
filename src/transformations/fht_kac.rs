@@ -104,6 +104,53 @@ impl FhtKacRotator {
             rescale(v, 0.25);
         }
     }
+
+    /// Apply `P⁻¹·src` — equivalently `Pᵀ·src`, since `P` is orthonormal.
+    ///
+    /// Needed to reconstruct a quantized vector in the **original** data space. RaBitQ's encoders
+    /// decode into the rotated, centered residual space, so `x̂ = mean + P⁻¹·r̂`; without this the
+    /// reconstruction cannot be compared with, or subtracted from, the input.
+    pub fn rotate_inverse(&self, src: &[f32]) -> Vec<f32> {
+        let mut v = src.to_vec();
+        self.rotate_inverse_inplace(&mut v);
+        v
+    }
+
+    /// In-place `P⁻¹·v`, the exact reversal of [`rotate_inplace`](Self::rotate_inplace).
+    ///
+    /// Each primitive is its own inverse or trivially so, which is what makes this a reversal of
+    /// the loop rather than a second transform:
+    ///
+    ///   * `flip_sign` is a ±1 diagonal — an involution;
+    ///   * `fht` followed by `rescale(1/√trunc_dim)` is `H/√n`, symmetric and orthogonal, so it is
+    ///     also an involution (`H² = n·I`);
+    ///   * `kacs_walk` squares to `2·I`, so its inverse is itself followed by `×0.5`.
+    ///
+    /// So the rounds are replayed backwards with the order *inside* each round reversed too.
+    pub fn rotate_inverse_inplace(&self, v: &mut [f32]) {
+        let (d, td, round) = (self.d, self.trunc_dim, self.d / 8);
+        debug_assert_eq!(v.len(), d);
+        if td == d {
+            for r in (0..4).rev() {
+                fht(&mut v[..td]);
+                rescale(v, self.fac);
+                flip_sign(&self.flip[r * round..], v);
+            }
+        } else {
+            // Undo the forward pass's closing `×0.25`.
+            rescale(v, 4.0);
+            let start = d - td;
+            for r in (0..4).rev() {
+                // `kacs_walk` twice is `2·I`, so this pair inverts one forward walk.
+                kacs_walk(v);
+                rescale(v, 0.5);
+                let off = if r % 2 == 0 { 0 } else { start };
+                fht(&mut v[off..off + td]);
+                rescale(&mut v[off..off + td], self.fac);
+                flip_sign(&self.flip[r * round..], v);
+            }
+        }
+    }
 }
 
 impl SpaceUsage for FhtKacRotator {
@@ -250,6 +297,48 @@ fn fht(a: &mut [f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotate_inverse_undoes_rotate_on_both_paths() {
+        // Both branches must be covered: `d = 256` is a power of two (no Kac's walk), `d = 192`
+        // is not (trunc_dim = 128, the walk runs and the closing x0.25 has to be undone).
+        // A rotation that is orthonormal but whose inverse is wrong still passes the existing
+        // orthonormality test, so this one checks the round trip directly.
+        for &d in &[256usize, 192, 768, 1024] {
+            let rot = FhtKacRotator::new(d, 0xDECAF);
+            let x: Vec<f32> = (0..d)
+                .map(|i| ((i * 37 % 101) as f32 - 50.0) / 7.0)
+                .collect();
+
+            let round_trip = rot.rotate_inverse(&rot.rotate(&x));
+            for (a, b) in x.iter().zip(&round_trip) {
+                assert!((a - b).abs() < 1e-3, "d={d}: P^-1 P x != x ({a} vs {b})");
+            }
+
+            // And the other way round, which is a different code path through the branches.
+            let round_trip = rot.rotate(&rot.rotate_inverse(&x));
+            for (a, b) in x.iter().zip(&round_trip) {
+                assert!((a - b).abs() < 1e-3, "d={d}: P P^-1 x != x ({a} vs {b})");
+            }
+        }
+    }
+
+    #[test]
+    fn rotate_inverse_is_the_transpose() {
+        // P orthonormal means P^-1 = P^T, so <P x, y> == <x, P^-1 y> for every pair. This is the
+        // property the residual decomposition actually relies on.
+        let d = 192;
+        let rot = FhtKacRotator::new(d, 7);
+        let x: Vec<f32> = (0..d).map(|i| (i as f32).sin()).collect();
+        let y: Vec<f32> = (0..d).map(|i| (i as f32).cos()).collect();
+        let lhs: f32 = rot.rotate(&x).iter().zip(&y).map(|(a, b)| a * b).sum();
+        let rhs: f32 = x
+            .iter()
+            .zip(&rot.rotate_inverse(&y))
+            .map(|(a, b)| a * b)
+            .sum();
+        assert!((lhs - rhs).abs() < 1e-3, "<Px,y>={lhs} != <x,P^-1 y>={rhs}");
+    }
 
     #[test]
     fn fht_kac_rotation_is_orthonormal() {

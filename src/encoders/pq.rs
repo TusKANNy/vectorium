@@ -191,6 +191,48 @@ where
         )
     }
 
+    /// [`sample_random_dataset`](Self::sample_random_dataset) from a half-precision source,
+    /// upcasting the sampled rows to `f32` so k-means trains exactly as it does for an `f32`
+    /// collection.
+    ///
+    /// When `sample_size` covers the whole dataset the rows are taken in their original order
+    /// rather than shuffled: k-means seeding consumes the leading rows, so preserving the order
+    /// keeps this path comparable with the `f32` one.
+    fn sample_random_dataset_upcast<Ds: crate::ScalarDenseSupportedDistance>(
+        dataset: &PlainDenseDataset<half::f16, Ds>,
+        sample_size: usize,
+    ) -> PlainDenseDataset<f32, Ds> {
+        use rand::seq::SliceRandom;
+        let d = dataset.output_dim();
+        let dataset_size = dataset.len();
+        let sample_size = sample_size.min(dataset_size);
+
+        let indices: Vec<usize> = if sample_size == dataset_size {
+            (0..dataset_size).collect()
+        } else {
+            let mut indices: Vec<usize> = (0..dataset_size).collect();
+            let mut rng = rand::thread_rng();
+            indices.partial_shuffle(&mut rng, sample_size);
+            indices
+        };
+
+        let mut values = Vec::with_capacity(sample_size * d);
+        for &idx in &indices[..sample_size] {
+            let start = idx * d;
+            values.extend(
+                dataset.values()[start..start + d]
+                    .iter()
+                    .map(|v| v.to_f32()),
+            );
+        }
+
+        PlainDenseDataset::<f32, Ds>::from_raw(
+            values.into_boxed_slice(),
+            sample_size,
+            PlainDenseQuantizer::<f32, Ds>::new(d),
+        )
+    }
+
     /// Compute the training sample size based on the automatic sampling strategy.
     ///
     /// - If dataset size ≤ PQ_SAMPLING_MIN_SIZE: no sampling (returns None)
@@ -567,6 +609,45 @@ where
     }
 }
 
+/// Same, from a source held at half precision.
+///
+/// Lets a caller that already has the collection as `f16` — which is how the graph indexes store
+/// it — encode without first materializing an `f32` copy. k-means still trains in `f32`, on an
+/// upcast copy of the training sample only; the encode pass upcasts one vector at a time.
+impl<const M: usize, D, Ds> ConvertFrom<&PlainDenseDataset<half::f16, Ds>>
+    for crate::DenseDataset<ProductQuantizer<M, D>>
+where
+    D: ProductQuantizerDistance + 'static,
+    Ds: crate::ScalarDenseSupportedDistance,
+{
+    type Config = ();
+
+    fn convert_from(dataset: &PlainDenseDataset<half::f16, Ds>, _config: ()) -> Self {
+        let sample_size = ProductQuantizer::<M, D>::compute_training_sample_size(dataset.len());
+
+        let training_data: PlainDenseDataset<f32, Ds> = match sample_size {
+            Some(size) => {
+                println!(
+                    "Sampling {} vectors from {} for PQ training",
+                    size,
+                    dataset.len()
+                );
+                ProductQuantizer::<M, D>::sample_random_dataset_upcast(dataset, size)
+            }
+            // Small enough to train on directly; the upcast copy is bounded by
+            // `PQ_TRAIN_SAMPLING_MIN_SIZE` vectors.
+            None => ProductQuantizer::<M, D>::sample_random_dataset_upcast(dataset, dataset.len()),
+        };
+        let pq_encoder = ProductQuantizer::<M, D>::train(&training_data);
+
+        crate::DenseDataset::<ProductQuantizer<M, D>>::from_flat_par_upcast(
+            pq_encoder,
+            dataset.values(),
+            dataset.len(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -789,5 +870,29 @@ mod tests {
                 codes[m], best
             );
         }
+    }
+
+    /// The upcasting encode path must assign exactly the same centroids as the `f32` path when
+    /// both are handed the same trained quantizer and the same (already-rounded) values.
+    ///
+    /// The full `ConvertFrom` is not compared end to end because PQ's k-means is randomly seeded
+    /// and its training sample is drawn at random, so two trainings do not share a codebook. What
+    /// the `f16` path changes is the *encode*, and that is what this pins.
+    #[test]
+    fn f16_source_encodes_exactly_like_the_equivalent_f32_source() {
+        use half::f16;
+
+        let (pq, vecs) = make_pq_and_data();
+        let n = vecs.len();
+        let source_f16: Vec<f16> = vecs
+            .iter()
+            .flat_map(|v| v.iter().map(|&x| f16::from_f32(x)))
+            .collect();
+        let source_f32: Vec<f32> = source_f16.iter().map(|v| v.to_f32()).collect();
+
+        let from_f32 = crate::DenseDataset::from_flat_par(pq.clone(), &source_f32, n);
+        let from_f16 = crate::DenseDataset::from_flat_par_upcast(pq, &source_f16, n);
+
+        assert_eq!(from_f16.values(), from_f32.values());
     }
 }

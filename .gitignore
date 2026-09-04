@@ -25,3 +25,6 @@ target
 
 # Cargo lockfile
 Cargo.lock
+
+# rustc internal-compiler-error dumps
+rustc-ice-*.txt

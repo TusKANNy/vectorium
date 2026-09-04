@@ -140,14 +140,16 @@ where
             first_stage_search_params,
         );
 
-        // Alpha-based filtering threshold, if provided (based on first-stage distance scores)
+        // Alpha-based candidate pruning (CP): keep only candidates whose first-stage score is
+        // within a relative slack `alpha` of the k-th best one.
+        // The comparison goes through [`Distance::is_within_relaxation`].
         let threshold = match alpha {
             Some(alpha_val)
                 if k_final > 0
                     && !first_stage_results.is_empty()
                     && k_final <= first_stage_results.len() =>
             {
-                Some(first_stage_results[k_final - 1].distance.distance() * (1.0 - alpha_val))
+                Some((first_stage_results[k_final - 1].distance, alpha_val))
             }
             _ => None,
         };
@@ -162,7 +164,7 @@ where
         });
         for result in &first_stage_results {
             let score = result.distance.distance();
-            if threshold.is_some_and(|t| score < t) {
+            if threshold.is_some_and(|(t, a)| !result.distance.is_within_relaxation(&t, a)) {
                 continue;
             }
             candidates.push(result.vector);
@@ -544,5 +546,40 @@ mod tests {
         let results = index.search(query, query, 3, 2, &(), &(), Some(0.1), None, true);
 
         assert_eq!(scored(&results), vec![(0, 3.0), (2, 1.5)]);
+    }
+
+    /// Candidate pruning must keep the *nearest* candidates under a minimize metric.
+    ///
+    /// Written as `score >= d_k * (1 - alpha)` the rule is correct for dot product and exactly
+    /// inverted for squared Euclidean, where it drops the closest candidates — the exact match
+    /// first. Here the first stage ranks 2 (d=0), 1 (d=1), 0 (d=9); with `k_final = 2` the
+    /// threshold is candidate 1's distance, so pruning may only ever remove candidate 0.
+    #[test]
+    fn alpha_pruning_keeps_the_nearest_candidates_under_a_minimize_metric() {
+        use crate::distances::SquaredEuclideanDistance;
+
+        type L2Enc = PlainDenseQuantizer<f32, SquaredEuclideanDistance>;
+        fn l2_dataset(vectors: &[[f32; 2]]) -> DenseDataset<L2Enc> {
+            let mut growable = DenseDatasetGrowable::new(L2Enc::new(2));
+            for vector in vectors {
+                growable.push(DenseVectorView::new(vector));
+            }
+            growable.into()
+        }
+
+        let points = l2_dataset(&[[3.0, 0.0], [1.0, 0.0], [0.0, 0.0]]);
+        let rerank = l2_dataset(&[[3.0, 0.0], [1.0, 0.0], [0.0, 0.0]]);
+        let index = RerankIndex::new(FlatIndex::from(points), rerank);
+        let query = DenseVectorView::new(&[0.0f32, 0.0]);
+
+        for alpha in [None, Some(0.2), Some(0.45)] {
+            let results = index.search(query, query, 3, 2, &(), &(), alpha, None, false);
+            let ids: Vec<VectorId> = results.iter().map(|r| r.vector).collect();
+            assert_eq!(
+                ids,
+                vec![2, 1],
+                "alpha = {alpha:?} pruned a nearer candidate than the k-th"
+            );
+        }
     }
 }

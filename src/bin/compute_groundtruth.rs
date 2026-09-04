@@ -64,7 +64,7 @@ struct Args {
     #[arg(default_value = "plain")]
     encoder: String,
 
-    /// PQ subspace count (must divide the dataset dimension). 0 auto-selects from {128,96,64,32,16,8,4}.
+    /// PQ subspace count (must divide the dataset dimension). Supported: 4, 8, 16, 24, 32, 48, 64, 96, 128, 192, 256. 0 auto-selects from {128,96,64,32,16,8,4}.
     #[clap(long, value_parser)]
     #[arg(default_value_t = 0)]
     pq_subspaces: usize,
@@ -464,7 +464,14 @@ fn compute_dense_groundtruth<V, D>(
     }
 }
 
-const PQ_SUPPORTED_SUBSPACES: [usize; 7] = [128, 96, 64, 32, 16, 8, 4];
+const PQ_SUPPORTED_SUBSPACES: [usize; 11] = [256, 192, 128, 96, 64, 48, 32, 24, 16, 8, 4];
+
+/// Candidates considered when `--pq-subspaces 0` asks for automatic selection.
+///
+/// Deliberately *not* `PQ_SUPPORTED_SUBSPACES`: the wider widths (256, 192, 48, 24) were added
+/// so they can be requested explicitly, and folding them into the auto path would silently
+/// change the `M` picked by default for every dimension that they divide.
+const PQ_AUTO_SUBSPACES: [usize; 7] = [128, 96, 64, 32, 16, 8, 4];
 
 #[derive(Copy, Clone, Debug)]
 enum PqDistanceKind {
@@ -500,12 +507,12 @@ fn choose_pq_subspaces(dim: usize, requested: usize) -> Result<usize, String> {
         return Ok(requested);
     }
 
-    PQ_SUPPORTED_SUBSPACES
+    PQ_AUTO_SUBSPACES
         .iter()
         .copied()
         .find(|&m| m <= dim && dim.is_multiple_of(m))
         .ok_or_else(|| {
-            let supported = PQ_SUPPORTED_SUBSPACES
+            let supported = PQ_AUTO_SUBSPACES
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
@@ -542,6 +549,38 @@ fn compute_dense_groundtruth_pq(
     let mut output_path = Some(output_path);
 
     match selected_m {
+        256 => match distance_kind {
+            PqDistanceKind::Euclidean => {
+                run_dense_groundtruth_pq::<256, distances::SquaredEuclideanDistance>(
+                    dataset.take().unwrap(),
+                    queries.take().unwrap(),
+                    k,
+                    output_path.take().unwrap(),
+                )
+            }
+            PqDistanceKind::DotProduct => run_dense_groundtruth_pq::<256, distances::DotProduct>(
+                dataset.take().unwrap(),
+                queries.take().unwrap(),
+                k,
+                output_path.take().unwrap(),
+            ),
+        },
+        192 => match distance_kind {
+            PqDistanceKind::Euclidean => {
+                run_dense_groundtruth_pq::<192, distances::SquaredEuclideanDistance>(
+                    dataset.take().unwrap(),
+                    queries.take().unwrap(),
+                    k,
+                    output_path.take().unwrap(),
+                )
+            }
+            PqDistanceKind::DotProduct => run_dense_groundtruth_pq::<192, distances::DotProduct>(
+                dataset.take().unwrap(),
+                queries.take().unwrap(),
+                k,
+                output_path.take().unwrap(),
+            ),
+        },
         128 => match distance_kind {
             PqDistanceKind::Euclidean => {
                 run_dense_groundtruth_pq::<128, distances::SquaredEuclideanDistance>(
@@ -590,6 +629,22 @@ fn compute_dense_groundtruth_pq(
                 output_path.take().unwrap(),
             ),
         },
+        48 => match distance_kind {
+            PqDistanceKind::Euclidean => {
+                run_dense_groundtruth_pq::<48, distances::SquaredEuclideanDistance>(
+                    dataset.take().unwrap(),
+                    queries.take().unwrap(),
+                    k,
+                    output_path.take().unwrap(),
+                )
+            }
+            PqDistanceKind::DotProduct => run_dense_groundtruth_pq::<48, distances::DotProduct>(
+                dataset.take().unwrap(),
+                queries.take().unwrap(),
+                k,
+                output_path.take().unwrap(),
+            ),
+        },
         32 => match distance_kind {
             PqDistanceKind::Euclidean => {
                 run_dense_groundtruth_pq::<32, distances::SquaredEuclideanDistance>(
@@ -600,6 +655,22 @@ fn compute_dense_groundtruth_pq(
                 )
             }
             PqDistanceKind::DotProduct => run_dense_groundtruth_pq::<32, distances::DotProduct>(
+                dataset.take().unwrap(),
+                queries.take().unwrap(),
+                k,
+                output_path.take().unwrap(),
+            ),
+        },
+        24 => match distance_kind {
+            PqDistanceKind::Euclidean => {
+                run_dense_groundtruth_pq::<24, distances::SquaredEuclideanDistance>(
+                    dataset.take().unwrap(),
+                    queries.take().unwrap(),
+                    k,
+                    output_path.take().unwrap(),
+                )
+            }
+            PqDistanceKind::DotProduct => run_dense_groundtruth_pq::<24, distances::DotProduct>(
                 dataset.take().unwrap(),
                 queries.take().unwrap(),
                 k,

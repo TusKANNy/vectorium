@@ -544,7 +544,42 @@ impl RabitqSpace {
         rotate: bool,
         seed: u64,
     ) -> Self {
-        let d = dataset.input_dim();
+        Self::train_over_values(
+            dataset.values(),
+            dataset.input_dim(),
+            dataset.len(),
+            rotate,
+            seed,
+        )
+    }
+
+    /// [`train`](Self::train) for a source held at half precision; values are upcast as they are
+    /// summed, so the means are computed in `f32` exactly as for an `f32` source.
+    pub(crate) fn train_narrow<V, Ds>(
+        dataset: &crate::PlainDenseDataset<V, Ds>,
+        rotate: bool,
+        seed: u64,
+    ) -> Self
+    where
+        V: crate::ValueType + crate::Float + crate::FromF32,
+        Ds: ScalarDenseSupportedDistance,
+    {
+        Self::train_over_values(
+            dataset.values(),
+            dataset.input_dim(),
+            dataset.len(),
+            rotate,
+            seed,
+        )
+    }
+
+    fn train_over_values<V: crate::ValueType>(
+        values: &[V],
+        d: usize,
+        n: usize,
+        rotate: bool,
+        seed: u64,
+    ) -> Self {
         assert!(
             d.is_multiple_of(WORD_BITS),
             "RaBitQ requires dim % 64 == 0, got {d}"
@@ -553,14 +588,15 @@ impl RabitqSpace {
         // Per-component sum as a parallel reduction over vectors (the sequential pass over all n
         // rows was the dominant cost of construction once the per-vector encode was optimized).
         use rayon::prelude::*;
-        let mut means = dataset
-            .values()
+        let mut means = values
             .par_chunks_exact(d)
             .fold(
                 || vec![0.0f32; d],
                 |mut acc, x| {
-                    for (a, &v) in acc.iter_mut().zip(x) {
-                        *a += v;
+                    for (a, v) in acc.iter_mut().zip(x) {
+                        *a += v
+                            .to_f32()
+                            .expect("source value is not representable as f32");
                     }
                     acc
                 },
@@ -574,7 +610,6 @@ impl RabitqSpace {
                     a
                 },
             );
-        let n = dataset.len();
         if n > 0 {
             let inv = 1.0 / n as f32;
             for m in means.iter_mut() {
@@ -655,6 +690,24 @@ impl RabitqSpace {
         if let Some(rotator) = &self.rotator {
             rotator.rotate_inplace(scratch);
         }
+    }
+
+    /// The exact inverse of [`Self::residual`]: `x = mean + P⁻¹·r`.
+    ///
+    /// Used to lift a reconstruction out of the rotated, centered residual space and back into the
+    /// original data space, which is what residual reranking needs — the second stage has to encode
+    /// `x − x̂`, and both terms must live in the same space for the subtraction to mean anything.
+    #[allow(clippy::wrong_self_convention)]
+    pub(crate) fn from_residual(&self, residual: &[f32]) -> Vec<f32> {
+        debug_assert_eq!(residual.len(), self.d);
+        let mut v = match &self.rotator {
+            Some(rotator) => rotator.rotate_inverse(residual),
+            None => residual.to_vec(),
+        };
+        for (x, &m) in v.iter_mut().zip(self.means.iter()) {
+            *x += m;
+        }
+        v
     }
 
     /// `⟨mean, q⟩` — the centroid term the inner-product metric adds back.
