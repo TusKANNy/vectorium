@@ -1,5 +1,5 @@
 use crate::utils::train_sparse_scalar_quantizer;
-use crate::{FixedU8Q, FromF32, PlainSparseDataset, SpaceUsage, SquaredEuclideanDistance, ValueType};
+use crate::{FixedU8Q, FromF32, PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage, ValueType};
 use num_traits::ToPrimitive;
 
 const FIXED_U8_SCALE: f32 = 1.0 / ((1u32 << FixedU8Q::FRAC_NBITS) as f32);
@@ -56,7 +56,10 @@ impl ScalarU8Quantizer {
         Self { quants }
     }
 
-    pub fn train(&mut self, training_data: &PlainSparseDataset<u16, f32, SquaredEuclideanDistance>) {
+    pub fn train<D>(&mut self, training_data: &PlainSparseDataset<u16, f32, D>)
+    where
+        D: ScalarSparseSupportedDistance,
+    {
         self.quants = train_sparse_scalar_quantizer(training_data, 0.0, 1.0).into_boxed_slice();
     }
 }

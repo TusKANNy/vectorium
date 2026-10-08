@@ -414,19 +414,9 @@ where
 
         let mut dotvbyte_encoder = crate::DotVByteFixedU8Encoder::new(dim, dim);
 
-        // Train using the original dataset components.
-        // DotVByte reorders components, so it only needs to see the component distribution.
-
-        // Computing the permutation on the whole dataset can be expensive. Do it on a sample with 1/SAMPLE_RATE of the vectors.
-        // For simplicity, we just take the first 5% of the dataset here.
-        const SAMPLE_RATE: usize = 20;
-        let sample_size = if dataset.len() / SAMPLE_RATE < 50_000 {
-            dataset.len()
-        } else {
-            dataset.len() / SAMPLE_RATE
-        };
-
-        dotvbyte_encoder.train(dataset.iter().take(sample_size));
+        // DotVByte reorders components by decreasing frequency, counted over all vectors
+        // (a single pass over the components).
+        dotvbyte_encoder.train(dataset.iter());
 
         let mut offsets = Vec::with_capacity(dataset.len() + 1);
         offsets.push(0);

@@ -35,7 +35,6 @@ bytemuck = { version = "1.23", features = [
     "min_const_generics",
 ] }
 rusty-perm = "0.2.0"
-rgb = { git = "https://github.com/JMMackenzie/enhanced-graph-bisection.git", package = "rgbisect" }
 rand = "0.8"
 matrixmultiply = "0.3"
 faer = "0.19"

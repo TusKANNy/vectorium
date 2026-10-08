@@ -17,7 +17,7 @@ use rusty_perm::PermApply as _;
 use rusty_perm::PermFromSorting as _;
 
 use self::swizzle::*;
-use crate::utils::permute_components_with_bisection;
+use crate::utils::permute_components_by_frequency;
 use std::simd::StdFloat;
 use std::simd::num::{SimdFloat, SimdUint};
 
@@ -210,7 +210,7 @@ impl DotVByteFixedU8Encoder {
         V: ValueType,
     {
         let components_iter = training_data.map(|v| v.components());
-        let permutation = permute_components_with_bisection(self.input_dim(), components_iter);
+        let permutation = permute_components_by_frequency(self.input_dim(), components_iter);
         let component_mapping: Vec<u16> = permutation.iter().map(|i| *i as u16).collect();
         let inverse = Self::compute_inverse_mapping(&component_mapping);
         self.component_mapping = Some(component_mapping.into_boxed_slice());

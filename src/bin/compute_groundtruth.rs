@@ -174,7 +174,7 @@ fn dispatch(args: Args) -> bool {
     if encoder == "dotpacking8" {
         println!("Dotpacking8 encoder: quantizing values using FixedU8Q.");
         println!(
-            "Component reordering (graph bisection): {}",
+            "Component reordering (decreasing frequency): {}",
             if args.no_train { "disabled" } else { "enabled" }
         );
     }
@@ -955,9 +955,7 @@ fn compute_sparse_groundtruth_dotpacking8(
     let mut encoder = DotPacking8FixedU8Encoder::new(dataset_plain.output_dim());
     if train {
         let start = Instant::now();
-        // NOTE: the encoder's own `train` takes a SquaredEuclideanDistance dataset, which a
-        // DotProduct collection cannot satisfy, so go through `train_components` directly.
-        encoder.train_components(dataset_plain.iter());
+        encoder.train(&dataset_plain);
         println!(
             "Component reordering computed in {:.3}s",
             start.elapsed().as_secs_f64()

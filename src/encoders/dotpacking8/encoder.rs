@@ -3,7 +3,7 @@ use rusty_perm::{PermApply as _, PermFromSorting as _};
 use std::borrow::Cow;
 use std::simd::{Simd, StdFloat, prelude::*};
 
-use crate::SpaceUsage;
+use crate::{Dataset, PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
 use crate::core::vector::{PackedVectorView, SparseVectorView};
 use crate::core::vector_encoder::{
     PackedSparseVectorEncoder, QueryEvaluator, SparseDataEncoder, SparseVectorOwned, VectorEncoder,
@@ -113,15 +113,15 @@ where
         self.inverse_component_mapping.as_deref()
     }
 
-    pub fn train_components<'a, V>(
-        &mut self,
-        training_data: impl Iterator<Item = SparseVectorView<'a, u16, V>>,
-    ) where
-        V: crate::ValueType,
+    /// Reorder components by decreasing frequency in `training_data`, which shortens gaps.
+    /// Only component ids are read, so the dataset's distance does not matter.
+    pub fn train<D>(&mut self, training_data: &PlainSparseDataset<u16, f32, D>)
+    where
+        D: ScalarSparseSupportedDistance,
     {
-        let components_iter = training_data.map(|v| v.components());
+        let components_iter = training_data.iter().map(|v| v.components());
         let permutation =
-            crate::utils::permute_components_with_bisection(self.input_dim(), components_iter);
+            crate::utils::permute_components_by_frequency(self.input_dim(), components_iter);
         let component_mapping: Vec<u16> = permutation.iter().map(|i| *i as u16).collect();
         let inverse = Self::compute_inverse_mapping(&component_mapping);
         self.component_mapping = Some(component_mapping.into_boxed_slice());
