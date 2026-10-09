@@ -67,8 +67,8 @@ const fn gen_block8_table() -> [Block8Constants; 16] {
 pub fn encode_blocks(gaps: &[u32]) -> (Vec<u8>, Vec<u8>) {
     const { assert!(N <= 8) }; // below we assume N gaps fit in a u128.
 
-    let n_blocks = (gaps.len() + N - 1) / N;
-    let mut selectors = vec![0u8; (n_blocks + 1) / 2];
+    let n_blocks = gaps.len().div_ceil(N);
+    let mut selectors = vec![0u8; n_blocks.div_ceil(2)];
     let mut payloads = Vec::new();
     for (idx, chunk) in gaps.chunks(N).enumerate() {
         let max_val = chunk.iter().cloned().max().unwrap_or(0);
@@ -90,7 +90,7 @@ pub fn encode_blocks(gaps: &[u32]) -> (Vec<u8>, Vec<u8>) {
         for (i, &g) in chunk.iter().enumerate() {
             acc |= (g as u128) << (i as u8 * b);
         }
-        let bytes_to_write = (chunk.len() * (b as usize) + 7) / 8;
+        let bytes_to_write = (chunk.len() * (b as usize)).div_ceil(8);
         payloads.extend_from_slice(&acc.to_le_bytes()[..bytes_to_write]);
     }
     (selectors, payloads)
@@ -136,7 +136,7 @@ pub fn compute_safe_simd_padding(
     if n_elem == 0 {
         return alignment_padding;
     }
-    let n_blocks = (n_elem + N - 1) / N;
+    let n_blocks = n_elem.div_ceil(N);
     let idx = n_blocks - 1;
     let sel = selectors[idx / 2];
     let b = (if idx % 2 == 0 {
@@ -147,7 +147,7 @@ pub fn compute_safe_simd_padding(
         + 1;
     let rem = n_elem % N;
     let elems = if rem == 0 { N } else { rem };
-    let last_read_bytes = (elems * b + 7) / 8;
+    let last_read_bytes = (elems * b).div_ceil(8);
 
     // SIMD Padding Logic:
     // The decoder performs 128-bit (16 bytes) unaligned loads.
@@ -228,7 +228,7 @@ impl<'a> DotPacking8Iter<'a> {
             return (Simd::splat(0), &[], 0);
         }
         let b = self.extract_block_b();
-        let bytes_to_advance = (remaining * b + 7) / 8;
+        let bytes_to_advance = (remaining * b).div_ceil(8);
         let gaps = self.decode_lane_with_b(b, bytes_to_advance);
         let tail_vals = unsafe { std::slice::from_raw_parts(self.val_ptr, remaining) };
         self.val_ptr = unsafe { self.val_ptr.add(remaining) };
@@ -322,7 +322,7 @@ impl<'a> DotPacking8f16Iter<'a> {
             return (Simd::splat(0), &[], 0);
         }
         let b = self.extract_block_b();
-        let bytes_to_advance = (remaining * b + 7) / 8;
+        let bytes_to_advance = (remaining * b).div_ceil(8);
         let gaps = self.decode_lane_with_b(b, bytes_to_advance);
         let tail_vals = unsafe { std::slice::from_raw_parts(self.val_ptr, remaining) };
         self.val_ptr = unsafe { self.val_ptr.add(remaining) };

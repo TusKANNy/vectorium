@@ -29,8 +29,8 @@ impl<'a> DotPacking8View<'a> {
         let bytes = cast_slice::<u64, u8>(slice);
         let n = from_bytes::<u16>(&bytes[0..2]).to_le() as usize;
 
-        let n_blocks_total = (n + N - 1) / N;
-        let selectors_size = (n_blocks_total + 1) / 2;
+        let n_blocks_total = n.div_ceil(N);
+        let selectors_size = n_blocks_total.div_ceil(2);
         let selectors_end = 2 + selectors_size;
         let values_start_idx = bytes.len() - n;
 
