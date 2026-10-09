@@ -72,14 +72,10 @@ pub fn encode_blocks(gaps: &[u32]) -> (Vec<u8>, Vec<u8>) {
     let mut payloads = Vec::new();
     for (idx, chunk) in gaps.chunks(N).enumerate() {
         let max_val = chunk.iter().cloned().max().unwrap_or(0);
-        let b = if max_val == 0 {
-            1
-        } else {
-            (32 - max_val.leading_zeros()) as u8
-        };
+        let b = (u32::BITS - max_val.max(1).leading_zeros()) as u8;
 
         let selector_b = b - 1;
-        if idx % 2 == 0 {
+        if idx.is_multiple_of(2) {
             selectors[idx / 2] |= selector_b & 0x0F;
         } else {
             selectors[idx / 2] |= (selector_b & 0x0F) << 4;
@@ -139,7 +135,7 @@ pub fn compute_safe_simd_padding(
     let n_blocks = n_elem.div_ceil(N);
     let idx = n_blocks - 1;
     let sel = selectors[idx / 2];
-    let b = (if idx % 2 == 0 {
+    let b = (if idx.is_multiple_of(2) {
         sel & 0x0F
     } else {
         (sel >> 4) & 0x0F
@@ -249,10 +245,7 @@ pub unsafe fn f16_ptr_to_f32x8(ptr: *const f16) -> Simd<f32, 8> {
     }
     #[cfg(not(all(target_arch = "x86_64", target_feature = "f16c")))]
     {
-        let mut val_f32 = [0.0f32; 8];
-        for i in 0..8 {
-            val_f32[i] = (unsafe { *ptr.add(i) }).to_f32();
-        }
+        let val_f32: [f32; 8] = std::array::from_fn(|i| (unsafe { *ptr.add(i) }).to_f32());
         Simd::<f32, 8>::from_array(val_f32)
     }
 }

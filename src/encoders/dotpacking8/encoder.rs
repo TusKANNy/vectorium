@@ -357,14 +357,14 @@ where
         let padding_needed =
             compute_safe_simd_padding(n, &selectors, (8 - (current_len + n) % 8) % 8, n);
 
-        for _ in 0..padding_needed {
-            payload.push(0);
-        }
+        payload.resize(payload.len() + padding_needed, 0);
         payload.extend_from_slice(q_values.as_slice());
 
         let data = payload
-            .chunks_exact(8)
-            .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()));
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|&chunk| u64::from_le_bytes(chunk));
 
         output.extend(data);
     }

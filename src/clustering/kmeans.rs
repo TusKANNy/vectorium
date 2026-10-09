@@ -82,7 +82,7 @@ impl KMeans {
                         let distance = evaluator.compute_distance(centroid_view).distance();
                         (distance, ci)
                     })
-                    .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
                     .unwrap()
             })
             .collect()

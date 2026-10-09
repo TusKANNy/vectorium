@@ -177,14 +177,16 @@ impl PackedSparseVectorEncoder for DotVByteFixedU8Encoder {
         DotVbyteFixedu8::push_vector(&mut encoded_u8, &mut q_components, &mut q_values);
 
         assert!(
-            encoded_u8.len() % std::mem::size_of::<u64>() == 0,
+            encoded_u8.len().is_multiple_of(std::mem::size_of::<u64>()),
             "encoded_u8 length ({}) is not a multiple of 8",
             encoded_u8.len()
         );
 
-        let data = encoded_u8.chunks_exact(8).map(|chunk| {
-            u64::from_le_bytes(chunk.try_into().unwrap()) // choose LE/BE/NE
-        });
+        let data = encoded_u8
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|&chunk| u64::from_le_bytes(chunk)); // choose LE/BE/NE
         output.extend(data);
     }
 }
@@ -501,7 +503,9 @@ impl<'a> DotVbyteFixedu8<'a> {
         let (values_chunked, values_remaining) = unsafe { values.split_at_unchecked(n_chunked) };
 
         let bitvec: Vec<u8> = components_chunked
-            .chunks_exact(N)
+            .as_chunks::<N>()
+            .0
+            .iter()
             .map(|chunk| {
                 let mut byte = 0;
                 for (i, b) in chunk.iter().map(|&n| n > u8::MAX as u16).enumerate() {

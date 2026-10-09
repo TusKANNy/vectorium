@@ -325,7 +325,7 @@ where
         }
 
         // Sum of per-query-token maxima = MaxSim score.
-        let total = max_scores.iter().fold(0.0f32, |s, &x| s + x);
+        let total = max_scores.iter().sum::<f32>();
         DotProduct::from(total)
     }
 }

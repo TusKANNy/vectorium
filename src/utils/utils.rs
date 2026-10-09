@@ -149,7 +149,7 @@ where
         if vals.is_empty() {
             continue;
         }
-        vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        vals.sort_unstable_by(|a, b| a.total_cmp(b));
 
         let min = if lower_percentile <= 0.0 {
             vals[0]

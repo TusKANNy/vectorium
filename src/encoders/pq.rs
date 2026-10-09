@@ -355,7 +355,7 @@ where
         let code_bytes = code.values();
         let mut acc = [0.0_f32; 4];
         let mut ptr = 0_usize;
-        for subcode in code_bytes.chunks_exact(4) {
+        for subcode in code_bytes.as_chunks::<4>().0 {
             unsafe {
                 acc[0] += *distance_table.get_unchecked(ptr + subcode[0] as usize);
                 acc[1] += *distance_table.get_unchecked(ptr + KSUB + subcode[1] as usize);
@@ -656,7 +656,7 @@ mod tests {
             let best = sub_table
                 .iter()
                 .enumerate()
-                .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                .min_by(|(_, a), (_, b)| a.total_cmp(b))
                 .map(|(i, _)| i as u8)
                 .unwrap();
             assert_eq!(

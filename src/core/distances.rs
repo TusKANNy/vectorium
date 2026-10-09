@@ -840,7 +840,7 @@ pub unsafe fn two_level_pq_maxsim_blocked<const M: usize, const Q: usize>(
         }
     }
 
-    max_scores.iter().fold(0f32, |s, &x| s + x)
+    max_scores.iter().sum::<f32>()
 }
 
 /// Fallback for Q values not covered by the dispatch table.
@@ -922,7 +922,7 @@ pub unsafe fn two_level_pq_maxsim_blocked_runtime<const M: usize>(
     }
 
     // Sum maxima.
-    max_scores[..q_token].iter().fold(0f32, |s, &x| s + x)
+    max_scores[..q_token].iter().sum::<f32>()
 }
 
 #[cfg(test)]
