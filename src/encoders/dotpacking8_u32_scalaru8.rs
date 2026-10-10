@@ -14,8 +14,8 @@ use crate::encoders::dotpacking8::common::{
     compute_safe_simd_padding, encode_blocks, simd_prefix_sum,
 };
 use crate::encoders::dotpacking8::encoder::DotPacking8View;
-use crate::utils::{permute_components_with_bisection, train_sparse_scalar_quantizer};
-use crate::{Dataset, PlainSparseDataset, SpaceUsage, SquaredEuclideanDistance};
+use crate::utils::{permute_components_by_frequency, train_sparse_scalar_quantizer};
+use crate::{Dataset, PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
 
 use rusty_perm::PermApply as _;
 use rusty_perm::PermFromSorting as _;
@@ -89,22 +89,14 @@ impl OptimisticDotPacking8U32ScalarU8Encoder {
         inverse
     }
 
-    pub fn train(
-        &mut self,
-        training_data: &PlainSparseDataset<u32, f32, SquaredEuclideanDistance>,
-    ) {
-        const SAMPLE_RATE: usize = 20;
-        let sample_size = if training_data.len() / SAMPLE_RATE < 50_000 {
-            training_data.len()
-        } else {
-            training_data.len() / SAMPLE_RATE
-        };
-
-        let components_iter = training_data
-            .iter()
-            .take(sample_size)
-            .map(|v| v.components());
-        let permutation = permute_components_with_bisection(self.input_dim(), components_iter);
+    /// Reorder components by decreasing frequency in `training_data`, which shortens gaps,
+    /// then fit the per-component `u8` steps. The dataset's distance does not matter.
+    pub fn train<D>(&mut self, training_data: &PlainSparseDataset<u32, f32, D>)
+    where
+        D: ScalarSparseSupportedDistance,
+    {
+        let components_iter = training_data.iter().map(|v| v.components());
+        let permutation = permute_components_by_frequency(self.input_dim(), components_iter);
         let component_mapping: Vec<u32> = permutation.iter().map(|i| *i as u32).collect();
         let inverse = Self::compute_inverse_mapping(&component_mapping);
         self.component_mapping = Some(component_mapping.into_boxed_slice());
@@ -439,6 +431,7 @@ impl SpaceUsage for OptimisticDotPacking8U32ScalarU8Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SquaredEuclideanDistance;
     use crate::PlainSparseDatasetGrowable;
     use crate::core::dataset::DatasetGrowable;
     use crate::core::vector::{PackedVectorView, SparseVectorView};

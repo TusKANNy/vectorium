@@ -3,7 +3,7 @@ use half::f16;
 use std::simd::{Simd, StdFloat, prelude::*};
 use rusty_perm::{PermApply as _, PermFromSorting as _};
 
-use crate::{SpaceUsage, Dataset};
+use crate::{Dataset, PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
 use crate::core::vector::{PackedVectorView, SparseVectorView};
 use crate::core::vector_encoder::{
     PackedSparseVectorEncoder, QueryEvaluator, SparseDataEncoder, SparseVectorOwned, VectorEncoder,
@@ -103,32 +103,19 @@ impl DotPacking8f16Encoder {
         self.inverse_component_mapping.as_deref()
     }
 
-    pub fn train_components<'a, V>(
-        &mut self,
-        training_data: impl Iterator<Item = SparseVectorView<'a, u16, V>>,
-    ) where
-        V: crate::ValueType,
+    /// Reorder components by decreasing frequency in `training_data`, which shortens gaps.
+    /// The dataset's distance does not matter.
+    pub fn train<D>(&mut self, training_data: &PlainSparseDataset<u16, f32, D>)
+    where
+        D: ScalarSparseSupportedDistance,
     {
-        let components_iter = training_data.map(|v| v.components());
+        let components_iter = training_data.iter().map(|v| v.components());
         let permutation =
-            crate::utils::permute_components_with_bisection(self.input_dim(), components_iter);
+            crate::utils::permute_components_by_frequency(self.input_dim(), components_iter);
         let component_mapping: Vec<u16> = permutation.iter().map(|i| *i as u16).collect();
         let inverse = Self::compute_inverse_mapping(&component_mapping);
         self.component_mapping = Some(component_mapping.into_boxed_slice());
         self.inverse_component_mapping = Some(inverse.into_boxed_slice());
-    }
-
-    pub fn train<'a>(
-        &mut self,
-        training_data: &crate::PlainSparseDataset<u16, f32, crate::SquaredEuclideanDistance>,
-    ) {
-        const SAMPLE_RATE: usize = 20;
-        let sample_size = if training_data.len() / SAMPLE_RATE < 50_000 {
-            training_data.len()
-        } else {
-            training_data.len() / SAMPLE_RATE
-        };
-        self.train_components(training_data.iter().take(sample_size));
     }
 }
 

@@ -32,7 +32,7 @@ use crate::encoders::dotpacking8::nibble4bit::{
     gap_iter, nibble_bytes, pack_nibbles, NibbleReader, Scalar4BitQuantizer,
 };
 use crate::encoders::dotpacking8::quantizer::DotPacking8Quantizer;
-use crate::{Dataset, PlainSparseDataset, SpaceUsage, SquaredEuclideanDistance};
+use crate::{Dataset, PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
 use bytemuck::{cast_slice, from_bytes};
 use rusty_perm::{PermApply, PermFromSorting};
 use std::borrow::Cow;
@@ -93,32 +93,20 @@ impl DotPacking8Scalar4BitEncoder {
         }
     }
 
-    /// Train the component permutation (bisection) and the 4-bit value quantizer.
-    /// Mirrors `DotPacking8ScalarU8Encoder::train`.
-    pub fn train(&mut self, training_data: &PlainSparseDataset<u16, f32, SquaredEuclideanDistance>) {
-        const SAMPLE_RATE: usize = 20;
-        let sample_size = if training_data.len() / SAMPLE_RATE < 50_000 {
-            training_data.len()
-        } else {
-            training_data.len() / SAMPLE_RATE
-        };
-        self.train_components(training_data.iter().take(sample_size));
-        self.quantizer.train(training_data);
-    }
-
-    pub fn train_components<'a, V>(
-        &mut self,
-        training_data: impl Iterator<Item = SparseVectorView<'a, u16, V>>,
-    ) where
-        V: crate::ValueType,
+    /// Reorder components by decreasing frequency in `training_data`, which shortens gaps, then train the 4-bit value quantizer.
+    /// The dataset's distance does not matter.
+    pub fn train<D>(&mut self, training_data: &PlainSparseDataset<u16, f32, D>)
+    where
+        D: ScalarSparseSupportedDistance,
     {
-        let components_iter = training_data.map(|v| v.components());
+        let components_iter = training_data.iter().map(|v| v.components());
         let permutation =
-            crate::utils::permute_components_with_bisection(self.input_dim(), components_iter);
+            crate::utils::permute_components_by_frequency(self.input_dim(), components_iter);
         let component_mapping: Vec<u16> = permutation.iter().map(|i| *i as u16).collect();
         let inverse = Self::compute_inverse_mapping(&component_mapping);
         self.component_mapping = Some(component_mapping.into_boxed_slice());
         self.inverse_component_mapping = Some(inverse.into_boxed_slice());
+        self.quantizer.train(training_data);
     }
 
     fn compute_inverse_mapping(component_mapping: &[u16]) -> Vec<u16> {
@@ -401,6 +389,7 @@ impl SpaceUsage for DotPacking8Scalar4BitEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SquaredEuclideanDistance;
     use crate::core::distances::Distance;
     use crate::core::vector::{PackedVectorView, SparseVectorView};
     use crate::encoders::sparse_scalar::PlainSparseQuantizer;

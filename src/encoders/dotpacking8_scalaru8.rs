@@ -1,6 +1,5 @@
 use crate::encoders::dotpacking8::encoder::{DotPacking8Encoder, DotPacking8QueryEvaluator};
 use crate::encoders::dotpacking8::quantizer::ScalarU8Quantizer;
-use crate::{Dataset, PlainSparseDataset, SquaredEuclideanDistance};
 
 pub type DotPacking8ScalarU8Encoder = DotPacking8Encoder<ScalarU8Quantizer>;
 pub type DotPacking8Scalaru8QueryEvaluator<'e> = DotPacking8QueryEvaluator<'e, ScalarU8Quantizer>;
@@ -12,20 +11,6 @@ impl DotPacking8Encoder<ScalarU8Quantizer> {
             ScalarU8Quantizer::new(vec![0.0f32; input_dim].into_boxed_slice()),
         )
     }
-
-    pub fn train(
-        &mut self,
-        training_data: &PlainSparseDataset<u16, f32, SquaredEuclideanDistance>,
-    ) {
-        const SAMPLE_RATE: usize = 20;
-        let sample_size = if training_data.len() / SAMPLE_RATE < 50_000 {
-            training_data.len()
-        } else {
-            training_data.len() / SAMPLE_RATE
-        };
-        self.train_components(training_data.iter().take(sample_size));
-        self.quantizer.train(training_data);
-    }
 }
 
 #[cfg(test)]
@@ -35,6 +20,7 @@ mod tests {
     use crate::core::vector::{PackedVectorView, SparseVectorView};
     use crate::encoders::dotpacking8::quantizer::DotPacking8Quantizer;
     use crate::encoders::sparse_scalar::PlainSparseQuantizer;
+    use crate::{PlainSparseDataset, SquaredEuclideanDistance};
     use crate::vector_encoder::SparseDataEncoder;
     use crate::{
         DatasetGrowable, PackedSparseVectorEncoder, PlainSparseDatasetGrowable, QueryEvaluator,

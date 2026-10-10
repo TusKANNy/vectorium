@@ -113,8 +113,9 @@ where
         self.inverse_component_mapping.as_deref()
     }
 
-    /// Reorder components by decreasing frequency in `training_data`, which shortens gaps.
-    /// Only component ids are read, so the dataset's distance does not matter.
+    /// Reorder components by decreasing frequency in `training_data`, which shortens gaps,
+    /// then train the value quantizer (a no-op for quantizers without per-component state).
+    /// The dataset's distance does not matter.
     pub fn train<D>(&mut self, training_data: &PlainSparseDataset<u16, f32, D>)
     where
         D: ScalarSparseSupportedDistance,
@@ -126,6 +127,7 @@ where
         let inverse = Self::compute_inverse_mapping(&component_mapping);
         self.component_mapping = Some(component_mapping.into_boxed_slice());
         self.inverse_component_mapping = Some(inverse.into_boxed_slice());
+        self.quantizer.train(training_data);
     }
 }
 

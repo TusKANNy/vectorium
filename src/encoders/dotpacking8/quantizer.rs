@@ -10,6 +10,14 @@ pub trait DotPacking8Quantizer: Send + Sync + SpaceUsage {
     fn encode_value(&self, component: u16, input: Self::InputValue) -> u8;
     fn decode_value(&self, component: u16, output: u8) -> f32;
     fn query_value(&self, component: u16, input: Self::InputValue) -> f32;
+
+    /// Fit any per-component parameters to `training_data` (original component ids).
+    /// Quantizers without trainable state keep the default no-op.
+    fn train<D>(&mut self, _training_data: &PlainSparseDataset<u16, f32, D>)
+    where
+        D: ScalarSparseSupportedDistance,
+    {
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -55,13 +63,6 @@ impl ScalarU8Quantizer {
     pub fn new(quants: Box<[f32]>) -> Self {
         Self { quants }
     }
-
-    pub fn train<D>(&mut self, training_data: &PlainSparseDataset<u16, f32, D>)
-    where
-        D: ScalarSparseSupportedDistance,
-    {
-        self.quants = train_sparse_scalar_quantizer(training_data, 0.0, 1.0).into_boxed_slice();
-    }
 }
 
 impl DotPacking8Quantizer for ScalarU8Quantizer {
@@ -85,5 +86,12 @@ impl DotPacking8Quantizer for ScalarU8Quantizer {
     #[inline(always)]
     fn query_value(&self, component: u16, input: f32) -> f32 {
         input * self.quants[component as usize]
+    }
+
+    fn train<D>(&mut self, training_data: &PlainSparseDataset<u16, f32, D>)
+    where
+        D: ScalarSparseSupportedDistance,
+    {
+        self.quants = train_sparse_scalar_quantizer(training_data, 0.0, 1.0).into_boxed_slice();
     }
 }

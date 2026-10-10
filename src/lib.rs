@@ -63,6 +63,16 @@ pub use encoders::dense_scalar::{
 pub use encoders::dotpacking8_fixedu8::{
     DotPacking8FixedU8Encoder, DotPacking8Fixedu8QueryEvaluator,
 };
+pub use encoders::dotpacking8_f16::{DotPacking8f16Encoder, DotPacking8f16QueryEvaluator};
+pub use encoders::dotpacking8_scalar4bit::{
+    DotPacking8Scalar4BitEncoder, DotPacking8Scalar4BitQueryEvaluator,
+};
+pub use encoders::dotpacking8_scalaru8::{
+    DotPacking8ScalarU8Encoder, DotPacking8Scalaru8QueryEvaluator,
+};
+pub use encoders::dotpacking8_u32_scalaru8::{
+    OptimisticDotPacking8U32ScalarU8Encoder, OptimisticDotPacking8U32ScalarU8QueryEvaluator,
+};
 pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Encoder, DotVByteFixedU8QueryEvaluator};
 #[cfg(feature = "multivec")]
 pub use encoders::multivec_pq::{MultiVecPQQueryEvaluator, MultiVecProductQuantizer};
@@ -116,6 +126,18 @@ pub type PlainSparseDatasetGrowable<C, V, D> = SparseDatasetGrowable<PlainSparse
 pub type DotPacking8FixedU8Dataset = PackedSparseDataset<DotPacking8FixedU8Encoder>;
 pub type DotPacking8FixedU8DatasetGrowable =
     PackedSparseDatasetGrowable<DotPacking8FixedU8Encoder>;
+pub type DotPacking8ScalarU8Dataset = PackedSparseDataset<DotPacking8ScalarU8Encoder>;
+pub type DotPacking8ScalarU8DatasetGrowable =
+    PackedSparseDatasetGrowable<DotPacking8ScalarU8Encoder>;
+pub type DotPacking8f16Dataset = PackedSparseDataset<DotPacking8f16Encoder>;
+pub type DotPacking8f16DatasetGrowable = PackedSparseDatasetGrowable<DotPacking8f16Encoder>;
+pub type DotPacking8Scalar4BitDataset = PackedSparseDataset<DotPacking8Scalar4BitEncoder>;
+pub type DotPacking8Scalar4BitDatasetGrowable =
+    PackedSparseDatasetGrowable<DotPacking8Scalar4BitEncoder>;
+pub type OptimisticDotPacking8U32ScalarU8Dataset =
+    PackedSparseDataset<OptimisticDotPacking8U32ScalarU8Encoder>;
+pub type OptimisticDotPacking8U32ScalarU8DatasetGrowable =
+    PackedSparseDatasetGrowable<OptimisticDotPacking8U32ScalarU8Encoder>;
 
 pub use core::dataset::{ScoredRange, ScoredVector};
 

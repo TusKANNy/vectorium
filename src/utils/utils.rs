@@ -100,6 +100,26 @@ where
     C: ComponentType,
     D: ScalarSparseSupportedDistance,
 {
+    train_sparse_scalar_quantizer_with_levels(training_data, lower_percentile, upper_percentile, 255.0)
+}
+
+/// Same as [`train_sparse_scalar_quantizer`] with `num_levels` quantization levels instead of
+/// 255: the step of component `c` is its (percentile-clipped) span divided by `num_levels`,
+/// so values encode to `(v / quants[c]).clamp(0, num_levels)` (e.g. 15 for 4-bit codes).
+///
+/// `num_levels` must be positive.
+///
+/// Ported from branch feature/quantization (80064a9), originally by CosimoRulli.
+pub fn train_sparse_scalar_quantizer_with_levels<C, D>(
+    training_data: &PlainSparseDataset<C, f32, D>,
+    lower_percentile: f32,
+    upper_percentile: f32,
+    num_levels: f32,
+) -> Vec<f32>
+where
+    C: ComponentType,
+    D: ScalarSparseSupportedDistance,
+{
     assert!(
         (0.0..1.0).contains(&lower_percentile),
         "lower_percentile must be in [0.0, 1.0), got {lower_percentile}"
@@ -108,6 +128,7 @@ where
         (0.0..=1.0).contains(&upper_percentile) && upper_percentile > lower_percentile,
         "upper_percentile must be in (lower_percentile, 1.0], got {upper_percentile}"
     );
+    assert!(num_levels > 0.0, "num_levels must be positive, got {num_levels}");
 
     let dim = training_data.output_dim();
 
@@ -127,7 +148,7 @@ where
         }
         for q in maxes.iter_mut() {
             if *q > 0.0 {
-                *q /= 255.0;
+                *q /= num_levels;
             }
         }
         return maxes;
@@ -171,10 +192,10 @@ where
         // so we fit the step to the robust span [min, max].
         let span = (max - min).max(0.0);
         if span > 0.0 {
-            quants[i] = span / 255.0;
+            quants[i] = span / num_levels;
         } else if max > 0.0 {
             // Degenerate bucket (or identical percentiles): keep previous behavior.
-            quants[i] = max / 255.0;
+            quants[i] = max / num_levels;
         }
     }
 

@@ -7,8 +7,9 @@
 //! - the **nibble value layout** (`nibble_bytes`, `pack_nibbles`, [`NibbleReader`]) — every
 //!   full block of 8 codes packs into 4 bytes as `byte[i] = code[i] | (code[i+4] << 4)`,
 //!   with a trailing `rem < 8` codes stored as sequential nibble pairs;
-//! - two **value quantizers** — [`Scalar4BitQuantizer`] (per-component uniform step, linear
-//!   scoring) and [`Centroid4BitQuantizer`] (per-component 16-entry codebook, LUT scoring);
+//! - the **value quantizer** [`Scalar4BitQuantizer`] (per-component uniform step, linear
+//!   scoring). On `feature/quantization` this module also holds `Centroid4BitQuantizer`
+//!   (per-component 16-entry codebook); it is not imported on this branch yet;
 //! - small **gap-stream helpers** ([`gap_iter`], [`block_bit_width`]) that drive
 //!   [`DotPacking8Iter`]'s public gap decoding while values are read from a [`NibbleReader`]
 //!   rather than its byte value cursor.
@@ -18,24 +19,14 @@
 
 use crate::encoders::dotpacking8::common::DotPacking8Iter;
 use crate::encoders::dotpacking8::quantizer::DotPacking8Quantizer;
-use crate::encoders::packed_centroid_based_quantization_sparse_scalar::PackedCentroidSparseQuantizer;
 use crate::utils::train_sparse_scalar_quantizer_with_levels;
-use crate::{PlainSparseDataset, SpaceUsage, SquaredEuclideanDistance};
+use crate::{PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
 use std::simd::prelude::*;
 
 /// Gap block size of the `dotpacking8` codec.
 pub(crate) const N: usize = 8;
-/// Centroids per component for the codebook quantizer: `2^4 == 16`.
-pub(crate) const NUM_CENTROIDS: usize = 16;
 /// 4-bit scalar codes span 15 quantization levels (`2^4 - 1`).
 const NUM_LEVELS: f32 = 15.0;
-
-/// Default centroid k-means knobs for the parameterless `train(&td)` entry point of the
-/// `*_centroid4bit` encoders (the one the dataset `From` macros call). Tuning callers use
-/// `train_with_params` instead.
-pub(crate) const DEFAULT_LOWER_PCT: f32 = 0.0;
-pub(crate) const DEFAULT_UPPER_PCT: f32 = 1.0;
-pub(crate) const DEFAULT_KMEANS_ITERS: usize = 10;
 
 // ---------------------------------------------------------------------------
 // Nibble value layout.
@@ -53,6 +44,7 @@ pub(crate) fn nibble_bytes(n: usize) -> usize {
 /// value is `b - 1`). Used by the two-tier `cdotpacking8` forks to advance the gap payload
 /// pointer across the mapped→residual stream boundary.
 #[inline(always)]
+#[allow(dead_code)] // the cdotpacking8 4-bit encoders are not imported on this branch yet
 pub(crate) fn block_bit_width(selectors: &[u8], block_idx: usize) -> usize {
     let sel = selectors[block_idx / 2];
     (((sel >> ((block_idx & 1) << 2)) & 0x0F) as usize) + 1
@@ -188,14 +180,6 @@ impl Scalar4BitQuantizer {
     pub fn new(quants: Box<[f32]>) -> Self {
         Self { quants }
     }
-
-    /// Fit per-component steps over the full `[min, max]` range using 15 levels, mirroring
-    /// the `ScalarU8Quantizer` fit but for 4-bit codes.
-    pub fn train(&mut self, training_data: &PlainSparseDataset<u16, f32, SquaredEuclideanDistance>) {
-        self.quants =
-            train_sparse_scalar_quantizer_with_levels(training_data, 0.0, 1.0, NUM_LEVELS)
-                .into_boxed_slice();
-    }
 }
 
 impl DotPacking8Quantizer for Scalar4BitQuantizer {
@@ -220,86 +204,16 @@ impl DotPacking8Quantizer for Scalar4BitQuantizer {
     fn query_value(&self, component: u16, input: f32) -> f32 {
         input * self.quants[component as usize]
     }
-}
 
-// ---------------------------------------------------------------------------
-// 4-bit per-component centroid value quantizer (codebook / LUT scoring).
-// ---------------------------------------------------------------------------
-
-/// Per-component centroid quantizer producing 4-bit codes (`0..=15`). `centroids` is a flat
-/// `dim·16` table; `centroids[c·16 + v]` is the v-th centroid for component `c`, with each
-/// per-component row sorted ascending so [`Self::encode_value`] can binary-search.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Centroid4BitQuantizer {
-    dim: usize,
-    centroids: Box<[f32]>,
-}
-
-impl SpaceUsage for Centroid4BitQuantizer {
-    fn space_usage_bytes(&self) -> usize {
-        self.centroids.len() * std::mem::size_of::<f32>()
-    }
-}
-
-impl Centroid4BitQuantizer {
-    pub fn new(dim: usize, centroids: Box<[f32]>) -> Self {
-        Self { dim, centroids }
-    }
-
-    #[inline]
-    pub fn centroids(&self) -> &[f32] {
-        &self.centroids
-    }
-
-    /// Fit the per-component codebook by delegating to the existing, tested per-component
-    /// k-means in [`PackedCentroidSparseQuantizer::train`] (percentile-clip + Lloyd), then
-    /// copying out its `dim·16` codebook. No k-means is reimplemented here.
-    pub fn train(
-        training_data: &PlainSparseDataset<u16, f32, SquaredEuclideanDistance>,
-        lower_percentile: f32,
-        upper_percentile: f32,
-        n_iterations: usize,
-    ) -> Self {
-        let inner = PackedCentroidSparseQuantizer::train(
-            training_data,
-            lower_percentile,
-            upper_percentile,
-            n_iterations,
-        );
-        let centroids: Box<[f32]> = inner.centroids().to_vec().into_boxed_slice();
-        let dim = centroids.len() / NUM_CENTROIDS;
-        Self { dim, centroids }
-    }
-
-    /// Nearest-centroid index for `value` in `component` (binary search over the ascending
-    /// per-component row). Mirrors `PackedCentroidSparseQuantizer::quantize`.
-    #[inline(always)]
-    pub(crate) fn encode_value(&self, component: u16, value: f32) -> u8 {
-        let base = component as usize * NUM_CENTROIDS;
-        let table = &self.centroids[base..base + NUM_CENTROIDS];
-        match table.binary_search_by(|c| c.partial_cmp(&value).unwrap()) {
-            Ok(idx) => idx as u8,
-            Err(idx) => {
-                if idx == 0 {
-                    0
-                } else if idx >= NUM_CENTROIDS {
-                    (NUM_CENTROIDS - 1) as u8
-                } else {
-                    let lo = table[idx - 1];
-                    let hi = table[idx];
-                    if (value - lo) <= (hi - value) {
-                        (idx - 1) as u8
-                    } else {
-                        idx as u8
-                    }
-                }
-            }
-        }
-    }
-
-    #[inline(always)]
-    pub(crate) fn decode_value(&self, component: u16, output: u8) -> f32 {
-        self.centroids[component as usize * NUM_CENTROIDS + output as usize]
+    /// Fit per-component steps over the full `[min, max]` range using 15 levels, mirroring
+    /// the `ScalarU8Quantizer` fit but for 4-bit codes.
+    fn train<D>(&mut self, training_data: &PlainSparseDataset<u16, f32, D>)
+    where
+        D: ScalarSparseSupportedDistance,
+    {
+        self.quants =
+            train_sparse_scalar_quantizer_with_levels(training_data, 0.0, 1.0, NUM_LEVELS)
+                .into_boxed_slice();
     }
 }
 
