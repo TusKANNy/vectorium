@@ -61,6 +61,7 @@ pub use encoders::rabitq::{
 };
 pub use encoders::rabitq_ext::{RabitqExtConfig, RabitqExtQuantizer, RabitqExtQueryEvaluator};
 pub use transformations::fht_kac::FhtKacRotator;
+pub use transformations::l1_prune::{l1_prune_split, l1_prune_split_vector};
 
 pub use encoders::dense_scalar::{
     PlainDenseQuantizer, PlainDenseQuantizerDotProduct, PlainDenseQuantizerSquaredEuclidean,

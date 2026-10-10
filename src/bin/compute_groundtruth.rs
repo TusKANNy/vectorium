@@ -95,6 +95,14 @@ struct Args {
     /// which costs a heap sweep per document for a small accuracy gain.
     #[clap(long, default_value_t = true, action = clap::ArgAction::Set)]
     rabitq_faster_quant: bool,
+
+    /// Sparse datasets only: before scanning, L1-prune every document to the components carrying
+    /// the top PERCENTAGE% of its mass (see `vectorium::l1_prune_split`) and search that part
+    /// alone. Use it to measure what a two-stage index's first stage can see: the top-k this
+    /// produces is the candidate ceiling the real, approximate first stage is bounded by.
+    /// Omit the flag to scan the collection unpruned.
+    #[clap(long, value_parser)]
+    l1_prune: Option<f32>,
 }
 
 fn main() {
@@ -244,6 +252,14 @@ fn main() {
             }
         },
         "sparse" => {
+            let l1_prune = args.l1_prune;
+            if let Some(p) = l1_prune {
+                assert!(
+                    (0.0..=100.0).contains(&p),
+                    "--l1-prune must be in [0, 100], got {p}"
+                );
+                println!("L1 pruning: keeping the top {p}% of each document's L1 mass");
+            }
             if matches!(encoder.as_str(), "pq" | "rabitq" | "rabitq-ext") {
                 eprintln!(
                     "Encoder '{}' is only supported with dataset_type='dense'.",
@@ -270,30 +286,35 @@ fn main() {
                         query_path,
                         output_path,
                         k,
+                        l1_prune,
                     ),
                     "f16" => compute_sparse_groundtruth_dotvbyte::<f16>(
                         input_path,
                         query_path,
                         output_path,
                         k,
+                        l1_prune,
                     ),
                     "bf16" => compute_sparse_groundtruth_dotvbyte::<bf16>(
                         input_path,
                         query_path,
                         output_path,
                         k,
+                        l1_prune,
                     ),
                     "fixedu8" => compute_sparse_groundtruth_dotvbyte::<FixedU8Q>(
                         input_path,
                         query_path,
                         output_path,
                         k,
+                        l1_prune,
                     ),
                     "fixedu16" => compute_sparse_groundtruth_dotvbyte::<FixedU16Q>(
                         input_path,
                         query_path,
                         output_path,
                         k,
+                        l1_prune,
                     ),
                     _ => {
                         eprintln!(
@@ -314,71 +335,79 @@ fn main() {
                     f32,
                     distances::DotProduct,
                 >(
-                    input_path, query_path, output_path, k
+                    input_path, query_path, output_path, k, l1_prune
                 ),
                 ("u16", "dotproduct", "f16") => compute_sparse_groundtruth::<
                     u16,
                     f16,
                     distances::DotProduct,
                 >(
-                    input_path, query_path, output_path, k
+                    input_path, query_path, output_path, k, l1_prune
                 ),
                 ("u16", "dotproduct", "bf16") => compute_sparse_groundtruth::<
                     u16,
                     bf16,
                     distances::DotProduct,
                 >(
-                    input_path, query_path, output_path, k
+                    input_path, query_path, output_path, k, l1_prune
                 ),
-                ("u16", "dotproduct", "fixedu8") => compute_sparse_groundtruth::<
-                    u16,
-                    FixedU8Q,
-                    distances::DotProduct,
-                >(
-                    input_path, query_path, output_path, k
-                ),
-                ("u16", "dotproduct", "fixedu16") => compute_sparse_groundtruth::<
-                    u16,
-                    FixedU16Q,
-                    distances::DotProduct,
-                >(
-                    input_path, query_path, output_path, k
-                ),
+                ("u16", "dotproduct", "fixedu8") => {
+                    compute_sparse_groundtruth::<u16, FixedU8Q, distances::DotProduct>(
+                        input_path,
+                        query_path,
+                        output_path,
+                        k,
+                        l1_prune,
+                    )
+                }
+                ("u16", "dotproduct", "fixedu16") => {
+                    compute_sparse_groundtruth::<u16, FixedU16Q, distances::DotProduct>(
+                        input_path,
+                        query_path,
+                        output_path,
+                        k,
+                        l1_prune,
+                    )
+                }
                 ("u32", "dotproduct", "f32") => compute_sparse_groundtruth::<
                     u32,
                     f32,
                     distances::DotProduct,
                 >(
-                    input_path, query_path, output_path, k
+                    input_path, query_path, output_path, k, l1_prune
                 ),
                 ("u32", "dotproduct", "f16") => compute_sparse_groundtruth::<
                     u32,
                     f16,
                     distances::DotProduct,
                 >(
-                    input_path, query_path, output_path, k
+                    input_path, query_path, output_path, k, l1_prune
                 ),
                 ("u32", "dotproduct", "bf16") => compute_sparse_groundtruth::<
                     u32,
                     bf16,
                     distances::DotProduct,
                 >(
-                    input_path, query_path, output_path, k
+                    input_path, query_path, output_path, k, l1_prune
                 ),
-                ("u32", "dotproduct", "fixedu8") => compute_sparse_groundtruth::<
-                    u32,
-                    FixedU8Q,
-                    distances::DotProduct,
-                >(
-                    input_path, query_path, output_path, k
-                ),
-                ("u32", "dotproduct", "fixedu16") => compute_sparse_groundtruth::<
-                    u32,
-                    FixedU16Q,
-                    distances::DotProduct,
-                >(
-                    input_path, query_path, output_path, k
-                ),
+                ("u32", "dotproduct", "fixedu8") => {
+                    compute_sparse_groundtruth::<u32, FixedU8Q, distances::DotProduct>(
+                        input_path,
+                        query_path,
+                        output_path,
+                        k,
+                        l1_prune,
+                    )
+                }
+                ("u32", "dotproduct", "fixedu16") => {
+                    compute_sparse_groundtruth::<u32, FixedU16Q, distances::DotProduct>(
+                        input_path,
+                        query_path,
+                        output_path,
+                        k,
+                        l1_prune,
+                    )
+                }
                 _ => {
                     eprintln!(
                         "Unknown combination for sparse: component_type='{}', distance='{}', value_type='{}'. \
@@ -1005,6 +1034,7 @@ fn compute_sparse_groundtruth<C, V, D>(
     query_path: String,
     output_path: String,
     k: usize,
+    l1_prune: Option<f32>,
 ) where
     C: vectorium::ComponentType
         + vectorium::SpaceUsage
@@ -1016,6 +1046,31 @@ fn compute_sparse_groundtruth<C, V, D>(
     // Read sparse dataset from seismic binary format
     let dataset: PlainSparseDataset<C, V, D> =
         readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
+
+    // Optionally scan the L1-pruned part of the collection instead of the whole thing. The
+    // residual is dropped here on purpose: this measures what a first stage built over the
+    // pruned part could retrieve, so the residual must not contribute to the scores.
+    let dataset = match l1_prune {
+        Some(percentage) => {
+            let prune_start = Instant::now();
+            let (pruned, residual) = vectorium::l1_prune_split(&dataset, percentage);
+            // Empty residuals are the case a two-stage rerank path has to survive, so report
+            // how many this split actually produced rather than leaving it to be assumed.
+            let empty_residuals = residual.iter().filter(|v| v.is_empty()).count();
+            println!(
+                "L1 prune at {percentage}%: {} -> {} non-zeroes kept, {} in the residual; \
+                 {} of {} residuals are empty ({:.3}s)",
+                dataset.nnz(),
+                pruned.nnz(),
+                residual.nnz(),
+                empty_residuals,
+                residual.len(),
+                prune_start.elapsed().as_secs_f64()
+            );
+            pruned
+        }
+        None => dataset,
+    };
 
     // Queries must use f32 value type for sparse quantizers
     let queries: PlainSparseDataset<C, f32, D> =
@@ -1076,6 +1131,7 @@ fn compute_sparse_groundtruth_dotvbyte<V>(
     query_path: String,
     output_path: String,
     k: usize,
+    l1_prune: Option<f32>,
 ) where
     V: vectorium::ValueType + Float + vectorium::FromF32 + vectorium::SpaceUsage,
 {
@@ -1086,6 +1142,21 @@ fn compute_sparse_groundtruth_dotvbyte<V>(
         readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
     let queries: PlainSparseDataset<u16, f32, distances::DotProduct> =
         readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
+
+    // Prune before packing, so the varbyte gaps are those of the pruned component sequence.
+    let dataset_plain = match l1_prune {
+        Some(percentage) => {
+            let (pruned, residual) = vectorium::l1_prune_split(&dataset_plain, percentage);
+            println!(
+                "L1 prune at {percentage}%: {} -> {} non-zeroes kept, {} in the residual",
+                dataset_plain.nnz(),
+                pruned.nnz(),
+                residual.nnz()
+            );
+            pruned
+        }
+        None => dataset_plain,
+    };
 
     let dataset: PackedSparseDataset<DotVByteFixedU8Encoder> = dataset_plain.into();
 
