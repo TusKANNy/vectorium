@@ -19,7 +19,7 @@
 
 use super::dataset::ScoredVector;
 use super::distances::Distance;
-use super::index::Index;
+use super::index::{Index, IndexStats};
 use super::vector_encoder::VectorEncoder;
 use crate::Dataset;
 use crate::QueryEvaluator;
@@ -119,7 +119,7 @@ where
     /// - results: Vector of scored vectors, sorted by distance using the Distance type's Ord implementation
     #[allow(clippy::too_many_arguments)]
     pub fn search<'q>(
-        &'q self,
+        &self,
         first_stage_query: <FirstStageIndex as Index>::Query<'q>,
         rerank_query: <RerankDataset::Encoder as VectorEncoder>::QueryVector<'q>,
         k_candidates: usize,
@@ -210,7 +210,7 @@ where
     /// # Returns
     /// Vector of scored vectors, sorted by distance using the Distance type's Ord implementation
     fn rerank_candidates<'q>(
-        &'q self,
+        &self,
         rerank_query: <RerankDataset::Encoder as VectorEncoder>::QueryVector<'q>,
         rerank_search_params: &<RerankDataset::Encoder as VectorEncoder>::QueryParams,
         candidates: &[VectorId],
@@ -249,7 +249,7 @@ where
     }
 
     fn rerank_candidates_with_early_exit<'q>(
-        &'q self,
+        &self,
         rerank_query: <RerankDataset::Encoder as VectorEncoder>::QueryVector<'q>,
         rerank_search_params: &<RerankDataset::Encoder as VectorEncoder>::QueryParams,
         candidates: &[VectorId],
@@ -337,6 +337,96 @@ where
     /// Returns true if the index is empty.
     pub fn is_empty(&self) -> bool {
         self.rerank_dataset.is_empty()
+    }
+}
+
+/// Search parameters of a [`RerankIndex`] used through the [`Index`] trait.
+///
+/// `first_stage` and `rerank` are the parameters of the first-stage index and of the rerank
+/// dataset's encoder. See [`RerankIndex::search`] for `k_candidates`, `alpha`, `beta` and
+/// `residuals`.
+#[derive(Clone, Debug)]
+pub struct RerankSearchParams<FirstStageParams, RerankParams> {
+    /// Candidates retrieved from the first stage and reranked.
+    pub k_candidates: usize,
+    pub first_stage: FirstStageParams,
+    pub rerank: RerankParams,
+    /// Candidate pruning on the first-stage score; `None` for no pruning.
+    pub alpha: Option<f32>,
+    /// Early exit during reranking; `None` for no early exit.
+    pub beta: Option<usize>,
+    /// Sum the first-stage and rerank scores instead of taking the rerank score alone.
+    pub residuals: bool,
+}
+
+impl<FirstStageParams, RerankParams> RerankSearchParams<FirstStageParams, RerankParams> {
+    /// Parameters with no candidate pruning, no early exit and no residual reranking.
+    pub fn new(k_candidates: usize, first_stage: FirstStageParams, rerank: RerankParams) -> Self {
+        Self {
+            k_candidates,
+            first_stage,
+            rerank,
+            alpha: None,
+            beta: None,
+            residuals: false,
+        }
+    }
+}
+
+/// A [`RerankIndex`] is an [`Index`] whose query is the pair (first-stage query, rerank query).
+///
+/// The two are often the same vector; they are separate because the stages can use different
+/// representations, such as a sparse first stage reranked against multi-vectors.
+impl<FirstStageIndex, RerankDataset> Index for RerankIndex<FirstStageIndex, RerankDataset>
+where
+    FirstStageIndex: Index,
+    RerankDataset: Dataset,
+    <RerankDataset::Encoder as VectorEncoder>::Distance: Distance + From<f32>,
+{
+    type Query<'q> = (
+        <FirstStageIndex as Index>::Query<'q>,
+        <RerankDataset::Encoder as VectorEncoder>::QueryVector<'q>,
+    );
+    type Distance = <RerankDataset::Encoder as VectorEncoder>::Distance;
+    type SearchParams = RerankSearchParams<
+        <FirstStageIndex as Index>::SearchParams,
+        <RerankDataset::Encoder as VectorEncoder>::QueryParams,
+    >;
+
+    fn search<'q>(
+        &self,
+        query: Self::Query<'q>,
+        k: usize,
+        search_params: &Self::SearchParams,
+    ) -> Vec<ScoredVector<Self::Distance>> {
+        let (first_stage_query, rerank_query) = query;
+        RerankIndex::search(
+            self,
+            first_stage_query,
+            rerank_query,
+            search_params.k_candidates,
+            k,
+            &search_params.first_stage,
+            &search_params.rerank,
+            search_params.alpha,
+            search_params.beta,
+            search_params.residuals,
+        )
+    }
+}
+
+/// Element count and dimensionality of the rerank dataset.
+impl<FirstStageIndex, RerankDataset> IndexStats for RerankIndex<FirstStageIndex, RerankDataset>
+where
+    FirstStageIndex: Index,
+    RerankDataset: Dataset,
+{
+    fn n_elements(&self) -> usize {
+        self.rerank_dataset.len()
+    }
+
+    fn dim(&self) -> usize {
+        self.rerank_dataset.input_dim()
     }
 }
 
@@ -581,5 +671,48 @@ mod tests {
                 "alpha = {alpha:?} pruned a nearer candidate than the k-th"
             );
         }
+    }
+
+    /// The `Index` impl forwards every parameter to the inherent `search`.
+    #[test]
+    fn index_trait_matches_inherent_search() {
+        let index = index();
+        let query = DenseVectorView::new(&[1.0f32, 0.0]);
+
+        for residuals in [false, true] {
+            for beta in [None, Some(3)] {
+                for alpha in [None, Some(0.5)] {
+                    let mut params = RerankSearchParams::new(3, (), ());
+                    params.alpha = alpha;
+                    params.beta = beta;
+                    params.residuals = residuals;
+                    let via_trait = Index::search(&index, (query, query), 2, &params);
+                    let inherent =
+                        index.search(query, query, 3, 2, &(), &(), alpha, beta, residuals);
+                    assert_eq!(scored(&via_trait), scored(&inherent));
+                }
+            }
+        }
+    }
+
+    /// Generic code written against `Index` can search a `RerankIndex`.
+    #[test]
+    fn rerank_index_is_usable_as_a_generic_index() {
+        fn top<I: Index>(index: &I, query: I::Query<'_>, params: &I::SearchParams) -> VectorId {
+            index.search(query, 1, params)[0].vector
+        }
+        let index = index();
+        let query = DenseVectorView::new(&[1.0f32, 0.0]);
+        let mut params = RerankSearchParams::new(3, (), ());
+        assert_eq!(top(&index, (query, query), &params), 1);
+        params.residuals = true;
+        assert_eq!(top(&index, (query, query), &params), 0);
+    }
+
+    #[test]
+    fn index_stats_describe_the_rerank_dataset() {
+        let index = index();
+        assert_eq!(index.n_elements(), 3);
+        assert_eq!(IndexStats::dim(&index), 2);
     }
 }
