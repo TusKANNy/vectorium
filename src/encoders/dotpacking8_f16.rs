@@ -26,8 +26,8 @@ impl<'a> DotPacking8f16View<'a> {
         let bytes = cast_slice::<u64, u8>(slice);
         let n = bytemuck::from_bytes::<u16>(&bytes[0..2]).to_le() as usize;
 
-        let n_blocks_total = (n + 8 - 1) / 8;
-        let selectors_size = (n_blocks_total + 1) / 2;
+        let n_blocks_total = n.div_ceil(8);
+        let selectors_size = n_blocks_total.div_ceil(2);
         let selectors_end = 2 + selectors_size;
         let values_start_idx = bytes.len() - 2 * n; // 2 bytes per f16
 
@@ -276,14 +276,14 @@ impl PackedSparseVectorEncoder for DotPacking8f16Encoder {
         let padding_needed =
             compute_safe_simd_padding(n, &selectors, alignment_padding, 2 * n);
 
-        for _ in 0..padding_needed {
-            payload.push(0);
-        }
+        payload.resize(payload.len() + padding_needed, 0);
         payload.extend_from_slice(cast_slice::<f16, u8>(q_values.as_slice()));
 
         let data = payload
-            .chunks_exact(8)
-            .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()));
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|&chunk| u64::from_le_bytes(chunk));
 
         output.extend(data);
     }

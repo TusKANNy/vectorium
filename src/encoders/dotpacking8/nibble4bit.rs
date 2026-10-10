@@ -36,7 +36,7 @@ const NUM_LEVELS: f32 = 15.0;
 /// half-split-bulk + sequential-tail layout.
 #[inline(always)]
 pub(crate) fn nibble_bytes(n: usize) -> usize {
-    4 * (n / N) + (n % N + 1) / 2
+    4 * (n / N) + (n % N).div_ceil(2)
 }
 
 /// Per-block gap bit width for `block_idx`, read directly from the selector stream.
@@ -134,7 +134,7 @@ impl<'a> NibbleReader<'a> {
             let byte = unsafe { *self.bytes.get_unchecked(self.off + i / 2) };
             out[i] = (byte >> ((i & 1) << 2)) & 0x0F;
         }
-        self.off += (rem + 1) / 2;
+        self.off += rem.div_ceil(2);
         out
     }
 }

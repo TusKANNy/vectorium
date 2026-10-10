@@ -1,8 +1,8 @@
 //! `dotpacking8` component compression blended with 4-bit scalar value compression.
 //!
-//! This is the non-clustered counterpart of [`crate::CDotPacking8Scalar4BitEncoder`]: it
-//! keeps the component codec of [`crate::DotPacking8ScalarU8Encoder`] verbatim (bisection
-//! component permutation + a single variable-bit gap-coded stream over all components, with
+//! This is the non-clustered counterpart of `CDotPacking8Scalar4BitEncoder` (not imported on
+//! this branch yet): it keeps the component codec of [`crate::DotPacking8ScalarU8Encoder`]
+//! verbatim (decreasing-frequency component permutation + a single variable-bit gap-coded stream over all components, with
 //! a dense-query SIMD gather), but stores the per-component **values** as 4-bit nibbles
 //! instead of full `u8` bytes, roughly halving the value footprint.
 //!
@@ -57,8 +57,8 @@ impl<'a> DotPack8Scalar4BitView<'a> {
         let bytes = cast_slice::<u64, u8>(slice);
         let n = from_bytes::<u16>(&bytes[0..2]).to_le() as usize;
 
-        let n_blocks_total = (n + N - 1) / N;
-        let selectors_size = (n_blocks_total + 1) / 2;
+        let n_blocks_total = n.div_ceil(N);
+        let selectors_size = n_blocks_total.div_ceil(2);
         let selectors_end = 2 + selectors_size;
         let values_start = bytes.len() - nibble_bytes(n);
 
@@ -359,14 +359,14 @@ impl PackedSparseVectorEncoder for DotPacking8Scalar4BitEncoder {
         let padding_needed =
             compute_safe_simd_padding(n, &selectors, (8 - (current_len + nb) % 8) % 8, nb);
 
-        for _ in 0..padding_needed {
-            payload.push(0);
-        }
+        payload.resize(payload.len() + padding_needed, 0);
         pack_nibbles(&mut payload, &q_values);
 
         let data = payload
-            .chunks_exact(8)
-            .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()));
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|&chunk| u64::from_le_bytes(chunk));
 
         output.extend(data);
     }
