@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 use crate::core::distances::{DotProduct, maxsim};
 use crate::core::vector::{DenseMultiVectorOwned, DenseMultiVectorView};
 use crate::core::vector_encoder::{MultiVecEncoder, QueryEvaluator, VectorEncoder};
+use crate::utils::numeric_markers::ToF32Fast;
 use crate::{Float, FromF32, SpaceUsage, ValueType};
 
 /// A MaxSim encoder parameterized by input/output value types.
@@ -117,11 +118,7 @@ where
 
     #[inline]
     fn vector_evaluator<'e, 'v>(&'e self, vector: Self::EncodedVector<'v>) -> Self::Evaluator<'e> {
-        let decoded: Vec<f32> = vector
-            .values()
-            .iter()
-            .map(|&v| v.to_f32().expect("Failed to convert value to f32"))
-            .collect();
+        let decoded: Vec<f32> = vector.values().iter().map(|&v| v.to_f32_fast()).collect();
         ScalarMultiVecQueryEvaluator::new(self, DenseMultiVectorOwned::new(decoded, self.token_dim))
     }
 
@@ -164,11 +161,7 @@ where
         &self,
         encoded: DenseMultiVectorView<'a, Self::OutputValueType>,
     ) -> DenseMultiVectorOwned<f32> {
-        let values = encoded
-            .values()
-            .iter()
-            .map(|&v| v.to_f32().expect("Failed to convert value to f32"))
-            .collect();
+        let values = encoded.values().iter().map(|&v| v.to_f32_fast()).collect();
         DenseMultiVectorOwned::new(values, encoded.dim())
     }
 }

@@ -13,6 +13,7 @@
 use crate::core::vector::DenseMultiVectorView;
 use crate::core::vector::{DenseVectorView, SparseVectorView};
 use crate::utils::is_strictly_sorted;
+use crate::utils::numeric_markers::ToF32Fast;
 use crate::{ComponentType, ValueType};
 
 use std::hint::assert_unchecked;
@@ -221,9 +222,8 @@ where
         .iter()
         .map(|(c, v)| {
             unsafe { *query_slice.get_unchecked(c.as_()) }
-                .to_f32()
-                .unwrap()
-                .algebraic_mul(v.to_f32().unwrap())
+                .to_f32_fast()
+                .algebraic_mul(v.to_f32_fast())
         })
         .fold(0.0, |acc: f32, x| acc.algebraic_add(x))
         .into()
@@ -274,10 +274,9 @@ where
     let mut i = 0;
     while i < min_len {
         for j in 0..6 {
-            let q_val = unsafe { *q.get_unchecked((*comps[j].get_unchecked(i)).as_()) }
-                .to_f32()
-                .unwrap();
-            let v_val = unsafe { (*vals[j].get_unchecked(i)).to_f32().unwrap() };
+            let q_val =
+                unsafe { *q.get_unchecked((*comps[j].get_unchecked(i)).as_()) }.to_f32_fast();
+            let v_val = unsafe { (*vals[j].get_unchecked(i)).to_f32_fast() };
             accs[j] = accs[j].algebraic_add(q_val.algebraic_mul(v_val));
         }
         i += 1;
@@ -287,10 +286,9 @@ where
     for j in 0..6 {
         let mut ij = min_len;
         while ij < lens[j] {
-            let q_val = unsafe { *q.get_unchecked((*comps[j].get_unchecked(ij)).as_()) }
-                .to_f32()
-                .unwrap();
-            let v_val = unsafe { (*vals[j].get_unchecked(ij)).to_f32().unwrap() };
+            let q_val =
+                unsafe { *q.get_unchecked((*comps[j].get_unchecked(ij)).as_()) }.to_f32_fast();
+            let v_val = unsafe { (*vals[j].get_unchecked(ij)).to_f32_fast() };
             accs[j] = accs[j].algebraic_add(q_val.algebraic_mul(v_val));
             ij += 1;
         }
@@ -369,7 +367,7 @@ where
         }
         match current {
             Some((v_id, v_v)) if v_id == q_id => {
-                result += v_v.to_f32().unwrap() * q_v.to_f32().unwrap();
+                result += v_v.to_f32_fast() * q_v.to_f32_fast();
             }
             None => {
                 break;
@@ -418,7 +416,7 @@ where
     query
         .iter()
         .zip(vector.iter())
-        .map(|(q, v)| q.to_f32().unwrap().algebraic_mul(v.to_f32().unwrap()))
+        .map(|(q, v)| q.to_f32_fast().algebraic_mul(v.to_f32_fast()))
         .fold(0.0, |acc: f32, x| acc.algebraic_add(x))
         .into()
 }
@@ -458,13 +456,13 @@ where
 
     for i in 0..d {
         unsafe {
-            let qi = q.get_unchecked(i).to_f32().unwrap();
-            r0 = r0.algebraic_add(qi.algebraic_mul(a0.get_unchecked(i).to_f32().unwrap()));
-            r1 = r1.algebraic_add(qi.algebraic_mul(a1.get_unchecked(i).to_f32().unwrap()));
-            r2 = r2.algebraic_add(qi.algebraic_mul(a2.get_unchecked(i).to_f32().unwrap()));
-            r3 = r3.algebraic_add(qi.algebraic_mul(a3.get_unchecked(i).to_f32().unwrap()));
-            r4 = r4.algebraic_add(qi.algebraic_mul(a4.get_unchecked(i).to_f32().unwrap()));
-            r5 = r5.algebraic_add(qi.algebraic_mul(a5.get_unchecked(i).to_f32().unwrap()));
+            let qi = q.get_unchecked(i).to_f32_fast();
+            r0 = r0.algebraic_add(qi.algebraic_mul(a0.get_unchecked(i).to_f32_fast()));
+            r1 = r1.algebraic_add(qi.algebraic_mul(a1.get_unchecked(i).to_f32_fast()));
+            r2 = r2.algebraic_add(qi.algebraic_mul(a2.get_unchecked(i).to_f32_fast()));
+            r3 = r3.algebraic_add(qi.algebraic_mul(a3.get_unchecked(i).to_f32_fast()));
+            r4 = r4.algebraic_add(qi.algebraic_mul(a4.get_unchecked(i).to_f32_fast()));
+            r5 = r5.algebraic_add(qi.algebraic_mul(a5.get_unchecked(i).to_f32_fast()));
         }
     }
     [
@@ -518,8 +516,8 @@ where
         .iter()
         .zip(vector.values().iter())
         .map(|(q, c)| {
-            let q = q.to_f32().unwrap();
-            let c = c.to_f32().unwrap();
+            let q = q.to_f32_fast();
+            let c = c.to_f32_fast();
             let diff = q.algebraic_sub(c);
             diff.algebraic_mul(diff)
         })
@@ -563,13 +561,13 @@ where
 
     for i in 0..d {
         unsafe {
-            let qi = q.get_unchecked(i).to_f32().unwrap();
-            let d0 = qi.algebraic_sub(a0.get_unchecked(i).to_f32().unwrap());
-            let d1 = qi.algebraic_sub(a1.get_unchecked(i).to_f32().unwrap());
-            let d2 = qi.algebraic_sub(a2.get_unchecked(i).to_f32().unwrap());
-            let d3 = qi.algebraic_sub(a3.get_unchecked(i).to_f32().unwrap());
-            let d4 = qi.algebraic_sub(a4.get_unchecked(i).to_f32().unwrap());
-            let d5 = qi.algebraic_sub(a5.get_unchecked(i).to_f32().unwrap());
+            let qi = q.get_unchecked(i).to_f32_fast();
+            let d0 = qi.algebraic_sub(a0.get_unchecked(i).to_f32_fast());
+            let d1 = qi.algebraic_sub(a1.get_unchecked(i).to_f32_fast());
+            let d2 = qi.algebraic_sub(a2.get_unchecked(i).to_f32_fast());
+            let d3 = qi.algebraic_sub(a3.get_unchecked(i).to_f32_fast());
+            let d4 = qi.algebraic_sub(a4.get_unchecked(i).to_f32_fast());
+            let d5 = qi.algebraic_sub(a5.get_unchecked(i).to_f32_fast());
             r0 = r0.algebraic_add(d0.algebraic_mul(d0));
             r1 = r1.algebraic_add(d1.algebraic_mul(d1));
             r2 = r2.algebraic_add(d2.algebraic_mul(d2));
@@ -597,7 +595,7 @@ where
         .values()
         .iter()
         .map(|v| {
-            let v = v.to_f32().unwrap();
+            let v = v.to_f32_fast();
             v.algebraic_mul(v)
         })
         .fold(0.0f32, |acc, x| acc.algebraic_add(x))
@@ -772,7 +770,7 @@ where
     for d_token in doc.iter_vectors() {
         // Materialize this doc token to f32 once.
         for (dst, &src) in d_buf.iter_mut().zip(d_token.values()) {
-            *dst = src.to_f32().unwrap();
+            *dst = src.to_f32_fast();
         }
         let d_f32 = DenseVectorView::new(d_buf);
 

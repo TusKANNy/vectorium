@@ -12,6 +12,7 @@ use crate::core::vector::DenseVectorView;
 use crate::core::vector_encoder::{
     DenseVectorEncoder, DenseVectorOwned, QueryEvaluator, VectorEncoder,
 };
+use crate::utils::numeric_markers::ToF32Fast;
 use crate::{Float, FromF32, SpaceUsage, ValueType};
 
 /// Marker trait for distance types supported by scalar dense quantizers.
@@ -113,11 +114,7 @@ where
         &self,
         encoded: DenseVectorView<'a, Self::OutputValueType>,
     ) -> DenseVectorOwned<f32> {
-        let values = encoded
-            .values()
-            .iter()
-            .map(|&v| v.to_f32().expect("Failed to convert value to f32"))
-            .collect();
+        let values = encoded.values().iter().map(|&v| v.to_f32_fast()).collect();
         DenseVectorOwned::new(values)
     }
 

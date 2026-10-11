@@ -1,4 +1,5 @@
 #![feature(portable_simd)]
+#![feature(f16)]
 #![allow(internal_features)]
 #![feature(core_intrinsics)]
 #![feature(gen_blocks)]
