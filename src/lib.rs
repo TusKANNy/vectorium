@@ -3,7 +3,6 @@
 #![feature(core_intrinsics)]
 #![feature(gen_blocks)]
 #![feature(yield_expr)]
-#![feature(stmt_expr_attributes)]
 #![doc = include_str!("../README.md")]
 #![allow(non_snake_case)]
 
