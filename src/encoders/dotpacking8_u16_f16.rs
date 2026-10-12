@@ -10,8 +10,11 @@ use crate::core::vector_encoder::{
 };
 use crate::distances::DotProduct;
 use crate::encoders::dotpacking8::mapping::ComponentMapping;
+use crate::encoders::dotpacking8::values::{F16Reader, ValueReader};
+
+const N: usize = 8;
 use crate::encoders::dotpacking8::common::{
-    simd_prefix_sum, fast_lane_gather, encode_blocks, compute_safe_simd_padding, DotPacking8F16Iter
+    GapDecoder, compute_safe_simd_padding, encode_blocks, fast_lane_gather, simd_prefix_sum,
 };
 
 #[derive(Clone)]
@@ -19,7 +22,7 @@ pub struct DotPacking8U16F16View<'a> {
     pub n: usize,
     pub selectors: &'a [u8],
     pub payloads: &'a [u8],
-    pub values: &'a [f16],
+    pub values: &'a [u8],
 }
 
 impl<'a> DotPacking8U16F16View<'a> {
@@ -43,18 +46,7 @@ impl<'a> DotPacking8U16F16View<'a> {
             n,
             selectors: &bytes[2..selectors_end],
             payloads: &bytes[selectors_end..values_start_idx],
-            values: cast_slice::<u8, f16>(&bytes[values_start_idx..]),
-        }
-    }
-
-    pub fn iter_raw(&self) -> DotPacking8F16Iter<'a> {
-        DotPacking8F16Iter {
-            n: self.n,
-            selectors: self.selectors,
-            bulk_blocks: self.n / 8,
-            block_idx: 0,
-            payload_ptr: self.payloads.as_ptr(),
-            val_ptr: self.values.as_ptr(),
+            values: &bytes[values_start_idx..],
         }
     }
 }
@@ -100,8 +92,7 @@ impl DotPacking8U16F16Encoder {
 
 impl SpaceUsage for DotPacking8U16F16Encoder {
     fn space_usage_bytes(&self) -> usize {
-        let mapping_size = self.mapping.as_ref().map_or(0, |m| m.space_usage_bytes());
-        mapping_size
+        self.mapping.as_ref().map_or(0, |m| m.space_usage_bytes())
     }
 }
 
@@ -146,28 +137,25 @@ impl SparseDataEncoder for DotPacking8U16F16Encoder {
         let mut decoded_comp = Vec::with_capacity(n);
         let mut values_raw = Vec::with_capacity(n);
 
-        let mut iter = view.iter_raw();
+        // SAFETY: the view comes from `push_encoded` output, invariants (1)-(3) in `common.rs`.
+        let mut gaps = unsafe { GapDecoder::new(view.n, view.selectors, view.payloads) };
+        let mut values = F16Reader::new(view.values);
         let mut last_component = 0u32;
-
-        for (gaps, vals) in &mut iter {
-            let components = simd_prefix_sum(gaps);
-            let absolute_components = components + Simd::splat(last_component);
-            let absolute_arr = absolute_components.to_array();
-            let vals_arr = vals.to_array();
-            for i in 0..8 {
-                decoded_comp.push(absolute_arr[i] as u16);
-                values_raw.push(vals_arr[i]);
+        while let Some(block_gaps) = gaps.next_block() {
+            let abs = (simd_prefix_sum(block_gaps) + Simd::splat(last_component)).to_array();
+            let codes = values.next_block_codes();
+            for i in 0..N {
+                decoded_comp.push(abs[i] as u16);
+                values_raw.push(codes[i].to_f32());
             }
-            last_component = absolute_arr[8 - 1];
+            last_component = abs[N - 1];
         }
-
-        let (gaps, tail_values, remaining) = iter.decode_tail();
-        let components = simd_prefix_sum(gaps);
-        let absolute_components = components + Simd::splat(last_component);
-        let absolute_arr = absolute_components.to_array();
-        for i in 0..remaining {
-            decoded_comp.push(absolute_arr[i] as u16);
-            values_raw.push(tail_values[i].to_f32());
+        let (tail_gaps, rem) = gaps.tail();
+        let abs = (simd_prefix_sum(tail_gaps) + Simd::splat(last_component)).to_array();
+        let codes = values.tail(rem);
+        for i in 0..rem {
+            decoded_comp.push(abs[i] as u16);
+            values_raw.push(codes[i].to_f32());
         }
 
         if let Some(mapping) = &self.mapping {
@@ -287,30 +275,26 @@ impl<'a, 'v> QueryEvaluator<PackedVectorView<'v, u64>> for DotPacking8U16F16Quer
     #[inline]
     fn compute_distance(&self, vector: PackedVectorView<'v, u64>) -> Self::Distance {
         let view = unsafe { DotPacking8U16F16View::from_unchecked_slice(vector.data()) };
-        let mut acc = Simd::<f32, 8>::splat(0.0);
+        // SAFETY: the view comes from `push_encoded` output, invariants (1)-(3) in `common.rs`.
+        let mut gaps = unsafe { GapDecoder::new(view.n, view.selectors, view.payloads) };
+        let mut values = F16Reader::new(view.values);
+        let mut acc = Simd::<f32, N>::splat(0.0);
         let mut query_ptr = self.dense_query.as_slice();
-
-        let mut iter = view.iter_raw();
-        for (gaps, values) in &mut iter {
-            let components = simd_prefix_sum(gaps);
+        while let Some(block_gaps) = gaps.next_block() {
+            let components = simd_prefix_sum(block_gaps);
             // SAFETY: every relative component is < query_ptr.len(), invariant (5) in `common.rs`.
             let query_values = unsafe { fast_lane_gather(query_ptr, components) };
-
-            acc = query_values.mul_add(values, acc);
-            let last_component = components[7];
+            acc = query_values.mul_add(values.next_block(), acc);
+            let last_component = components[N - 1];
             debug_assert!(last_component as usize <= query_ptr.len());
             // SAFETY: `last_component <= query_ptr.len()` by invariant (5) in `common.rs`.
             query_ptr = unsafe { query_ptr.split_at_unchecked(last_component as usize).1 };
         }
         let mut total_unscaled = acc.reduce_sum();
-
-        let (gaps, tail_values, remaining) = iter.decode_tail();
-        if remaining > 0 {
-            let components = simd_prefix_sum(gaps);
-            let components_arr = components.to_array();
-            for i in 0..remaining {
-                total_unscaled += query_ptr[components_arr[i] as usize] * tail_values[i].to_f32();
-            }
+        let (tail_gaps, rem) = gaps.tail();
+        if rem > 0 {
+            let components = simd_prefix_sum(tail_gaps).to_array();
+            total_unscaled = values.tail_dot(total_unscaled, query_ptr, &components, rem);
         }
         DotProduct(total_unscaled)
     }

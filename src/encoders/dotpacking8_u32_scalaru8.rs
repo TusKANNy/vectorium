@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
-use std::simd::num::{SimdFloat, SimdUint};
-use std::simd::{Mask, Simd, StdFloat};
+use std::simd::num::SimdFloat;
+use std::simd::{Simd, StdFloat};
 
 use crate::core::sealed;
 use crate::core::vector::{PackedVectorView, SparseVectorView};
@@ -11,8 +11,9 @@ use crate::core::vector_encoder::{
 use crate::distances::DotProduct;
 use crate::encoders::dotpacking8::mapping::ComponentMapping;
 use crate::encoders::dotpacking8::common::{
-    compute_safe_simd_padding, encode_blocks, simd_prefix_sum,
+    GapDecoder, compute_safe_simd_padding, encode_blocks, fast_lane_gather, simd_prefix_sum,
 };
+use crate::encoders::dotpacking8::values::{U8Reader, ValueReader};
 use crate::encoders::dotpacking8::encoder::DotPacking8View;
 use crate::utils::train_sparse_scalar_quantizer;
 use crate::{PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
@@ -152,30 +153,25 @@ impl SparseDataEncoder for BridgedDotPacking8U32ScalarU8Encoder {
         let mut decoded_comp: Vec<u32> = Vec::with_capacity(n);
         let mut values_raw: Vec<u8> = Vec::with_capacity(n);
 
-        let mut iter = view.iter_raw();
+        // SAFETY: the view comes from `push_encoded` output, invariants (1)-(3) in `common.rs`.
+        let mut gaps = unsafe { GapDecoder::new(view.n, view.selectors, view.payloads) };
+        let mut values = U8Reader::new(view.values);
         let mut last_component = 0u32;
-
-        for (gaps, vals) in &mut iter {
-            let components = simd_prefix_sum(gaps);
-            let absolute_components = components + Simd::splat(last_component);
-            let absolute_arr = absolute_components.to_array();
-            let vals_arr = vals.to_array();
+        while let Some(block_gaps) = gaps.next_block() {
+            let abs = (simd_prefix_sum(block_gaps) + Simd::splat(last_component)).to_array();
+            let codes = values.next_block_codes();
             for i in 0..N {
-                decoded_comp.push(absolute_arr[i]);
-                values_raw.push(vals_arr[i]);
+                decoded_comp.push(abs[i]);
+                values_raw.push(codes[i]);
             }
-            last_component = absolute_arr[N - 1];
+            last_component = abs[N - 1];
         }
-
-        let (gaps, tail_values, remaining) = iter.decode_tail();
-        if remaining > 0 {
-            let components = simd_prefix_sum(gaps);
-            let absolute_components = components + Simd::splat(last_component);
-            let absolute_arr = absolute_components.to_array();
-            for i in 0..remaining {
-                decoded_comp.push(absolute_arr[i]);
-                values_raw.push(tail_values[i]);
-            }
+        let (tail_gaps, rem) = gaps.tail();
+        let abs = (simd_prefix_sum(tail_gaps) + Simd::splat(last_component)).to_array();
+        let codes = values.tail(rem);
+        for i in 0..rem {
+            decoded_comp.push(abs[i]);
+            values_raw.push(codes[i]);
         }
 
         Self::drop_bridges(&mut decoded_comp, &mut values_raw);
@@ -381,38 +377,26 @@ impl<'e, 'v> QueryEvaluator<PackedVectorView<'v, u64>>
     #[inline]
     fn compute_distance(&self, vector: PackedVectorView<'v, u64>) -> Self::Distance {
         let view = unsafe { DotPacking8View::from_unchecked_slice(vector.data()) };
+        // SAFETY: the view comes from `push_encoded` output, invariants (1)-(3) in `common.rs`.
+        let mut gaps = unsafe { GapDecoder::new(view.n, view.selectors, view.payloads) };
+        let mut values = U8Reader::new(view.values);
         let mut acc = Simd::<f32, N>::splat(0.0);
         let mut query_ptr = self.dense_query_transformed.as_slice();
-
-        let mut iter = view.iter_raw();
-        for (gaps, values) in &mut iter {
-            let components = simd_prefix_sum(gaps);
-            debug_assert!(components.to_array().iter().all(|&c| (c as usize) < query_ptr.len()));
-            // SAFETY: every relative component is < query_ptr.len(), invariant (5) in
-            // `dotpacking8/common.rs` (bridges are mapped ids < dim too).
-            let query_values = unsafe {
-                Simd::gather_select_unchecked(
-                    query_ptr,
-                    Mask::splat(true),
-                    components.cast(),
-                    Simd::splat(0.0),
-                )
-            };
-            acc = query_values.mul_add(values.cast(), acc);
+        while let Some(block_gaps) = gaps.next_block() {
+            let components = simd_prefix_sum(block_gaps);
+            // SAFETY: every relative component is < query_ptr.len(), invariant (5) in `common.rs`.
+            let query_values = unsafe { fast_lane_gather(query_ptr, components) };
+            acc = query_values.mul_add(values.next_block(), acc);
             let last_component = components[N - 1];
             debug_assert!(last_component as usize <= query_ptr.len());
             // SAFETY: `last_component <= query_ptr.len()` by invariant (5) in `common.rs`.
             query_ptr = unsafe { query_ptr.split_at_unchecked(last_component as usize).1 };
         }
         let mut total = acc.reduce_sum();
-
-        let (gaps, tail_values, remaining) = iter.decode_tail();
-        if remaining > 0 {
-            let components = simd_prefix_sum(gaps);
-            let components_arr = components.to_array();
-            for i in 0..remaining {
-                total += query_ptr[components_arr[i] as usize] * tail_values[i] as f32;
-            }
+        let (tail_gaps, rem) = gaps.tail();
+        if rem > 0 {
+            let components = simd_prefix_sum(tail_gaps).to_array();
+            total = values.tail_dot(total, query_ptr, &components, rem);
         }
         DotProduct(total)
     }

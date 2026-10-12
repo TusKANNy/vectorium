@@ -1,0 +1,212 @@
+//! How DotPacking8 stores, reads and quantizes values.
+
+use half::f16;
+use std::simd::prelude::*;
+
+use crate::encoders::dotpacking8::common::f16_ptr_to_f32x8;
+
+const N: usize = 8;
+
+/// Sequential reader over one vector's value stream: `bulk_blocks` full blocks, then a tail.
+pub trait ValueReader {
+    type Code: Copy;
+    /// Next full block, each code converted to the `f32` the kernel multiplies by the gathered
+    /// (already query-scaled) query values.
+    fn next_block(&mut self) -> Simd<f32, N>;
+    /// Next full block as raw codes (decode path).
+    fn next_block_codes(&mut self) -> [Self::Code; N];
+    /// The `rem < 8` tail codes; lanes `>= rem` are unspecified.
+    fn tail(&mut self, rem: usize) -> [Self::Code; N];
+    /// The kernel multiplier of one code; must equal the lane value of `next_block`.
+    fn code_as_f32(code: Self::Code) -> f32;
+    /// Kernel multiplier of the `i`-th tail value (`i < n % 8`), read in place without
+    /// consuming it: the hot path avoids copying the tail into an array.
+    fn tail_value(&self, i: usize) -> f32;
+
+    /// Adds the tail's contribution `query[components[i]] * value_i` (`i < rem`) to `acc`, in
+    /// order. Readers override it with their fastest form (measured per codec): in-place reads
+    /// for byte streams, decode-then-multiply for nibbles.
+    #[inline(always)]
+    fn tail_dot(&mut self, mut acc: f32, query: &[f32], components: &[u32; N], rem: usize) -> f32 {
+        for i in 0..rem {
+            acc += query[components[i] as usize] * self.tail_value(i);
+        }
+        acc
+    }
+}
+
+/// One byte per value. A raw cursor (like the original kernel's value pointer): reads are
+/// unchecked and rely on invariant (4) in `common.rs`.
+pub(crate) struct U8Reader<'a> {
+    ptr: *const u8,
+    #[cfg(debug_assertions)]
+    end: *const u8,
+    _stream: std::marker::PhantomData<&'a [u8]>,
+}
+
+impl<'a> U8Reader<'a> {
+    #[inline(always)]
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            ptr: bytes.as_ptr(),
+            #[cfg(debug_assertions)]
+            end: bytes.as_ptr_range().end,
+            _stream: std::marker::PhantomData,
+        }
+    }
+
+    #[inline(always)]
+    fn check(&self, len: usize) {
+        #[cfg(debug_assertions)]
+        assert!(self.ptr as usize + len <= self.end as usize, "value stream over-read");
+        let _ = len;
+    }
+}
+
+impl ValueReader for U8Reader<'_> {
+    type Code = u8;
+
+    #[inline(always)]
+    fn next_block(&mut self) -> Simd<f32, N> {
+        self.check(N);
+        // SAFETY: a full block has 8 values left in the stream, invariant (4) in `common.rs`.
+        let v = unsafe { self.ptr.cast::<Simd<u8, N>>().read_unaligned() };
+        self.ptr = unsafe { self.ptr.add(N) };
+        v.cast()
+    }
+
+    #[inline(always)]
+    fn next_block_codes(&mut self) -> [u8; N] {
+        self.check(N);
+        // SAFETY: as in `next_block`.
+        let out = unsafe { self.ptr.cast::<[u8; N]>().read_unaligned() };
+        self.ptr = unsafe { self.ptr.add(N) };
+        out
+    }
+
+    #[inline(always)]
+    fn tail(&mut self, rem: usize) -> [u8; N] {
+        self.check(rem);
+        let mut out = [0u8; N];
+        // SAFETY: the tail has `rem = n % 8` values left in the stream, invariant (4).
+        out[..rem].copy_from_slice(unsafe { std::slice::from_raw_parts(self.ptr, rem) });
+        self.ptr = unsafe { self.ptr.add(rem) };
+        out
+    }
+
+    #[inline(always)]
+    fn code_as_f32(code: u8) -> f32 {
+        code as f32
+    }
+
+    #[inline(always)]
+    fn tail_value(&self, i: usize) -> f32 {
+        self.check(i + 1);
+        // SAFETY: the tail has `n % 8` values left in the stream, invariant (4) in `common.rs`.
+        (unsafe { *self.ptr.add(i) }) as f32
+    }
+}
+
+/// Two bytes (`f16`) per value. Raw cursor like [`U8Reader`]; relies on invariants (1) and
+/// (4) in `common.rs` (the stream starts at an even offset and holds exactly `n` values).
+pub(crate) struct F16Reader<'a> {
+    ptr: *const f16,
+    #[cfg(debug_assertions)]
+    end: *const f16,
+    _stream: std::marker::PhantomData<&'a [f16]>,
+}
+
+impl<'a> F16Reader<'a> {
+    #[inline(always)]
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
+        let values: &'a [f16] = bytemuck::cast_slice(bytes);
+        Self {
+            ptr: values.as_ptr(),
+            #[cfg(debug_assertions)]
+            end: values.as_ptr_range().end,
+            _stream: std::marker::PhantomData,
+        }
+    }
+
+    #[inline(always)]
+    fn check(&self, len: usize) {
+        #[cfg(debug_assertions)]
+        assert!(
+            self.ptr as usize + 2 * len <= self.end as usize,
+            "value stream over-read"
+        );
+        let _ = len;
+    }
+}
+
+impl ValueReader for F16Reader<'_> {
+    type Code = f16;
+
+    #[inline(always)]
+    fn next_block(&mut self) -> Simd<f32, N> {
+        self.check(N);
+        // SAFETY: a full block has 8 values left in the stream, invariant (4) in `common.rs`.
+        let v = unsafe { f16_ptr_to_f32x8(self.ptr) };
+        self.ptr = unsafe { self.ptr.add(N) };
+        v
+    }
+
+    #[inline(always)]
+    fn next_block_codes(&mut self) -> [f16; N] {
+        self.check(N);
+        // SAFETY: as in `next_block`.
+        let out = unsafe { self.ptr.cast::<[f16; N]>().read_unaligned() };
+        self.ptr = unsafe { self.ptr.add(N) };
+        out
+    }
+
+    #[inline(always)]
+    fn tail(&mut self, rem: usize) -> [f16; N] {
+        self.check(rem);
+        let mut out = [f16::ZERO; N];
+        // SAFETY: the tail has `rem = n % 8` values left in the stream, invariant (4).
+        out[..rem].copy_from_slice(unsafe { std::slice::from_raw_parts(self.ptr, rem) });
+        self.ptr = unsafe { self.ptr.add(rem) };
+        out
+    }
+
+    #[inline(always)]
+    fn code_as_f32(code: f16) -> f32 {
+        code.to_f32()
+    }
+
+    #[inline(always)]
+    fn tail_value(&self, i: usize) -> f32 {
+        self.check(i + 1);
+        // SAFETY: the tail has `n % 8` values left in the stream, invariant (4) in `common.rs`.
+        (unsafe { *self.ptr.add(i) }).to_f32()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use half::f16;
+
+    #[test]
+    fn u8_reader_blocks_and_tail() {
+        let bytes: Vec<u8> = (1..=11).collect();
+        let mut r = U8Reader::new(&bytes);
+        assert_eq!(r.next_block().to_array(), [1., 2., 3., 4., 5., 6., 7., 8.]);
+        let t = r.tail(3);
+        assert_eq!(&t[..3], &[9, 10, 11]);
+        assert_eq!(U8Reader::code_as_f32(200), 200.0);
+    }
+
+    #[test]
+    fn f16_reader_blocks_and_tail() {
+        let vals: Vec<f16> = (1..=10).map(|i| f16::from_f32(i as f32 * 0.5)).collect();
+        let bytes: &[u8] = bytemuck::cast_slice(&vals);
+        let mut r = F16Reader::new(bytes);
+        let b = r.next_block().to_array();
+        assert_eq!(b, [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]);
+        let t = r.tail(2);
+        assert_eq!(F16Reader::code_as_f32(t[0]), 4.5);
+        assert_eq!(F16Reader::code_as_f32(t[1]), 5.0);
+    }
+}

@@ -9,8 +9,9 @@ use crate::core::vector_encoder::{
 };
 use crate::distances::DotProduct;
 use crate::encoders::dotpacking8::mapping::ComponentMapping;
+use crate::encoders::dotpacking8::values::{U8Reader, ValueReader};
 use crate::encoders::dotpacking8::common::{
-    DotPacking8Iter, compute_safe_simd_padding, encode_blocks, simd_prefix_sum, fast_lane_gather
+    GapDecoder, compute_safe_simd_padding, encode_blocks, fast_lane_gather, simd_prefix_sum,
 };
 use crate::encoders::dotpacking8::quantizer::DotPacking8Quantizer;
 
@@ -46,17 +47,6 @@ impl<'a> DotPacking8View<'a> {
             selectors: &bytes[2..selectors_end],
             payloads: &bytes[selectors_end..values_start_idx],
             values: &bytes[values_start_idx..],
-        }
-    }
-
-    pub fn iter_raw(&self) -> DotPacking8Iter<'a> {
-        DotPacking8Iter {
-            n: self.n,
-            selectors: self.selectors,
-            bulk_blocks: self.n / N,
-            block_idx: 0,
-            payload_ptr: self.payloads.as_ptr(),
-            val_ptr: self.values.as_ptr(),
         }
     }
 }
@@ -147,29 +137,26 @@ where
     #[inline]
     fn compute_distance(&self, vector: PackedVectorView<'v, u64>) -> Self::Distance {
         let view = unsafe { DotPacking8View::from_unchecked_slice(vector.data()) };
+        // SAFETY: the view comes from `push_encoded` output, invariants (1)-(3) in `common.rs`.
+        let mut gaps = unsafe { GapDecoder::new(view.n, view.selectors, view.payloads) };
+        let mut values = U8Reader::new(view.values);
         let mut acc = Simd::<f32, N>::splat(0.0);
         let mut query_ptr = self.dense_query.as_slice();
-
-        let mut iter = view.iter_raw();
-        for (gaps, values) in &mut iter {
-            let components = simd_prefix_sum(gaps);
+        while let Some(block_gaps) = gaps.next_block() {
+            let components = simd_prefix_sum(block_gaps);
             // SAFETY: every relative component is < query_ptr.len(), invariant (5) in `common.rs`.
             let query_values = unsafe { fast_lane_gather(query_ptr, components) };
-            acc = query_values.mul_add(values.cast(), acc);
+            acc = query_values.mul_add(values.next_block(), acc);
             let last_component = components[N - 1];
             debug_assert!(last_component as usize <= query_ptr.len());
             // SAFETY: `last_component <= query_ptr.len()` by invariant (5) in `common.rs`.
             query_ptr = unsafe { query_ptr.split_at_unchecked(last_component as usize).1 };
         }
         let mut total_unscaled = acc.reduce_sum();
-
-        let (gaps, tail_values, remaining) = iter.decode_tail();
-        if remaining > 0 {
-            let components = simd_prefix_sum(gaps);
-            let components_arr = components.to_array();
-            for i in 0..remaining {
-                total_unscaled += query_ptr[components_arr[i] as usize] * tail_values[i] as f32;
-            }
+        let (tail_gaps, rem) = gaps.tail();
+        if rem > 0 {
+            let components = simd_prefix_sum(tail_gaps).to_array();
+            total_unscaled = values.tail_dot(total_unscaled, query_ptr, &components, rem);
         }
         DotProduct(total_unscaled)
     }
@@ -222,28 +209,25 @@ where
         let mut decoded_comp = Vec::with_capacity(n);
         let mut values_raw = Vec::with_capacity(n);
 
-        let mut iter = view.iter_raw();
+        // SAFETY: the view comes from `push_encoded` output, invariants (1)-(3) in `common.rs`.
+        let mut gaps = unsafe { GapDecoder::new(view.n, view.selectors, view.payloads) };
+        let mut values = U8Reader::new(view.values);
         let mut last_component = 0u32;
-
-        for (gaps, vals) in &mut iter {
-            let components = simd_prefix_sum(gaps);
-            let absolute_components = components + Simd::splat(last_component);
-            let absolute_arr = absolute_components.to_array();
-            let vals_arr = vals.to_array();
+        while let Some(block_gaps) = gaps.next_block() {
+            let abs = (simd_prefix_sum(block_gaps) + Simd::splat(last_component)).to_array();
+            let codes = values.next_block_codes();
             for i in 0..N {
-                decoded_comp.push(absolute_arr[i] as u16);
-                values_raw.push(vals_arr[i]);
+                decoded_comp.push(abs[i] as u16);
+                values_raw.push(codes[i]);
             }
-            last_component = absolute_arr[N - 1];
+            last_component = abs[N - 1];
         }
-
-        let (gaps, tail_values, remaining) = iter.decode_tail();
-        let components = simd_prefix_sum(gaps);
-        let absolute_components = components + Simd::splat(last_component);
-        let absolute_arr = absolute_components.to_array();
-        for i in 0..remaining {
-            decoded_comp.push(absolute_arr[i] as u16);
-            values_raw.push(tail_values[i]);
+        let (tail_gaps, rem) = gaps.tail();
+        let abs = (simd_prefix_sum(tail_gaps) + Simd::splat(last_component)).to_array();
+        let codes = values.tail(rem);
+        for i in 0..rem {
+            decoded_comp.push(abs[i] as u16);
+            values_raw.push(codes[i]);
         }
 
         if let Some(mapping) = &self.mapping {

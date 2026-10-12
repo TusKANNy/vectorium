@@ -10,14 +10,14 @@
 //! - the **value quantizer** [`Scalar4BitQuantizer`] (per-component uniform step, linear
 //!   scoring). On `feature/quantization` this module also holds `Centroid4BitQuantizer`
 //!   (per-component 16-entry codebook); it is not imported on this branch yet;
-//! - small **gap-stream helpers** ([`gap_iter`], [`block_bit_width`]) that drive
-//!   [`DotPacking8Iter`]'s public gap decoding while values are read from a [`NibbleReader`]
-//!   rather than its byte value cursor.
+//! - [`block_bit_width`], a selector helper for the two-tier `cdotpacking8` forks.
+//!
+//! [`NibbleReader`] implements `values::ValueReader`, so the shared gap decoder
+//! (`common::GapDecoder`) drives the 4-bit encoders like any other value stream.
 //!
 //! Each encoder file still owns its own component skeleton (single-stream for `dotpacking8`,
 //! two-tier mapped/residual for `cdotpacking8`), view, query evaluator, and kernel.
 
-use crate::encoders::dotpacking8::common::DotPacking8Iter;
 use crate::encoders::dotpacking8::quantizer::DotPacking8Quantizer;
 use crate::utils::train_sparse_scalar_quantizer_with_levels;
 use crate::{PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
@@ -155,22 +155,46 @@ impl<'a> NibbleReader<'a> {
     }
 }
 
-/// Build a gap-only [`DotPacking8Iter`] over a component stream. The value cursor is never
-/// used (values are read from a [`NibbleReader`] instead), so `val_ptr` is null; only the
-/// public `decode_lane()` / field access is exercised, which never touch it.
-#[inline(always)]
-pub(crate) fn gap_iter<'a>(
-    n: usize,
-    selectors: &'a [u8],
-    payload_ptr: *const u8,
-) -> DotPacking8Iter<'a> {
-    DotPacking8Iter {
-        bulk_blocks: n / N,
-        block_idx: 0,
-        n,
-        selectors,
-        payload_ptr,
-        val_ptr: std::ptr::null(),
+impl crate::encoders::dotpacking8::values::ValueReader for NibbleReader<'_> {
+    type Code = u8;
+
+    #[inline(always)]
+    fn next_block(&mut self) -> Simd<f32, N> {
+        self.next_block_f32()
+    }
+
+    #[inline(always)]
+    fn next_block_codes(&mut self) -> [u8; N] {
+        self.next_block_u8()
+    }
+
+    #[inline(always)]
+    fn tail(&mut self, rem: usize) -> [u8; N] {
+        self.tail_codes(rem)
+    }
+
+    #[inline(always)]
+    fn code_as_f32(code: u8) -> f32 {
+        code as f32
+    }
+
+    /// Decoding the tail into an array first measured faster than in-place nibble reads
+    /// (cocondenser_1M, 4 alternating rounds).
+    #[inline(always)]
+    fn tail_dot(&mut self, mut acc: f32, query: &[f32], components: &[u32; N], rem: usize) -> f32 {
+        let codes = self.tail_codes(rem);
+        for i in 0..rem {
+            acc += query[components[i] as usize] * codes[i] as f32;
+        }
+        acc
+    }
+
+    #[inline(always)]
+    fn tail_value(&self, i: usize) -> f32 {
+        debug_assert!(self.off + i / 2 < self.bytes.len());
+        // SAFETY: the tail has `rem.div_ceil(2)` bytes left in the stream (see the type docs).
+        let byte = unsafe { *self.bytes.get_unchecked(self.off + i / 2) };
+        ((byte >> ((i & 1) << 2)) & 0x0F) as f32
     }
 }
 

@@ -1,5 +1,5 @@
 //! Shared block-8 gap codec of the `dotpacking8` encoders: block packing (`encode_blocks`),
-//! SIMD decoding (`DotPacking8Iter`, `DotPacking8F16Iter`), prefix sums and the gather kernel.
+//! SIMD gap decoding (`GapDecoder`), prefix sums and the gather kernel.
 //!
 //! # Safety invariants
 //!
@@ -196,81 +196,69 @@ pub fn compute_safe_simd_padding(
     space_after - bytes_after_components
 }
 
-/// Block-by-block decoder over one encoded vector with `u8` values. Built by a view
-/// (`iter_raw`) or `nibble4bit::gap_iter`; relies on the module-level safety invariants.
-pub struct DotPacking8Iter<'a> {
-    pub bulk_blocks: usize,
-    pub block_idx: usize,
-    pub n: usize,
-    pub selectors: &'a [u8],
-    pub payload_ptr: *const u8,
-    pub val_ptr: *const u8,
+/// Decodes the gap stream of one encoded vector block by block (values are read separately by
+/// a `ValueReader`). Relies on the module-level safety invariants.
+pub(crate) struct GapDecoder<'a> {
+    n: usize,
+    bulk_blocks: usize,
+    block_idx: usize,
+    selectors: &'a [u8],
+    payload_ptr: *const u8,
 }
 
-impl<'a> Iterator for DotPacking8Iter<'a> {
-    type Item = (Simd<u32, 8>, Simd<u8, 8>);
-
+impl<'a> GapDecoder<'a> {
+    /// # Safety
+    ///
+    /// `selectors` and `payload` must come from one vector produced by `push_encoded`
+    /// (invariants (1)-(3)): 16 bytes must be readable from the start of every block of `payload`.
     #[inline(always)]
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.block_idx >= self.bulk_blocks {
-            return None;
-        }
-
-        let gaps = self.decode_lane();
-
-        let vals = unsafe { self.val_ptr.cast::<Simd<u8, N>>().read_unaligned() };
-        self.val_ptr = unsafe { self.val_ptr.add(N) };
-        self.block_idx += 1;
-        Some((gaps, vals))
+    pub(crate) unsafe fn new(n: usize, selectors: &'a [u8], payload: &'a [u8]) -> Self {
+        Self { n, bulk_blocks: n / N, block_idx: 0, selectors, payload_ptr: payload.as_ptr() }
     }
 
     #[inline(always)]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remain = self.bulk_blocks - self.block_idx;
-        (remain, Some(remain))
-    }
-}
-
-impl<'a> ExactSizeIterator for DotPacking8Iter<'a> {}
-
-impl<'a> DotPacking8Iter<'a> {
-    #[inline(always)]
-    fn extract_block_b(&self) -> usize {
+    fn block_width(&self) -> usize {
         debug_assert!(self.block_idx / 2 < self.selectors.len());
         // SAFETY: invariant (3) in the module docs.
-        let sel_byte = *unsafe { self.selectors.get_unchecked(self.block_idx / 2) };
-        (((sel_byte >> ((self.block_idx & 1) << 2)) & 0x0F) as usize) + 1
+        let sel = *unsafe { self.selectors.get_unchecked(self.block_idx / 2) };
+        (((sel >> ((self.block_idx & 1) << 2)) & 0x0F) as usize) + 1
     }
 
     #[inline(always)]
-    fn decode_lane_with_b(&mut self, b: usize, advance_bytes: usize) -> Simd<u32, 8> {
+    fn decode_with(&mut self, b: usize, advance: usize) -> Simd<u32, 8> {
         // SAFETY: 16 bytes are readable from the start of every block, invariant (2).
         let comps = unsafe { load128_and_broadcast_to_256(self.payload_ptr) };
+        // SAFETY: `b` is in 1..=16 (a 4-bit selector + 1), so `b - 1` indexes the 16 entries.
         let table = unsafe { BLOCK8_TABLE.get_unchecked(b - 1) };
         let shuffled = fast_lane_swizzle(comps, table.shuffle);
+        // SAFETY: `Simd<u8, 32>` and `Simd<u32, 8>` have the same size and no invalid bit patterns.
         let gaps: Simd<u32, 8> = unsafe { std::mem::transmute(shuffled) };
-        self.payload_ptr = unsafe { self.payload_ptr.add(advance_bytes) };
+        // SAFETY: stays within the payload (or one past its end after the last block).
+        self.payload_ptr = unsafe { self.payload_ptr.add(advance) };
         (gaps >> table.shifts) & table.masks
     }
 
+    /// Gaps of the next full block, or `None` after the last one; then call `tail` once.
     #[inline(always)]
-    pub fn decode_lane(&mut self) -> Simd<u32, 8> {
-        let b = self.extract_block_b();
-        self.decode_lane_with_b(b, b)
+    pub(crate) fn next_block(&mut self) -> Option<Simd<u32, 8>> {
+        if self.block_idx >= self.bulk_blocks {
+            return None;
+        }
+        let b = self.block_width();
+        let gaps = self.decode_with(b, b);
+        self.block_idx += 1;
+        Some(gaps)
     }
 
+    /// Gaps of the tail block (lanes `>= rem` are garbage) and `rem = n % 8`.
     #[inline(always)]
-    pub fn decode_tail(&mut self) -> (Simd<u32, N>, &'a [u8], usize) {
-        let remaining = self.n % N;
-        if remaining == 0 {
-            return (Simd::splat(0), &[], 0);
+    pub(crate) fn tail(&mut self) -> (Simd<u32, 8>, usize) {
+        let rem = self.n % N;
+        if rem == 0 {
+            return (Simd::splat(0), 0);
         }
-        let b = self.extract_block_b();
-        let bytes_to_advance = (remaining * b).div_ceil(8);
-        let gaps = self.decode_lane_with_b(b, bytes_to_advance);
-        let tail_vals = unsafe { std::slice::from_raw_parts(self.val_ptr, remaining) };
-        self.val_ptr = unsafe { self.val_ptr.add(remaining) };
-        (gaps, tail_vals, remaining)
+        let b = self.block_width();
+        (self.decode_with(b, (rem * b).div_ceil(8)), rem)
     }
 }
 
@@ -294,83 +282,6 @@ pub unsafe fn f16_ptr_to_f32x8(ptr: *const f16) -> Simd<f32, 8> {
     {
         let val_f32: [f32; 8] = std::array::from_fn(|i| (unsafe { *ptr.add(i) }).to_f32());
         Simd::<f32, 8>::from_array(val_f32)
-    }
-}
-
-/// Same as [`DotPacking8Iter`] with `f16` values.
-pub struct DotPacking8F16Iter<'a> {
-    pub bulk_blocks: usize,
-    pub block_idx: usize,
-    pub n: usize,
-    pub selectors: &'a [u8],
-    pub payload_ptr: *const u8,
-    pub val_ptr: *const f16,
-}
-
-impl<'a> Iterator for DotPacking8F16Iter<'a> {
-    type Item = (Simd<u32, 8>, Simd<f32, 8>);
-
-    #[inline(always)]
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.block_idx >= self.bulk_blocks {
-            return None;
-        }
-
-        let gaps = self.decode_lane();
-
-        let vals = unsafe { f16_ptr_to_f32x8(self.val_ptr) };
-        self.val_ptr = unsafe { self.val_ptr.add(8) };
-        self.block_idx += 1;
-        Some((gaps, vals))
-    }
-
-    #[inline(always)]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remain = self.bulk_blocks - self.block_idx;
-        (remain, Some(remain))
-    }
-}
-
-impl<'a> ExactSizeIterator for DotPacking8F16Iter<'a> {}
-
-impl<'a> DotPacking8F16Iter<'a> {
-    #[inline(always)]
-    fn extract_block_b(&self) -> usize {
-        debug_assert!(self.block_idx / 2 < self.selectors.len());
-        // SAFETY: invariant (3) in the module docs.
-        let sel_byte = *unsafe { self.selectors.get_unchecked(self.block_idx / 2) };
-        (((sel_byte >> ((self.block_idx & 1) << 2)) & 0x0F) as usize) + 1
-    }
-
-    #[inline(always)]
-    fn decode_lane_with_b(&mut self, b: usize, advance_bytes: usize) -> Simd<u32, 8> {
-        // SAFETY: 16 bytes are readable from the start of every block, invariant (2).
-        let comps = unsafe { load128_and_broadcast_to_256(self.payload_ptr) };
-        let table = unsafe { BLOCK8_TABLE.get_unchecked(b - 1) };
-        let shuffled = fast_lane_swizzle(comps, table.shuffle);
-        let gaps: Simd<u32, 8> = unsafe { std::mem::transmute(shuffled) };
-        self.payload_ptr = unsafe { self.payload_ptr.add(advance_bytes) };
-        (gaps >> table.shifts) & table.masks
-    }
-
-    #[inline(always)]
-    pub fn decode_lane(&mut self) -> Simd<u32, 8> {
-        let b = self.extract_block_b();
-        self.decode_lane_with_b(b, b)
-    }
-
-    #[inline(always)]
-    pub fn decode_tail(&mut self) -> (Simd<u32, 8>, &'a [f16], usize) {
-        let remaining = self.n % 8;
-        if remaining == 0 {
-            return (Simd::splat(0), &[], 0);
-        }
-        let b = self.extract_block_b();
-        let bytes_to_advance = (remaining * b).div_ceil(8);
-        let gaps = self.decode_lane_with_b(b, bytes_to_advance);
-        let tail_vals = unsafe { std::slice::from_raw_parts(self.val_ptr, remaining) };
-        self.val_ptr = unsafe { self.val_ptr.add(remaining) };
-        (gaps, tail_vals, remaining)
     }
 }
 
