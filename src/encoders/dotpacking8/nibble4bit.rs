@@ -79,7 +79,7 @@ pub(crate) fn pack_nibbles(out: &mut Vec<u8>, codes: &[u8]) {
 /// Reads are unchecked: callers read at most `n / 8` full blocks and then one tail of
 /// `n % 8` codes from a stream of exactly `nibble_bytes(n)` bytes, so every read stays in
 /// bounds (`debug_assert!`ed).
-pub(crate) struct NibbleReader<'a> {
+pub struct NibbleReader<'a> {
     bytes: &'a [u8],
     off: usize,
 }

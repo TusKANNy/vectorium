@@ -1,9 +1,19 @@
 //! How DotPacking8 stores, reads and quantizes values.
 
 use half::f16;
+use num_traits::ToPrimitive;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 use std::simd::prelude::*;
 
 use crate::encoders::dotpacking8::common::f16_ptr_to_f32x8;
+use crate::encoders::dotpacking8::nibble4bit::{NibbleReader, nibble_bytes, pack_nibbles};
+use crate::utils::{train_sparse_scalar_quantizer, train_sparse_scalar_quantizer_with_levels};
+use crate::{
+    ComponentType, FixedU8Q, FromF32, PlainSparseDataset, ScalarSparseSupportedDistance,
+    SpaceUsage, ValueType,
+};
 
 const N: usize = 8;
 
@@ -37,7 +47,7 @@ pub trait ValueReader {
 
 /// One byte per value. A raw cursor (like the original kernel's value pointer): reads are
 /// unchecked and rely on invariant (4) in `common.rs`.
-pub(crate) struct U8Reader<'a> {
+pub struct U8Reader<'a> {
     ptr: *const u8,
     #[cfg(debug_assertions)]
     end: *const u8,
@@ -109,7 +119,7 @@ impl ValueReader for U8Reader<'_> {
 
 /// Two bytes (`f16`) per value. Raw cursor like [`U8Reader`]; relies on invariants (1) and
 /// (4) in `common.rs` (the stream starts at an even offset and holds exactly `n` values).
-pub(crate) struct F16Reader<'a> {
+pub struct F16Reader<'a> {
     ptr: *const f16,
     #[cfg(debug_assertions)]
     end: *const f16,
@@ -183,6 +193,162 @@ impl ValueReader for F16Reader<'_> {
     }
 }
 
+/// How one value is quantized, stored and read back. Implemented by the four value formats;
+/// the encoder is generic over it.
+pub trait ValueCodec:
+    Clone + Debug + PartialEq + Send + Sync + SpaceUsage + Serialize + DeserializeOwned
+{
+    type Code: Copy + PartialEq + Debug + Send + Sync + 'static;
+    /// `SparseDataEncoder::OutputValueType` of encoders using this codec.
+    type Output: ValueType;
+    type Reader<'a>: ValueReader<Code = Self::Code>;
+    fn new_untrained(dim: usize) -> Self;
+    /// Fits per-component parameters; no-op by default.
+    fn train<C, D>(&mut self, _data: &PlainSparseDataset<C, f32, D>)
+    where C: ComponentType, D: ScalarSparseSupportedDistance {}
+    fn encode(&self, component: usize, value: f32) -> Self::Code;
+    fn decode(&self, component: usize, code: Self::Code) -> f32;
+    /// Query value as stored in the dense query (scaled so `query * code_as_f32(code)` is the
+    /// contribution).
+    fn query_value(&self, component: usize, value: f32) -> f32;
+    /// The code of a bridge (scores zero).
+    fn zero_code() -> Self::Code;
+    /// Bytes of the value stream of a vector with `n` entries.
+    fn stream_bytes(n: usize) -> usize;
+    /// Appends exactly `stream_bytes(codes.len())` bytes.
+    fn write_stream(out: &mut Vec<u8>, codes: &[Self::Code]);
+    fn reader(stream: &[u8]) -> Self::Reader<'_>;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FixedU8Values;
+
+impl SpaceUsage for FixedU8Values {
+    fn space_usage_bytes(&self) -> usize { 0 }
+}
+
+const FIXED_U8_SCALE: f32 = 1.0 / ((1u32 << FixedU8Q::FRAC_NBITS) as f32);
+
+impl ValueCodec for FixedU8Values {
+    type Code = u8;
+    type Output = u8;
+    type Reader<'a> = U8Reader<'a>;
+    fn new_untrained(_dim: usize) -> Self { FixedU8Values }
+    #[inline(always)]
+    fn encode(&self, _c: usize, v: f32) -> u8 { FixedU8Q::from_f32_saturating(v).to_bits() }
+    #[inline(always)]
+    fn decode(&self, _c: usize, code: u8) -> f32 { FixedU8Q::from_bits(code).to_f32().unwrap() }
+    #[inline(always)]
+    fn query_value(&self, _c: usize, v: f32) -> f32 { v * FIXED_U8_SCALE }
+    fn zero_code() -> u8 { 0 }
+    fn stream_bytes(n: usize) -> usize { n }
+    fn write_stream(out: &mut Vec<u8>, codes: &[u8]) { out.extend_from_slice(codes) }
+    fn reader(stream: &[u8]) -> U8Reader<'_> { U8Reader::new(stream) }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScalarU8Values {
+    quants: Box<[f32]>,
+}
+
+impl ScalarU8Values {
+    pub fn from_steps(quants: Box<[f32]>) -> Self { Self { quants } }
+    pub fn steps(&self) -> &[f32] { &self.quants }
+}
+
+impl SpaceUsage for ScalarU8Values {
+    fn space_usage_bytes(&self) -> usize { self.quants.len() * std::mem::size_of::<f32>() }
+}
+
+impl ValueCodec for ScalarU8Values {
+    type Code = u8;
+    type Output = u8;
+    type Reader<'a> = U8Reader<'a>;
+    fn new_untrained(dim: usize) -> Self { Self::from_steps(vec![0.0; dim].into_boxed_slice()) }
+    fn train<C, D>(&mut self, data: &PlainSparseDataset<C, f32, D>)
+    where C: ComponentType, D: ScalarSparseSupportedDistance {
+        self.quants = train_sparse_scalar_quantizer(data, 0.0, 1.0).into_boxed_slice();
+    }
+    #[inline(always)]
+    fn encode(&self, c: usize, v: f32) -> u8 {
+        let q = self.quants[c];
+        if q > 0.0 { (v / q).clamp(0.0, 255.0) as u8 } else { 0 }
+    }
+    #[inline(always)]
+    fn decode(&self, c: usize, code: u8) -> f32 { code as f32 * self.quants[c] }
+    #[inline(always)]
+    fn query_value(&self, c: usize, v: f32) -> f32 { v * self.quants[c] }
+    fn zero_code() -> u8 { 0 }
+    fn stream_bytes(n: usize) -> usize { n }
+    fn write_stream(out: &mut Vec<u8>, codes: &[u8]) { out.extend_from_slice(codes) }
+    fn reader(stream: &[u8]) -> U8Reader<'_> { U8Reader::new(stream) }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct F16Values;
+
+impl SpaceUsage for F16Values {
+    fn space_usage_bytes(&self) -> usize { 0 }
+}
+
+impl ValueCodec for F16Values {
+    type Code = f16;
+    type Output = f16;
+    type Reader<'a> = F16Reader<'a>;
+    fn new_untrained(_dim: usize) -> Self { F16Values }
+    #[inline(always)]
+    fn encode(&self, _c: usize, v: f32) -> f16 { f16::from_f32(v) }
+    #[inline(always)]
+    fn decode(&self, _c: usize, code: f16) -> f32 { code.to_f32() }
+    #[inline(always)]
+    fn query_value(&self, _c: usize, v: f32) -> f32 { v }
+    fn zero_code() -> f16 { f16::ZERO }
+    fn stream_bytes(n: usize) -> usize { 2 * n }
+    fn write_stream(out: &mut Vec<u8>, codes: &[f16]) { out.extend_from_slice(bytemuck::cast_slice(codes)) }
+    fn reader(stream: &[u8]) -> F16Reader<'_> { F16Reader::new(stream) }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Scalar4BitValues {
+    quants: Box<[f32]>,
+}
+
+/// 4-bit scalar codes span 15 quantization levels (`2^4 - 1`).
+const NUM_LEVELS: f32 = 15.0;
+
+impl Scalar4BitValues {
+    pub fn from_steps(quants: Box<[f32]>) -> Self { Self { quants } }
+}
+
+impl SpaceUsage for Scalar4BitValues {
+    fn space_usage_bytes(&self) -> usize { self.quants.len() * std::mem::size_of::<f32>() }
+}
+
+impl ValueCodec for Scalar4BitValues {
+    type Code = u8;
+    type Output = u8;
+    type Reader<'a> = NibbleReader<'a>;
+    fn new_untrained(dim: usize) -> Self { Self::from_steps(vec![0.0; dim].into_boxed_slice()) }
+    fn train<C, D>(&mut self, data: &PlainSparseDataset<C, f32, D>)
+    where C: ComponentType, D: ScalarSparseSupportedDistance {
+        self.quants =
+            train_sparse_scalar_quantizer_with_levels(data, 0.0, 1.0, NUM_LEVELS).into_boxed_slice();
+    }
+    #[inline(always)]
+    fn encode(&self, c: usize, v: f32) -> u8 {
+        let q = self.quants[c];
+        if q > 0.0 { (v / q).clamp(0.0, NUM_LEVELS) as u8 } else { 0 }
+    }
+    #[inline(always)]
+    fn decode(&self, c: usize, code: u8) -> f32 { code as f32 * self.quants[c] }
+    #[inline(always)]
+    fn query_value(&self, c: usize, v: f32) -> f32 { v * self.quants[c] }
+    fn zero_code() -> u8 { 0 }
+    fn stream_bytes(n: usize) -> usize { nibble_bytes(n) }
+    fn write_stream(out: &mut Vec<u8>, codes: &[u8]) { pack_nibbles(out, codes) }
+    fn reader(stream: &[u8]) -> NibbleReader<'_> { NibbleReader::new(stream) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +374,44 @@ mod tests {
         let t = r.tail(2);
         assert_eq!(F16Reader::code_as_f32(t[0]), 4.5);
         assert_eq!(F16Reader::code_as_f32(t[1]), 5.0);
+    }
+
+    fn roundtrip<V: ValueCodec>(codec: &V, values: &[f32]) -> Vec<f32> {
+        let codes: Vec<V::Code> = values.iter().enumerate().map(|(c, &v)| codec.encode(c, v)).collect();
+        let mut stream = Vec::new();
+        V::write_stream(&mut stream, &codes);
+        assert_eq!(stream.len(), V::stream_bytes(codes.len()));
+        let mut r = V::reader(&stream);
+        let mut out = Vec::new();
+        for _ in 0..codes.len() / 8 {
+            out.extend(r.next_block_codes());
+        }
+        out.extend(&r.tail(codes.len() % 8)[..codes.len() % 8]);
+        out.iter().enumerate().map(|(c, &code)| codec.decode(c, code)).collect()
+    }
+
+    #[test]
+    fn codecs_roundtrip_within_one_step() {
+        let values: Vec<f32> = (0..19).map(|i| 0.1 + i as f32 * 0.2).collect(); // 0.1 ..= 3.7
+        let steps: Box<[f32]> = vec![4.0 / 255.0; 19].into_boxed_slice();
+        let steps4: Box<[f32]> = vec![4.0 / 15.0; 19].into_boxed_slice();
+        let cases: [(Vec<f32>, f32); 4] = [
+            (roundtrip(&FixedU8Values, &values), 1.0 / 64.0),
+            (roundtrip(&ScalarU8Values::from_steps(steps), &values), 4.0 / 255.0),
+            (roundtrip(&F16Values, &values), 0.002),
+            (roundtrip(&Scalar4BitValues::from_steps(steps4), &values), 4.0 / 15.0),
+        ];
+        for (decoded, tol) in cases {
+            for (d, v) in decoded.iter().zip(&values) {
+                assert!((d - v).abs() <= tol, "decoded {d} vs {v} (tol {tol})");
+            }
+        }
+    }
+
+    #[test]
+    fn query_value_times_code_equals_decoded_product() {
+        let s = ScalarU8Values::from_steps(vec![0.5; 3].into_boxed_slice());
+        let code = s.encode(1, 2.0);
+        assert_eq!(s.query_value(1, 3.0) * U8Reader::code_as_f32(code), 3.0 * s.decode(1, code));
     }
 }
