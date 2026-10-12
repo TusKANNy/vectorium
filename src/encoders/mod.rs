@@ -1,9 +1,9 @@
 pub mod dense_scalar;
 pub mod dotpacking8;
-pub mod dotpacking8_fixedu8;
-pub mod dotpacking8_scalaru8;
-pub mod dotpacking8_f16;
-pub mod dotpacking8_scalar4bit;
+pub mod dotpacking8_u16_fixedu8;
+pub mod dotpacking8_u16_scalaru8;
+pub mod dotpacking8_u16_f16;
+pub mod dotpacking8_u16_scalar4bit;
 pub mod dotpacking8_u32_scalaru8;
 pub mod dotvbyte_fixedu8;
 #[cfg(feature = "multivec")]

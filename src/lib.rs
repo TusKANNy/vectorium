@@ -60,14 +60,14 @@ pub use encoders::dense_scalar::{
     ScalarDenseQuantizer, ScalarDenseQuantizerDotProduct, ScalarDenseQuantizerSame,
     ScalarDenseQuantizerSquaredEuclidean, ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
 };
-pub use encoders::dotpacking8_fixedu8::{
+pub use encoders::dotpacking8_u16_fixedu8::{
     DotPacking8FixedU8Encoder, DotPacking8Fixedu8QueryEvaluator,
 };
-pub use encoders::dotpacking8_f16::{DotPacking8f16Encoder, DotPacking8f16QueryEvaluator};
-pub use encoders::dotpacking8_scalar4bit::{
+pub use encoders::dotpacking8_u16_f16::{DotPacking8f16Encoder, DotPacking8f16QueryEvaluator};
+pub use encoders::dotpacking8_u16_scalar4bit::{
     DotPacking8Scalar4BitEncoder, DotPacking8Scalar4BitQueryEvaluator,
 };
-pub use encoders::dotpacking8_scalaru8::{
+pub use encoders::dotpacking8_u16_scalaru8::{
     DotPacking8ScalarU8Encoder, DotPacking8Scalaru8QueryEvaluator,
 };
 pub use encoders::dotpacking8_u32_scalaru8::{
