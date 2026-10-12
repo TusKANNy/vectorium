@@ -49,7 +49,7 @@ pub(crate) fn write_encoded<V: ValueCodec>(
     if n == 0 {
         return;
     }
-    assert!(n < u16::MAX as usize, "DotPacking8 vectors must have fewer than 65535 entries, got {n}");
+    assert!(n <= u16::MAX as usize, "DotPacking8 vectors hold at most 65535 entries (bridges included), got {n}");
     let mut gaps = Vec::with_capacity(n);
     let mut last = 0u32;
     for &c in components {
@@ -67,6 +67,69 @@ pub(crate) fn write_encoded<V: ValueCodec>(
     let alignment = (8 - (payload.len() + value_bytes) % 8) % 8;
     let padding = compute_safe_simd_padding(n, &selectors, alignment, value_bytes);
     payload.resize(payload.len() + padding, 0);
+    let before = payload.len();
     V::write_stream(&mut payload, codes);
+    // Cold-path checks of the layout the unchecked decoder relies on (invariants (1)-(2)).
+    assert_eq!(
+        payload.len() - before,
+        value_bytes,
+        "value stream wrote {} bytes, stream_bytes says {value_bytes}",
+        payload.len() - before
+    );
+    assert!(payload.len().is_multiple_of(8), "encoded vector is not a whole number of u64 words");
     output.extend(payload.as_chunks::<8>().0.iter().map(|&chunk| u64::from_le_bytes(chunk)));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::encoders::dotpacking8::values::{FixedU8Values, U8Reader};
+    use crate::{ComponentType, PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
+
+    /// A broken codec whose stream is shorter than it claims: the decoder's unchecked reads
+    /// rely on `stream_bytes`, so `write_encoded` must refuse it.
+    #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct ShortStream;
+    impl crate::core::sealed::Sealed for ShortStream {}
+    impl SpaceUsage for ShortStream {
+        fn space_usage_bytes(&self) -> usize {
+            0
+        }
+    }
+    impl ValueCodec for ShortStream {
+        type Code = u8;
+        type Output = u8;
+        type Reader<'a> = U8Reader<'a>;
+        fn new_untrained(_dim: usize) -> Self {
+            ShortStream
+        }
+        fn train<C: ComponentType, D: ScalarSparseSupportedDistance>(&mut self, _: &PlainSparseDataset<C, f32, D>) {}
+        fn encode(&self, _c: usize, _v: f32) -> u8 {
+            1
+        }
+        fn decode(&self, _c: usize, code: u8) -> f32 {
+            code as f32
+        }
+        fn query_value(&self, _c: usize, v: f32) -> f32 {
+            v
+        }
+        fn zero_code() -> u8 {
+            0
+        }
+        fn stream_bytes(n: usize) -> usize {
+            n
+        }
+        fn write_stream(_out: &mut Vec<u8>, _codes: &[u8]) {}
+        fn reader(stream: &[u8]) -> U8Reader<'_> {
+            FixedU8Values::reader(stream)
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "value stream")]
+    fn write_encoded_rejects_short_value_stream() {
+        let mut out: Vec<u64> = Vec::new();
+        write_encoded::<ShortStream>(&[1, 2, 3], &[1, 1, 1], &mut out);
+    }
+}
+

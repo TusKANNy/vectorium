@@ -8,7 +8,7 @@ use crate::{ComponentType, Dataset, PlainSparseDataset, ScalarSparseSupportedDis
 
 /// Component id types a DotPacking8 encoder can store.
 pub trait PackedComponent:
-    ComponentType + Debug + PartialEq + Serialize + DeserializeOwned
+    crate::core::sealed::Sealed + ComponentType + Debug + PartialEq + Serialize + DeserializeOwned
 {
     /// Whether gaps between (mapped) components can exceed `u16::MAX`, so that the encoder
     /// must insert and later drop bridge coordinates.
@@ -16,6 +16,9 @@ pub trait PackedComponent:
     /// Converts a component id; `x` must fit in `Self` (debug-checked).
     fn from_usize(x: usize) -> Self;
 }
+
+impl crate::core::sealed::Sealed for u16 {}
+impl crate::core::sealed::Sealed for u32 {}
 
 impl PackedComponent for u16 {
     const MAY_NEED_BRIDGES: bool = false;

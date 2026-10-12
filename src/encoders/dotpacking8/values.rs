@@ -198,7 +198,8 @@ impl ValueReader for F16Reader<'_> {
 /// How one value is quantized, stored and read back. Implemented by the four value formats;
 /// the encoder is generic over it.
 pub trait ValueCodec:
-    Clone + Debug + PartialEq + Send + Sync + SpaceUsage + Serialize + DeserializeOwned
+    crate::core::sealed::Sealed
+    + Clone + Debug + PartialEq + Send + Sync + SpaceUsage + Serialize + DeserializeOwned
 {
     type Code: Copy + PartialEq + Debug + Send + Sync + 'static;
     /// `SparseDataEncoder::OutputValueType` of encoders using this codec.
@@ -231,6 +232,8 @@ impl SpaceUsage for FixedU8Values {
 
 const FIXED_U8_SCALE: f32 = 1.0 / ((1u32 << FixedU8Q::FRAC_NBITS) as f32);
 
+impl crate::core::sealed::Sealed for FixedU8Values {}
+
 impl ValueCodec for FixedU8Values {
     type Code = u8;
     type Output = u8;
@@ -262,6 +265,8 @@ impl SpaceUsage for ScalarU8Values {
     fn space_usage_bytes(&self) -> usize { self.quants.len() * std::mem::size_of::<f32>() }
 }
 
+impl crate::core::sealed::Sealed for ScalarU8Values {}
+
 impl ValueCodec for ScalarU8Values {
     type Code = u8;
     type Output = u8;
@@ -292,6 +297,8 @@ pub struct F16Values;
 impl SpaceUsage for F16Values {
     fn space_usage_bytes(&self) -> usize { 0 }
 }
+
+impl crate::core::sealed::Sealed for F16Values {}
 
 impl ValueCodec for F16Values {
     type Code = f16;
@@ -325,6 +332,8 @@ impl Scalar4BitValues {
 impl SpaceUsage for Scalar4BitValues {
     fn space_usage_bytes(&self) -> usize { self.quants.len() * std::mem::size_of::<f32>() }
 }
+
+impl crate::core::sealed::Sealed for Scalar4BitValues {}
 
 impl ValueCodec for Scalar4BitValues {
     type Code = u8;

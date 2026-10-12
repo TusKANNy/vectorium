@@ -241,8 +241,23 @@ impl<C: PackedComponent, V: ValueCodec> PackedSparseVectorEncoder for DotPacking
             .map(|(&c, &v)| self.values.encode(c.as_(), v))
             .collect();
         let mut comps: Vec<u32> = match &self.mapping {
+            // `map` indexes the permutation, so ids >= dim panic there.
             Some(m) => input.components().iter().map(|&c| m.map(c).as_() as u32).collect(),
-            None => input.components().iter().map(|&c| c.as_() as u32).collect(),
+            None => {
+                // Without a mapping the ids are stored as they are and later used as gather
+                // indices into a `dim`-long query (invariant (5)): check them here.
+                let mut prev: Option<usize> = None;
+                for &c in input.components() {
+                    let c: usize = c.as_();
+                    assert!(c < self.dim, "component {c} exceeds dimension {}", self.dim);
+                    assert!(
+                        prev.is_none_or(|p| p < c),
+                        "components must be strictly increasing (got {c} after {prev:?})"
+                    );
+                    prev = Some(c);
+                }
+                input.components().iter().map(|&c| c.as_() as u32).collect()
+            }
         };
         if self.mapping.is_some() {
             let permutation = rusty_perm::PermD::from_sort(comps.as_slice());
@@ -341,4 +356,37 @@ mod tests {
         let enc = DotPacking8Encoder::<u16, FixedU8Values>::new(10);
         let _ = enc.query_evaluator(SparseVectorView::new(&[10u16], &[1.0f32]));
     }
+
+    /// The `n: u16` header holds 65535, so a vector of 65535 entries must round-trip
+    /// (regression: the shared layout first rejected `n == u16::MAX`).
+    #[test]
+    fn u16_vector_with_65535_entries_roundtrips() {
+        let n = u16::MAX as usize;
+        let enc = DotPacking8Encoder::<u16, FixedU8Values>::new(n + 1);
+        let comps: Vec<u16> = (0..n as u16).collect();
+        let vals = vec![1.0f32; n];
+        let blob = encode(&enc, &comps, &vals);
+        let d = enc.decode_vector(PackedVectorView::new(&blob));
+        assert_eq!(d.components().len(), n);
+        let q = SparseVectorView::new(&comps, &vals);
+        assert_eq!(enc.query_evaluator(q).compute_distance(PackedVectorView::new(&blob)).0, n as f32);
+    }
+
+    /// Without a mapping, encoded components are used as gather indices: an id >= dim would
+    /// make scoring read out of bounds, so encoding must reject it.
+    #[test]
+    #[should_panic(expected = "exceeds dimension")]
+    fn push_encoded_rejects_component_out_of_range() {
+        let enc = DotPacking8Encoder::<u16, FixedU8Values>::new(10);
+        encode(&enc, &[3u16, 703], &[1.0, 1.0]);
+    }
+
+    /// Unsorted input would produce wrapped gaps / bridges far outside `dim`.
+    #[test]
+    #[should_panic(expected = "strictly increasing")]
+    fn push_encoded_rejects_unsorted_components() {
+        let enc = DotPacking8Encoder::<u32, FixedU8Values>::new(100);
+        encode(&enc, &[5u32, 3], &[1.0, 1.0]);
+    }
+
 }
