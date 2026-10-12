@@ -129,7 +129,9 @@ pub struct F16Reader<'a> {
 impl<'a> F16Reader<'a> {
     #[inline(always)]
     pub(crate) fn new(bytes: &'a [u8]) -> Self {
-        let values: &'a [f16] = bytemuck::cast_slice(bytes);
+        // An empty stream (empty vector) may not be 2-byte aligned; anything else is, by
+        // invariant (1).
+        let values: &'a [f16] = if bytes.is_empty() { &[] } else { bytemuck::cast_slice(bytes) };
         Self {
             ptr: values.as_ptr(),
             #[cfg(debug_assertions)]

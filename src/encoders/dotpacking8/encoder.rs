@@ -1,145 +1,124 @@
-use bytemuck::{cast_slice, from_bytes};
+//! The DotPacking8 encoder, generic over the component type `C` (`u16`, `u32`) and the value
+//! codec `V` (see `values.rs`). The public encoders (`DotPacking8U16FixedU8Encoder`, ...) are
+//! type aliases of it.
+
 use rusty_perm::{PermApply as _, PermFromSorting as _};
+use serde::{Deserialize, Serialize};
+use std::marker::PhantomData;
 use std::simd::{Simd, StdFloat, prelude::*};
 
-use crate::{PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
+use crate::core::sealed;
 use crate::core::vector::{PackedVectorView, SparseVectorView};
 use crate::core::vector_encoder::{
     PackedSparseVectorEncoder, QueryEvaluator, SparseDataEncoder, SparseVectorOwned, VectorEncoder,
 };
 use crate::distances::DotProduct;
-use crate::encoders::dotpacking8::mapping::ComponentMapping;
-use crate::encoders::dotpacking8::values::{U8Reader, ValueReader};
-use crate::encoders::dotpacking8::common::{
-    GapDecoder, compute_safe_simd_padding, encode_blocks, fast_lane_gather, simd_prefix_sum,
-};
-use crate::encoders::dotpacking8::quantizer::DotPacking8Quantizer;
+use crate::encoders::dotpacking8::bridges::{drop_bridges, insert_bridges};
+use crate::encoders::dotpacking8::common::{GapDecoder, fast_lane_gather, simd_prefix_sum};
+use crate::encoders::dotpacking8::layout::{EncodedView, write_encoded};
+pub use crate::encoders::dotpacking8::mapping::{ComponentMapping, PackedComponent};
+use crate::encoders::dotpacking8::values::{ValueCodec, ValueReader};
+use crate::{PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
 
 const N: usize = 8;
 
-#[derive(Clone)]
-pub struct DotPacking8View<'a> {
-    pub n: usize,
-    pub selectors: &'a [u8],
-    pub payloads: &'a [u8],
-    pub values: &'a [u8],
+/// Packed sparse dot-product encoder: components gap-coded in bit-packed blocks of 8 (see
+/// `common.rs`), values stored by the codec `V`. `u32` components insert zero-coded bridges
+/// where a gap exceeds `u16::MAX` (`PackedComponent::MAY_NEED_BRIDGES`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(bound = "C: PackedComponent, V: ValueCodec")]
+pub struct DotPacking8Encoder<C, V> {
+    dim: usize,
+    values: V,
+    mapping: Option<ComponentMapping<C>>,
 }
 
-impl<'a> DotPacking8View<'a> {
-    /// Split one encoded vector into its header, selectors, gap payload and values.
-    ///
-    /// # Safety
-    ///
-    /// `slice` must be exactly one vector produced by this encoder's `push_encoded`. Decoders
-    /// built from the view read the gap payload with unchecked 16-byte loads whose bounds rely
-    /// on the padding `push_encoded` inserts before the values.
-    pub unsafe fn from_unchecked_slice(slice: &'a [u64]) -> Self {
-        let bytes = cast_slice::<u64, u8>(slice);
-        let n = from_bytes::<u16>(&bytes[0..2]).to_le() as usize;
+impl<C, V> sealed::Sealed for DotPacking8Encoder<C, V> {}
 
-        let n_blocks_total = n.div_ceil(N);
-        let selectors_size = n_blocks_total.div_ceil(2);
-        let selectors_end = 2 + selectors_size;
-        let values_start_idx = bytes.len() - n;
-
-        Self {
-            n,
-            selectors: &bytes[2..selectors_end],
-            payloads: &bytes[selectors_end..values_start_idx],
-            values: &bytes[values_start_idx..],
-        }
+impl<C: PackedComponent, V: ValueCodec> DotPacking8Encoder<C, V> {
+    /// Untrained encoder: original component ids, untrained value codec.
+    pub fn new(dim: usize) -> Self {
+        Self::with_values(dim, V::new_untrained(dim))
     }
-}
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct DotPacking8Encoder<Q>
-where
-    Q: DotPacking8Quantizer,
-{
-    pub dim: usize,
-    pub quantizer: Q,
-    pub mapping: Option<ComponentMapping<u16>>,
-}
+    pub fn with_values(dim: usize, values: V) -> Self {
+        Self { dim, values, mapping: None }
+    }
 
-impl<Q> DotPacking8Encoder<Q>
-where
-    Q: DotPacking8Quantizer<InputValue = f32>,
-{
-    pub fn new_with_quantizer(dim: usize, quantizer: Q) -> Self {
-        Self {
-            dim,
-            quantizer,
-            mapping: None,
-        }
+    pub fn values(&self) -> &V {
+        &self.values
     }
 
     #[inline]
-    pub fn component_mapping(&self) -> Option<&[u16]> {
+    pub fn component_mapping(&self) -> Option<&[C]> {
         self.mapping.as_ref().map(|m| m.forward())
     }
 
-    
     #[inline]
-    pub fn inverse_component_mapping(&self) -> Option<&[u16]> {
+    pub fn inverse_component_mapping(&self) -> Option<&[C]> {
         self.mapping.as_ref().map(|m| m.inverse())
     }
 
-    /// Reorder components by decreasing frequency in `training_data`, which shortens gaps,
-    /// then train the value quantizer (a no-op for quantizers without per-component state).
-    /// The dataset's distance does not matter.
-    pub fn train<D>(&mut self, training_data: &PlainSparseDataset<u16, f32, D>)
+    /// Installs a component permutation (e.g. one computed by another ordering).
+    pub fn set_component_mapping(&mut self, mapping: ComponentMapping<C>) {
+        assert_eq!(mapping.forward().len(), self.dim, "mapping dimension mismatch");
+        self.mapping = Some(mapping);
+    }
+
+    /// Reorders components by decreasing frequency in `training_data` (shorter gaps), then
+    /// trains the value codec on the original component ids. The distance does not matter.
+    pub fn train<D>(&mut self, training_data: &PlainSparseDataset<C, f32, D>)
     where
         D: ScalarSparseSupportedDistance,
     {
         self.mapping = Some(ComponentMapping::by_decreasing_frequency(
-            self.input_dim(),
+            self.dim,
             training_data,
         ));
-        self.quantizer.train(training_data);
+        self.values.train(training_data);
     }
 }
 
-pub struct DotPacking8QueryEvaluator<'a, Q>
-where
-    Q: DotPacking8Quantizer,
-{
+pub struct DotPacking8QueryEvaluator<'e, C, V> {
     dense_query: Vec<f32>,
-    _encoder: &'a DotPacking8Encoder<Q>,
+    _encoder: PhantomData<&'e DotPacking8Encoder<C, V>>,
 }
 
-impl<'a, Q> DotPacking8QueryEvaluator<'a, Q>
-where
-    Q: DotPacking8Quantizer<InputValue = f32>,
-{
-    pub fn new(query: SparseVectorView<'_, u16, f32>, encoder: &'a DotPacking8Encoder<Q>) -> Self {
+impl<'e, C: PackedComponent, V: ValueCodec> DotPacking8QueryEvaluator<'e, C, V> {
+    pub fn new(query: SparseVectorView<'_, C, f32>, encoder: &'e DotPacking8Encoder<C, V>) -> Self {
         let mut dense_query = vec![0.0f32; encoder.dim];
-        for (&c, &v) in query.components().iter().zip(query.values().iter()) {
-            let mapped_c = if let Some(mapping) = encoder.component_mapping() {
-                mapping[c as usize]
-            } else {
-                c
+        for (&c, &v) in query.components().iter().zip(query.values()) {
+            let idx: usize = c.as_();
+            assert!(
+                idx < encoder.dim,
+                "Query component {idx} exceeds dimension {}",
+                encoder.dim
+            );
+            let mapped: usize = match &encoder.mapping {
+                Some(m) => m.map(c).as_(),
+                None => idx,
             };
-            dense_query[mapped_c as usize] = encoder.quantizer.query_value(c, v);
+            dense_query[mapped] = encoder.values.query_value(idx, v);
         }
         Self {
             dense_query,
-            _encoder: encoder,
+            _encoder: PhantomData,
         }
     }
 }
 
-impl<'a, 'v, Q> QueryEvaluator<PackedVectorView<'v, u64>> for DotPacking8QueryEvaluator<'a, Q>
-where
-    Q: DotPacking8Quantizer<InputValue = f32>,
+impl<'e, 'v, C: PackedComponent, V: ValueCodec> QueryEvaluator<PackedVectorView<'v, u64>>
+    for DotPacking8QueryEvaluator<'e, C, V>
 {
     type Distance = DotProduct;
 
     #[inline]
     fn compute_distance(&self, vector: PackedVectorView<'v, u64>) -> Self::Distance {
-        let view = unsafe { DotPacking8View::from_unchecked_slice(vector.data()) };
+        // SAFETY: datasets only hold vectors written by `push_encoded` with the same codec.
+        let view = unsafe { EncodedView::new::<V>(vector.data()) };
         // SAFETY: the view comes from `push_encoded` output, invariants (1)-(3) in `common.rs`.
-        let mut gaps = unsafe { GapDecoder::new(view.n, view.selectors, view.payloads) };
-        let mut values = U8Reader::new(view.values);
+        let mut gaps = unsafe { GapDecoder::new(view.n, view.selectors, view.payload) };
+        let mut values = V::reader(view.values);
         let mut acc = Simd::<f32, N>::splat(0.0);
         let mut query_ptr = self.dense_query.as_slice();
         while let Some(block_gaps) = gaps.next_block() {
@@ -152,194 +131,212 @@ where
             // SAFETY: `last_component <= query_ptr.len()` by invariant (5) in `common.rs`.
             query_ptr = unsafe { query_ptr.split_at_unchecked(last_component as usize).1 };
         }
-        let mut total_unscaled = acc.reduce_sum();
+        let mut total = acc.reduce_sum();
         let (tail_gaps, rem) = gaps.tail();
         if rem > 0 {
             let components = simd_prefix_sum(tail_gaps).to_array();
-            total_unscaled = values.tail_dot(total_unscaled, query_ptr, &components, rem);
+            total = values.tail_dot(total, query_ptr, &components, rem);
         }
-        DotProduct(total_unscaled)
+        DotProduct(total)
     }
 }
 
-impl<Q> VectorEncoder for DotPacking8Encoder<Q>
-where
-    Q: DotPacking8Quantizer<InputValue = f32>,
-{
+impl<C: PackedComponent, V: ValueCodec> VectorEncoder for DotPacking8Encoder<C, V> {
     type Distance = DotProduct;
-    type InputVector<'a> = SparseVectorView<'a, u16, Q::InputValue>;
-    type QueryVector<'q> = SparseVectorView<'q, u16, f32>;
+    type InputVector<'a> = SparseVectorView<'a, C, f32>;
+    type QueryVector<'q> = SparseVectorView<'q, C, f32>;
     type EncodedVector<'a> = PackedVectorView<'a, u64>;
     type Evaluator<'e>
-        = DotPacking8QueryEvaluator<'e, Q>
+        = DotPacking8QueryEvaluator<'e, C, V>
     where
         Self: 'e;
 
     fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
         DotPacking8QueryEvaluator::new(query, self)
     }
+
     fn vector_evaluator<'e, 'v>(&'e self, vector: Self::EncodedVector<'v>) -> Self::Evaluator<'e> {
         let decoded = <Self as SparseDataEncoder>::decode_vector(self, vector);
         DotPacking8QueryEvaluator::new(decoded.as_view(), self)
     }
+
     fn output_dim(&self) -> usize {
         self.dim
     }
+
     fn input_dim(&self) -> usize {
         self.dim
     }
 }
 
-impl<Q> SparseDataEncoder for DotPacking8Encoder<Q>
-where
-    Q: DotPacking8Quantizer<InputValue = f32>,
-{
-    type InputComponentType = u16;
-    type InputValueType = Q::InputValue;
-    type OutputComponentType = u16;
-    type OutputValueType = u8;
+impl<C: PackedComponent, V: ValueCodec> SparseDataEncoder for DotPacking8Encoder<C, V> {
+    type InputComponentType = C;
+    type InputValueType = f32;
+    type OutputComponentType = C;
+    type OutputValueType = V::Output;
 
     fn decode_vector<'a>(
         &self,
         encoded: Self::EncodedVector<'a>,
     ) -> SparseVectorOwned<Self::InputComponentType, f32> {
-        let view = unsafe { DotPacking8View::from_unchecked_slice(encoded.data()) };
-        let n = view.n;
-
-        let mut decoded_comp = Vec::with_capacity(n);
-        let mut values_raw = Vec::with_capacity(n);
-
-        // SAFETY: the view comes from `push_encoded` output, invariants (1)-(3) in `common.rs`.
-        let mut gaps = unsafe { GapDecoder::new(view.n, view.selectors, view.payloads) };
-        let mut values = U8Reader::new(view.values);
+        // SAFETY: as in `compute_distance`.
+        let view = unsafe { EncodedView::new::<V>(encoded.data()) };
+        // SAFETY: as in `compute_distance`.
+        let mut gaps = unsafe { GapDecoder::new(view.n, view.selectors, view.payload) };
+        let mut values = V::reader(view.values);
+        let mut comps: Vec<u32> = Vec::with_capacity(view.n);
+        let mut codes: Vec<V::Code> = Vec::with_capacity(view.n);
         let mut last_component = 0u32;
         while let Some(block_gaps) = gaps.next_block() {
             let abs = (simd_prefix_sum(block_gaps) + Simd::splat(last_component)).to_array();
-            let codes = values.next_block_codes();
-            for i in 0..N {
-                decoded_comp.push(abs[i] as u16);
-                values_raw.push(codes[i]);
-            }
+            comps.extend_from_slice(&abs);
+            codes.extend_from_slice(&values.next_block_codes());
             last_component = abs[N - 1];
         }
         let (tail_gaps, rem) = gaps.tail();
         let abs = (simd_prefix_sum(tail_gaps) + Simd::splat(last_component)).to_array();
-        let codes = values.tail(rem);
-        for i in 0..rem {
-            decoded_comp.push(abs[i] as u16);
-            values_raw.push(codes[i]);
+        comps.extend_from_slice(&abs[..rem]);
+        codes.extend_from_slice(&values.tail(rem)[..rem]);
+
+        if C::MAY_NEED_BRIDGES {
+            drop_bridges(&mut comps, &mut codes, V::zero_code());
         }
 
-        if let Some(mapping) = &self.mapping {
-            let inverse = mapping.inverse();
-
-            for c in decoded_comp.iter_mut() {
-                *c = inverse[*c as usize];
-            }
-
-            // For per-component quantizers (e.g., ScalarU8Quantizer), we must decode AFTER
-            // inverse mapping and permutation to ensure each raw byte is decoded with its
-            // original component's scale. Permuting raw bytes along with their components
-            // ensures proper alignment.
-            let permutation = rusty_perm::PermD::from_sort(decoded_comp.as_slice());
-            permutation.apply(values_raw.as_mut_slice()).unwrap();
-            permutation.apply(decoded_comp.as_mut_slice()).unwrap();
-
-            let values: Vec<f32> = decoded_comp
-                .iter()
-                .zip(values_raw.iter())
-                .map(|(&c, &v)| self.quantizer.decode_value(c, v))
-                .collect();
-
-            SparseVectorOwned::new(decoded_comp, values)
-        } else {
-            let values: Vec<f32> = decoded_comp
-                .iter()
-                .zip(values_raw.iter())
-                .map(|(&c, &v)| self.quantizer.decode_value(c, v))
-                .collect();
-            SparseVectorOwned::new(decoded_comp, values)
+        let mut components: Vec<C> = match &self.mapping {
+            Some(m) => comps.iter().map(|&c| m.unmap(C::from_usize(c as usize))).collect(),
+            None => comps.iter().map(|&c| C::from_usize(c as usize)).collect(),
+        };
+        if self.mapping.is_some() {
+            // Decode after the inverse mapping, so each code uses its original component's
+            // parameters; keep codes aligned with their components.
+            let permutation = rusty_perm::PermD::from_sort(components.as_slice());
+            permutation.apply(codes.as_mut_slice()).unwrap();
+            permutation.apply(components.as_mut_slice()).unwrap();
         }
+        let decoded: Vec<f32> = components
+            .iter()
+            .zip(&codes)
+            .map(|(&c, &code)| self.values.decode(c.as_(), code))
+            .collect();
+        SparseVectorOwned::new(components, decoded)
     }
 }
 
-impl<Q> PackedSparseVectorEncoder for DotPacking8Encoder<Q>
-where
-    Q: DotPacking8Quantizer<InputValue = f32>,
-{
+impl<C: PackedComponent, V: ValueCodec> PackedSparseVectorEncoder for DotPacking8Encoder<C, V> {
     type PackedDataType = u64;
 
     fn push_encoded<'a, OutputContainer>(
         &self,
-        input: SparseVectorView<'a, u16, Q::InputValue>,
+        input: SparseVectorView<'a, C, f32>,
         output: &mut OutputContainer,
     ) where
         OutputContainer: Extend<u64>,
     {
-        let mut q_values: Vec<u8> = input
+        let mut codes: Vec<V::Code> = input
             .components()
             .iter()
             .zip(input.values())
-            .map(|(&c, &v)| self.quantizer.encode_value(c, v))
+            .map(|(&c, &v)| self.values.encode(c.as_(), v))
             .collect();
-
-        let mut q_components: Vec<u16> = if let Some(mapping) = self.component_mapping() {
-            input
-                .components()
-                .iter()
-                .map(|&c| mapping[c as usize])
-                .collect()
-        } else {
-            input.components().to_vec()
+        let mut comps: Vec<u32> = match &self.mapping {
+            Some(m) => input.components().iter().map(|&c| m.map(c).as_() as u32).collect(),
+            None => input.components().iter().map(|&c| c.as_() as u32).collect(),
         };
-
         if self.mapping.is_some() {
-            let permutation = rusty_perm::PermD::from_sort(q_components.as_slice());
-            permutation.apply(q_values.as_mut_slice()).unwrap();
-            permutation.apply(q_components.as_mut_slice()).unwrap();
+            let permutation = rusty_perm::PermD::from_sort(comps.as_slice());
+            permutation.apply(codes.as_mut_slice()).unwrap();
+            permutation.apply(comps.as_mut_slice()).unwrap();
         }
-
-        let n = q_components.len();
-        if n == 0 {
-            return;
+        if C::MAY_NEED_BRIDGES {
+            debug_assert!(
+                codes.iter().all(|&code| code != V::zero_code()),
+                "a real coordinate quantized to code 0, which is reserved for bridges: every value \
+                 must be at least its component's quantization step"
+            );
+            if let Some((bridged_comps, bridged_codes)) =
+                insert_bridges(&comps, &codes, V::zero_code())
+            {
+                write_encoded::<V>(&bridged_comps, &bridged_codes, output);
+                return;
+            }
         }
-
-        let mut gaps = Vec::with_capacity(n);
-        let mut last = 0u32;
-        for &comp in &q_components {
-            gaps.push(comp as u32 - last);
-            last = comp as u32;
-        }
-
-        let (selectors, gap_payloads) = encode_blocks(&gaps);
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&(n as u16).to_le_bytes());
-        payload.extend_from_slice(&selectors);
-        payload.extend_from_slice(&gap_payloads);
-
-        let current_len = payload.len();
-        let padding_needed =
-            compute_safe_simd_padding(n, &selectors, (8 - (current_len + n) % 8) % 8, n);
-
-        payload.resize(payload.len() + padding_needed, 0);
-        payload.extend_from_slice(q_values.as_slice());
-
-        let data = payload
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .map(|&chunk| u64::from_le_bytes(chunk));
-
-        output.extend(data);
+        write_encoded::<V>(&comps, &codes, output);
     }
 }
 
-impl<Q> SpaceUsage for DotPacking8Encoder<Q>
-where
-    Q: DotPacking8Quantizer,
-{
+impl<C: PackedComponent, V: ValueCodec> SpaceUsage for DotPacking8Encoder<C, V> {
     fn space_usage_bytes(&self) -> usize {
-        let mapping_size = self.mapping.as_ref().map_or(0, |m| m.space_usage_bytes());
-        mapping_size + self.quantizer.space_usage_bytes()
+        self.values.space_usage_bytes() + self.mapping.as_ref().map_or(0, |m| m.space_usage_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::encoders::dotpacking8::values::*;
+    use crate::core::vector::{PackedVectorView, SparseVectorView};
+
+    fn encode<C: PackedComponent, V: ValueCodec>(
+        enc: &DotPacking8Encoder<C, V>, comps: &[C], vals: &[f32],
+    ) -> Vec<u64> {
+        let mut out = Vec::new();
+        enc.push_encoded(SparseVectorView::new(comps, vals), &mut out);
+        out
+    }
+
+    fn check_roundtrip<V: ValueCodec>(enc: &DotPacking8Encoder<u16, V>, tol: f32) {
+        for n in [0usize, 1, 7, 8, 9, 15, 16, 17, 40] {
+            let comps: Vec<u16> = (0..n as u16).map(|i| i * 37).collect();
+            let vals: Vec<f32> = (0..n).map(|i| 0.25 + (i % 13) as f32 * 0.25).collect();
+            let blob = encode(enc, &comps, &vals);
+            let d = enc.decode_vector(PackedVectorView::new(&blob));
+            assert_eq!(d.components(), comps.as_slice(), "n={n}");
+            for (x, y) in d.values().iter().zip(&vals) {
+                assert!((x - y).abs() <= tol, "n={n}: {x} vs {y}");
+            }
+        }
+    }
+
+    #[test]
+    fn roundtrip_all_codecs_all_lengths() {
+        let dim = 2000;
+        check_roundtrip(&DotPacking8Encoder::<u16, FixedU8Values>::new(dim), 1.0 / 64.0);
+        check_roundtrip(&DotPacking8Encoder::<u16, F16Values>::new(dim), 0.002);
+        check_roundtrip(
+            &DotPacking8Encoder::with_values(dim, ScalarU8Values::from_steps(vec![4.0 / 255.0; dim].into())),
+            4.0 / 255.0,
+        );
+        check_roundtrip(
+            &DotPacking8Encoder::with_values(dim, Scalar4BitValues::from_steps(vec![4.0 / 15.0; dim].into())),
+            4.0 / 15.0,
+        );
+    }
+
+    #[test]
+    fn empty_vector_all_codecs() {
+        let q = SparseVectorView::new(&[1u16, 5], &[1.0f32, 2.0]);
+        let e1 = DotPacking8Encoder::<u16, FixedU8Values>::new(10);
+        let e2 = DotPacking8Encoder::<u16, F16Values>::new(10);
+        assert!(encode(&e1, &[], &[]).is_empty());
+        assert!(encode(&e2, &[], &[]).is_empty());
+        assert_eq!(e1.query_evaluator(q).compute_distance(PackedVectorView::new(&[])).0, 0.0);
+        assert_eq!(e2.query_evaluator(q).compute_distance(PackedVectorView::new(&[])).0, 0.0);
+    }
+
+    #[test]
+    fn u16_decode_keeps_zero_codes() {
+        // Value 0.001 is below the 1/255 step: code 0. u16 never has bridges, so it must survive.
+        let enc = DotPacking8Encoder::with_values(10, ScalarU8Values::from_steps(vec![1.0; 10].into()));
+        let blob = encode(&enc, &[2u16, 3], &[0.001, 5.0]);
+        let d = enc.decode_vector(PackedVectorView::new(&blob));
+        assert_eq!(d.components(), &[2, 3]);
+        assert_eq!(d.values(), &[0.0, 5.0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds")]
+    fn query_component_out_of_range_panics() {
+        let enc = DotPacking8Encoder::<u16, FixedU8Values>::new(10);
+        let _ = enc.query_evaluator(SparseVectorView::new(&[10u16], &[1.0f32]));
     }
 }

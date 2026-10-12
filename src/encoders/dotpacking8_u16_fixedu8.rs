@@ -1,14 +1,8 @@
 use crate::encoders::dotpacking8::encoder::{DotPacking8Encoder, DotPacking8QueryEvaluator};
-use crate::encoders::dotpacking8::quantizer::FixedU8Quantizer;
+use crate::encoders::dotpacking8::values::FixedU8Values;
 
-pub type DotPacking8U16FixedU8Encoder = DotPacking8Encoder<FixedU8Quantizer>;
-pub type DotPacking8U16FixedU8QueryEvaluator<'e> = DotPacking8QueryEvaluator<'e, FixedU8Quantizer>;
-
-impl DotPacking8Encoder<FixedU8Quantizer> {
-    pub fn new(input_dim: usize) -> Self {
-        DotPacking8Encoder::new_with_quantizer(input_dim, FixedU8Quantizer)
-    }
-}
+pub type DotPacking8U16FixedU8Encoder = DotPacking8Encoder<u16, FixedU8Values>;
+pub type DotPacking8U16FixedU8QueryEvaluator<'e> = DotPacking8QueryEvaluator<'e, u16, FixedU8Values>;
 
 #[cfg(test)]
 mod tests {
@@ -52,11 +46,7 @@ mod tests {
     #[test]
     fn compute_distance_only_bulk() {
         // Instantiate the encoder with FixedU8Quantizer.
-        let encoder = DotPacking8Encoder {
-            dim: 100,
-            quantizer: FixedU8Quantizer,
-            mapping: None,
-        };
+        let encoder = DotPacking8U16FixedU8Encoder::new(100);
 
         let binding = [1.0, 3.0, 2.0, 3.5, 1.5, 2.0, 1.0, 2.0];
         let input = SparseVectorView::new(&[2, 4, 8, 24, 36, 48, 53, 90], &binding);
@@ -76,11 +66,7 @@ mod tests {
 
     #[test]
     fn compute_distance_bulk_and_tail() {
-        let encoder = DotPacking8Encoder {
-            dim: 100,
-            quantizer: FixedU8Quantizer,
-            mapping: None,
-        };
+        let encoder = DotPacking8U16FixedU8Encoder::new(100);
 
         let binding = [1.0, 3.0, 2.0, 3.5, 1.5, 2.0, 1.0, 2.0, 3.0, 2.5];
         let input = SparseVectorView::new(&[2, 4, 8, 24, 28, 36, 48, 53, 70, 90], &binding);
@@ -108,11 +94,7 @@ mod tests {
             components.push(curr as u16);
         }
 
-        let encoder = DotPacking8Encoder {
-            dim: u16::MAX as usize + 1,
-            quantizer: FixedU8Quantizer,
-            mapping: None,
-        };
+        let encoder = DotPacking8U16FixedU8Encoder::new(u16::MAX as usize + 1);
 
         let values: Vec<_> = (0..num_vals).map(|i| 1.0 + (i % 7) as f32 / 10.0).collect();
         let input = SparseVectorView::new(&components, &values);
@@ -181,11 +163,7 @@ mod tests {
 
     #[test]
     fn block8_decode_roundtrip() {
-        let mut encoder = DotPacking8Encoder {
-            dim: 100,
-            quantizer: FixedU8Quantizer,
-            mapping: None,
-        };
+        let mut encoder = DotPacking8U16FixedU8Encoder::new(100);
 
         let binding = [1.0, 3.0, 2.0, 3.5];
         let input_components = [0, 4, 8, 24];

@@ -1,32 +1,19 @@
-//! Shared building blocks for the 4-bit-value `dotpacking8` / `cdotpacking8` forks.
-//!
-//! The `*_scalar4bit` and `*_centroid4bit` encoders all keep a `dotpacking8`-family
-//! component codec but store values as **4-bit nibbles**. This module owns the parts they
-//! share so nothing is duplicated across the four encoder files:
+//! Nibble (4-bit) value layout shared by the 4-bit DotPacking8 value codecs.
 //!
 //! - the **nibble value layout** (`nibble_bytes`, `pack_nibbles`, [`NibbleReader`]) — every
 //!   full block of 8 codes packs into 4 bytes as `byte[i] = code[i] | (code[i+4] << 4)`,
 //!   with a trailing `rem < 8` codes stored as sequential nibble pairs;
-//! - the **value quantizer** [`Scalar4BitQuantizer`] (per-component uniform step, linear
-//!   scoring). On `feature/quantization` this module also holds `Centroid4BitQuantizer`
-//!   (per-component 16-entry codebook); it is not imported on this branch yet;
 //! - [`block_bit_width`], a selector helper for the two-tier `cdotpacking8` forks.
 //!
-//! [`NibbleReader`] implements `values::ValueReader`, so the shared gap decoder
-//! (`common::GapDecoder`) drives the 4-bit encoders like any other value stream.
-//!
-//! Each encoder file still owns its own component skeleton (single-stream for `dotpacking8`,
-//! two-tier mapped/residual for `cdotpacking8`), view, query evaluator, and kernel.
+//! The 4-bit scalar quantization itself is `values::Scalar4BitValues`. On
+//! `feature/quantization` this module also holds `Centroid4BitQuantizer` (per-component
+//! 16-entry codebook); it is not imported on this branch yet. [`NibbleReader`] implements
+//! `values::ValueReader`, so the shared gap decoder drives 4-bit values like any other stream.
 
-use crate::encoders::dotpacking8::quantizer::DotPacking8Quantizer;
-use crate::utils::train_sparse_scalar_quantizer_with_levels;
-use crate::{PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
 use std::simd::prelude::*;
 
 /// Gap block size of the `dotpacking8` codec.
 pub(crate) const N: usize = 8;
-/// 4-bit scalar codes span 15 quantization levels (`2^4 - 1`).
-const NUM_LEVELS: f32 = 15.0;
 
 // ---------------------------------------------------------------------------
 // Nibble value layout.
@@ -195,65 +182,6 @@ impl crate::encoders::dotpacking8::values::ValueReader for NibbleReader<'_> {
         // SAFETY: the tail has `rem.div_ceil(2)` bytes left in the stream (see the type docs).
         let byte = unsafe { *self.bytes.get_unchecked(self.off + i / 2) };
         ((byte >> ((i & 1) << 2)) & 0x0F) as f32
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 4-bit uniform scalar value quantizer (linear scoring).
-// ---------------------------------------------------------------------------
-
-/// Per-component uniform scalar quantizer producing 4-bit codes (`0..=15`).
-/// `quants[c]` is the per-component step; `code = clamp(v / quants[c], 0, 15)`. Scoring is
-/// linear in the code: `dequant(c, code)·q = code · (q·quants[c])`.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Scalar4BitQuantizer {
-    quants: Box<[f32]>,
-}
-
-impl SpaceUsage for Scalar4BitQuantizer {
-    fn space_usage_bytes(&self) -> usize {
-        self.quants.len() * std::mem::size_of::<f32>()
-    }
-}
-
-impl Scalar4BitQuantizer {
-    pub fn new(quants: Box<[f32]>) -> Self {
-        Self { quants }
-    }
-}
-
-impl DotPacking8Quantizer for Scalar4BitQuantizer {
-    type InputValue = f32;
-
-    #[inline(always)]
-    fn encode_value(&self, component: u16, value: f32) -> u8 {
-        let q = self.quants[component as usize];
-        if q > 0.0 {
-            (value / q).clamp(0.0, NUM_LEVELS) as u8
-        } else {
-            0u8
-        }
-    }
-
-    #[inline(always)]
-    fn decode_value(&self, component: u16, output: u8) -> f32 {
-        output as f32 * self.quants[component as usize]
-    }
-
-    #[inline(always)]
-    fn query_value(&self, component: u16, input: f32) -> f32 {
-        input * self.quants[component as usize]
-    }
-
-    /// Fit per-component steps over the full `[min, max]` range using 15 levels, mirroring
-    /// the `ScalarU8Quantizer` fit but for 4-bit codes.
-    fn train<D>(&mut self, training_data: &PlainSparseDataset<u16, f32, D>)
-    where
-        D: ScalarSparseSupportedDistance,
-    {
-        self.quants =
-            train_sparse_scalar_quantizer_with_levels(training_data, 0.0, 1.0, NUM_LEVELS)
-                .into_boxed_slice();
     }
 }
 
