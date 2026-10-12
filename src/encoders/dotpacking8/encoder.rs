@@ -112,7 +112,9 @@ impl<'e, 'v, C: PackedComponent, V: ValueCodec> QueryEvaluator<PackedVectorView<
 {
     type Distance = DotProduct;
 
-    #[inline]
+    // `inline(always)`: with plain `#[inline]` LLVM stopped inlining the f16 instance into the
+    // search loop (an out-of-line call per vector, +4.3% ms/query on cocondenser_1M).
+    #[inline(always)]
     fn compute_distance(&self, vector: PackedVectorView<'v, u64>) -> Self::Distance {
         // SAFETY: datasets only hold vectors written by `push_encoded` with the same codec.
         let view = unsafe { EncodedView::new::<V>(vector.data()) };

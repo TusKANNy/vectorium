@@ -87,10 +87,16 @@ where
         self.dataset
             .iter()
             .enumerate()
-            .map(|(i, vector)| ScoredVector {
-                distance: evaluator.compute_distance(vector),
-                vector: i as VectorId,
-            })
+            // `inline(always)`: the closure holds the whole per-vector kernel; left to the
+            // heuristics, LLVM stopped inlining it into `k_smallest` for the larger kernels
+            // (DotPacking8 f16: +2.7% ms/query from the out-of-line call per vector).
+            .map(
+                #[inline(always)]
+                |(i, vector)| ScoredVector {
+                    distance: evaluator.compute_distance(vector),
+                    vector: i as VectorId,
+                },
+            )
             .k_smallest(k)
             .collect()
     }
