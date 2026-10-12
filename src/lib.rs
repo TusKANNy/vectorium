@@ -55,6 +55,10 @@ pub use core::vector_encoder::{
 
 pub use clustering::{KMeans, KMeansBuilder};
 
+pub use encoders::blocked_sparse::{
+    BlockedSparseEncoder, BlockedSparseQueryEvaluator, SPARSE_QUERY_THRESHOLD,
+};
+pub use core::data_block::{DataBlock, BLOCK_SIZE};
 pub use encoders::dense_scalar::{
     PlainDenseQuantizer, PlainDenseQuantizerDotProduct, PlainDenseQuantizerSquaredEuclidean,
     ScalarDenseQuantizer, ScalarDenseQuantizerDotProduct, ScalarDenseQuantizerSame,
@@ -123,6 +127,8 @@ pub type PlainSparseDataset<C, V, D> = SparseDataset<PlainSparseQuantizer<C, V, 
 pub type PlainSparseDatasetGrowable<C, V, D> = SparseDatasetGrowable<PlainSparseQuantizer<C, V, D>>;
 
 // Useful type aliases for packed sparse dataset types
+pub type BlockedSparseDataset = PackedSparseDataset<BlockedSparseEncoder>;
+pub type BlockedSparseDatasetGrowable = PackedSparseDatasetGrowable<BlockedSparseEncoder>;
 pub type DotPacking8U16FixedU8Dataset = PackedSparseDataset<DotPacking8U16FixedU8Encoder>;
 pub type DotPacking8U16FixedU8DatasetGrowable =
     PackedSparseDatasetGrowable<DotPacking8U16FixedU8Encoder>;

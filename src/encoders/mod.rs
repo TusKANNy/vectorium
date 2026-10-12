@@ -1,3 +1,4 @@
+pub mod blocked_sparse;
 pub mod dense_scalar;
 pub mod dotpacking8;
 pub mod dotpacking8_u16_fixedu8;
