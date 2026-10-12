@@ -3,3 +3,5 @@ pub mod common;
 pub mod quantizer;
 pub mod nibble4bit;
 pub mod encoder;
+#[cfg(test)]
+mod golden_tests;
