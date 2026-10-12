@@ -182,9 +182,12 @@ where
         let mut iter = view.iter_raw();
         for (gaps, values) in &mut iter {
             let components = simd_prefix_sum(gaps);
-            let query_values = fast_lane_gather(query_ptr, components);
+            // SAFETY: every relative component is < query_ptr.len(), invariant (5) in `common.rs`.
+            let query_values = unsafe { fast_lane_gather(query_ptr, components) };
             acc = query_values.mul_add(values.cast(), acc);
             let last_component = components[N - 1];
+            debug_assert!(last_component as usize <= query_ptr.len());
+            // SAFETY: `last_component <= query_ptr.len()` by invariant (5) in `common.rs`.
             query_ptr = unsafe { query_ptr.split_at_unchecked(last_component as usize).1 };
         }
         let mut total_unscaled = acc.reduce_sum();

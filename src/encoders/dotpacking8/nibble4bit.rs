@@ -75,6 +75,10 @@ pub(crate) fn pack_nibbles(out: &mut Vec<u8>, codes: &[u8]) {
 /// Sequential cursor over one value stream's nibble-packed codes. Mirrors
 /// [`pack_nibbles`]: full blocks are half-split (4 bytes -> 8 codes), the tail is
 /// sequential nibble pairs.
+///
+/// Reads are unchecked: callers read at most `n / 8` full blocks and then one tail of
+/// `n % 8` codes from a stream of exactly `nibble_bytes(n)` bytes, so every read stays in
+/// bounds (`debug_assert!`ed).
 pub(crate) struct NibbleReader<'a> {
     bytes: &'a [u8],
     off: usize,
@@ -91,6 +95,8 @@ impl<'a> NibbleReader<'a> {
     /// Used by the linear scalar kernels (`acc = q.mul_add(codes_f32, acc)`).
     #[inline(always)]
     pub(crate) fn next_block_f32(&mut self) -> Simd<f32, N> {
+        debug_assert!(self.off + 4 <= self.bytes.len());
+        // SAFETY: a full block has 4 bytes left in the stream (see the type docs).
         let b = unsafe { self.bytes.get_unchecked(self.off..self.off + 4) };
         self.off += 4;
         let dup = Simd::<u8, N>::from_array([b[0], b[1], b[2], b[3], b[0], b[1], b[2], b[3]]);
@@ -103,6 +109,8 @@ impl<'a> NibbleReader<'a> {
     #[inline(always)]
     #[allow(dead_code)] // used by the centroid 4-bit encoders, not imported on this branch yet
     pub(crate) fn next_block_codes(&mut self) -> Simd<u8, N> {
+        debug_assert!(self.off + 4 <= self.bytes.len());
+        // SAFETY: a full block has 4 bytes left in the stream (see the type docs).
         let b = unsafe { self.bytes.get_unchecked(self.off..self.off + 4) };
         self.off += 4;
         let dup = Simd::<u8, N>::from_array([b[0], b[1], b[2], b[3], b[0], b[1], b[2], b[3]]);
@@ -113,6 +121,8 @@ impl<'a> NibbleReader<'a> {
     /// Expand the next full block (8 codes) to raw `u8` codes in natural order (decode path).
     #[inline(always)]
     pub(crate) fn next_block_u8(&mut self) -> [u8; N] {
+        debug_assert!(self.off + 4 <= self.bytes.len());
+        // SAFETY: a full block has 4 bytes left in the stream (see the type docs).
         let b = unsafe { self.bytes.get_unchecked(self.off..self.off + 4) };
         self.off += 4;
         [
@@ -135,6 +145,8 @@ impl<'a> NibbleReader<'a> {
         // suggests compiles to different code and measured ~2% slower (2.38 vs 2.40 ns/call).
         #[allow(clippy::needless_range_loop)]
         for i in 0..rem {
+            debug_assert!(self.off + i / 2 < self.bytes.len());
+            // SAFETY: the tail has `rem.div_ceil(2)` bytes left in the stream (see the type docs).
             let byte = unsafe { *self.bytes.get_unchecked(self.off + i / 2) };
             out[i] = (byte >> ((i & 1) << 2)) & 0x0F;
         }

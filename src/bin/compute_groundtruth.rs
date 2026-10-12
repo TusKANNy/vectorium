@@ -57,7 +57,7 @@ struct Args {
     #[arg(default_value = "u32")]
     component_type: String,
 
-    /// Encoder: 'plain', 'pq' (dense only), or 'dotvbyte' (default: plain)
+    /// Encoder: 'plain', 'pq' (dense only), 'dotvbyte', or 'dotpacking8' (default: plain)
     #[clap(long, value_parser)]
     #[arg(default_value = "plain")]
     encoder: String,
@@ -72,9 +72,16 @@ struct Args {
     #[clap(long, value_parser)]
     groundtruth: Option<String>,
 
-    /// Skip component reordering for encoders that support it (dotpacking8).
-    /// Training only permutes components, so it never changes scores -- it trades
-    /// build time for a smaller, faster index.
+    /// Values stored by the dotpacking8 encoder: 'fixedu8', 'scalaru8', 'f16' or 'scalar4bit'
+    /// with component_type='u16'; 'scalaru8' (bridged encoder) with component_type='u32'.
+    #[clap(long, value_parser)]
+    #[arg(default_value = "fixedu8")]
+    dotpacking8_values: String,
+
+    /// Skip component reordering for encoders that support it (dotpacking8 with
+    /// 'fixedu8' or 'f16' values, whose quantization needs no training). Reordering only
+    /// permutes components, so it never changes scores -- it trades build time for a
+    /// smaller, faster index.
     #[clap(long, action)]
     no_train: bool,
 }
@@ -172,7 +179,10 @@ fn dispatch(args: Args) -> bool {
         println!("Dotvbyte encoder: quantizing values using FixedU8Q.");
     }
     if encoder == "dotpacking8" {
-        println!("Dotpacking8 encoder: quantizing values using FixedU8Q.");
+        println!(
+            "Dotpacking8 encoder: {} components, {} values.",
+            component_type, args.dotpacking8_values
+        );
         println!(
             "Component reordering (decreasing frequency): {}",
             if args.no_train { "disabled" } else { "enabled" }
@@ -283,13 +293,6 @@ fn dispatch(args: Args) -> bool {
             }
             // Sparse dataset logic
             if encoder == "dotpacking8" {
-                if component_type != "u16" {
-                    eprintln!(
-                        "Dotpacking8 encoder requires component_type='u16' (found '{}').",
-                        component_type
-                    );
-                    return false;
-                }
                 if distance != "dotproduct" {
                     eprintln!("Dotpacking8 encoder supports only distance='dotproduct'.");
                     return false;
@@ -302,14 +305,15 @@ fn dispatch(args: Args) -> bool {
                     );
                     return false;
                 }
-                compute_sparse_groundtruth_dotpacking8(
+                return compute_sparse_groundtruth_dotpacking8(
                     input_path,
                     query_path,
                     output_path,
                     k,
+                    &component_type,
+                    &args.dotpacking8_values.to_lowercase(),
                     !args.no_train,
                 );
-                return true;
             }
             if encoder == "dotvbyte" {
                 if component_type != "u16" {
@@ -932,42 +936,135 @@ fn compute_sparse_groundtruth_dotvbyte<V>(
     }
 }
 
+/// Builds the requested DotPacking8 encoder, trains it and runs the exhaustive search.
+/// Returns false if the component type / value combination is not supported.
+#[allow(clippy::too_many_arguments)]
 fn compute_sparse_groundtruth_dotpacking8(
     input_path: String,
     query_path: String,
     output_path: String,
     k: usize,
+    component_type: &str,
+    values: &str,
     train: bool,
-) {
-    use vectorium::DatasetGrowable;
+) -> bool {
     use vectorium::{
-        DotPacking8FixedU8Dataset, DotPacking8FixedU8DatasetGrowable, DotPacking8FixedU8Encoder,
+        BridgedDotPacking8U32ScalarU8Encoder, DotPacking8U16F16Encoder,
+        DotPacking8U16FixedU8Encoder, DotPacking8U16Scalar4BitEncoder,
+        DotPacking8U16ScalarU8Encoder,
     };
 
-    let dataset_plain: PlainSparseDataset<u16, f32, distances::DotProduct> =
-        readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
-    let queries: PlainSparseDataset<u16, f32, distances::DotProduct> =
-        readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
+    // Value quantizers with per-component steps cannot skip training: their `train` both
+    // reorders components and fits the steps.
+    let needs_training = !matches!(values, "fixedu8" | "f16");
+    if !train && needs_training {
+        eprintln!(
+            "--no-train is only supported with dotpacking8 values 'fixedu8' or 'f16' \
+             ('{values}' needs training to fit its quantization steps)."
+        );
+        return false;
+    }
+
+    fn timed(label: &str, f: impl FnOnce()) {
+        let start = Instant::now();
+        f();
+        println!("{label} in {:.3}s", start.elapsed().as_secs_f64());
+    }
+    const TRAIN_LABEL: &str = "Training (component reordering + value quantizer) computed";
+
+    match component_type {
+        "u16" => {
+            let dataset_plain: PlainSparseDataset<u16, f32, distances::DotProduct> =
+                readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
+            let queries: PlainSparseDataset<u16, f32, distances::DotProduct> =
+                readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
+            let dim = dataset_plain.output_dim();
+            match values {
+                "fixedu8" => {
+                    let mut encoder = DotPacking8U16FixedU8Encoder::new(dim);
+                    if train {
+                        timed(TRAIN_LABEL, || encoder.train(&dataset_plain));
+                    }
+                    run_packed_sparse_groundtruth(encoder, &dataset_plain, &queries, output_path, k);
+                }
+                "scalaru8" => {
+                    let mut encoder = DotPacking8U16ScalarU8Encoder::new(dim);
+                    timed(TRAIN_LABEL, || encoder.train(&dataset_plain));
+                    run_packed_sparse_groundtruth(encoder, &dataset_plain, &queries, output_path, k);
+                }
+                "f16" => {
+                    let mut encoder = DotPacking8U16F16Encoder::new(dim);
+                    if train {
+                        timed(TRAIN_LABEL, || encoder.train(&dataset_plain));
+                    }
+                    run_packed_sparse_groundtruth(encoder, &dataset_plain, &queries, output_path, k);
+                }
+                "scalar4bit" => {
+                    let mut encoder = DotPacking8U16Scalar4BitEncoder::new(dim);
+                    timed(TRAIN_LABEL, || encoder.train(&dataset_plain));
+                    run_packed_sparse_groundtruth(encoder, &dataset_plain, &queries, output_path, k);
+                }
+                _ => {
+                    eprintln!(
+                        "Unknown dotpacking8 values='{values}' for component_type='u16'. \
+                         Use 'fixedu8'|'scalaru8'|'f16'|'scalar4bit'."
+                    );
+                    return false;
+                }
+            }
+        }
+        "u32" => {
+            if values != "scalaru8" {
+                eprintln!(
+                    "Dotpacking8 with component_type='u32' (bridged encoder) supports only \
+                     values='scalaru8' (found '{values}')."
+                );
+                return false;
+            }
+            let dataset_plain: PlainSparseDataset<u32, f32, distances::DotProduct> =
+                readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
+            let queries: PlainSparseDataset<u32, f32, distances::DotProduct> =
+                readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
+            let mut encoder = BridgedDotPacking8U32ScalarU8Encoder::new(dataset_plain.output_dim());
+            timed(TRAIN_LABEL, || encoder.train(&dataset_plain));
+            run_packed_sparse_groundtruth(encoder, &dataset_plain, &queries, output_path, k);
+        }
+        _ => {
+            eprintln!(
+                "Dotpacking8 encoder requires component_type='u16' or 'u32' (found '{component_type}')."
+            );
+            return false;
+        }
+    }
+    true
+}
+
+/// Encodes `dataset_plain` with an already trained packed `encoder`, runs the exhaustive
+/// top-k search for every query, prints size/timing statistics and writes the results.
+fn run_packed_sparse_groundtruth<E>(
+    encoder: E,
+    dataset_plain: &PlainSparseDataset<E::InputComponentType, f32, distances::DotProduct>,
+    queries: &PlainSparseDataset<E::InputComponentType, f32, distances::DotProduct>,
+    output_path: String,
+    k: usize,
+) where
+    E: vectorium::PackedSparseVectorEncoder<InputValueType = f32>
+        + vectorium::VectorEncoder<Distance = distances::DotProduct>
+        + SpaceUsage
+        + Sync,
+    PlainSparseDataset<E::InputComponentType, f32, distances::DotProduct>: SpaceUsage,
+{
+    use vectorium::{DatasetGrowable, PackedSparseDataset, PackedSparseDatasetGrowable};
 
     let plain_bytes = dataset_plain.space_usage_bytes();
     let nnz = dataset_plain.nnz();
 
-    let mut encoder = DotPacking8FixedU8Encoder::new(dataset_plain.output_dim());
-    if train {
-        let start = Instant::now();
-        encoder.train(&dataset_plain);
-        println!(
-            "Component reordering computed in {:.3}s",
-            start.elapsed().as_secs_f64()
-        );
-    }
-
     let start = Instant::now();
-    let mut growable = DotPacking8FixedU8DatasetGrowable::new(encoder);
+    let mut growable = PackedSparseDatasetGrowable::new(encoder);
     for v in dataset_plain.iter() {
         growable.push(v);
     }
-    let dataset: DotPacking8FixedU8Dataset = growable.into();
+    let dataset: PackedSparseDataset<E> = growable.into();
     println!("Encoding completed in {:.3}s", start.elapsed().as_secs_f64());
 
     println!("N documents: {}", dataset.len());

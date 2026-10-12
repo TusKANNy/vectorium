@@ -10,18 +10,18 @@ use crate::core::vector_encoder::{
 };
 use crate::distances::DotProduct;
 use crate::encoders::dotpacking8::common::{
-    simd_prefix_sum, fast_lane_gather, encode_blocks, compute_safe_simd_padding, DotPacking8f16Iter
+    simd_prefix_sum, fast_lane_gather, encode_blocks, compute_safe_simd_padding, DotPacking8F16Iter
 };
 
 #[derive(Clone)]
-pub struct DotPacking8f16View<'a> {
+pub struct DotPacking8U16F16View<'a> {
     pub n: usize,
     pub selectors: &'a [u8],
     pub payloads: &'a [u8],
     pub values: &'a [f16],
 }
 
-impl<'a> DotPacking8f16View<'a> {
+impl<'a> DotPacking8U16F16View<'a> {
     /// Split one encoded vector into its header, selectors, gap payload and values.
     ///
     /// # Safety
@@ -46,8 +46,8 @@ impl<'a> DotPacking8f16View<'a> {
         }
     }
 
-    pub fn iter_raw(&self) -> DotPacking8f16Iter<'a> {
-        DotPacking8f16Iter {
+    pub fn iter_raw(&self) -> DotPacking8F16Iter<'a> {
+        DotPacking8F16Iter {
             n: self.n,
             selectors: self.selectors,
             bulk_blocks: self.n / 8,
@@ -60,13 +60,13 @@ impl<'a> DotPacking8f16View<'a> {
 
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct DotPacking8f16Encoder {
+pub struct DotPacking8U16F16Encoder {
     pub dim: usize,
     pub component_mapping: Option<Box<[u16]>>,
     pub inverse_component_mapping: Option<Box<[u16]>>,
 }
 
-impl DotPacking8f16Encoder {
+impl DotPacking8U16F16Encoder {
     pub fn new(input_dim: usize) -> Self {
         Self {
             dim: input_dim,
@@ -126,7 +126,7 @@ impl DotPacking8f16Encoder {
     }
 }
 
-impl SpaceUsage for DotPacking8f16Encoder {
+impl SpaceUsage for DotPacking8U16F16Encoder {
     fn space_usage_bytes(&self) -> usize {
         let mapping_size = self
             .component_mapping
@@ -140,20 +140,20 @@ impl SpaceUsage for DotPacking8f16Encoder {
     }
 }
 
-impl VectorEncoder for DotPacking8f16Encoder {
+impl VectorEncoder for DotPacking8U16F16Encoder {
     type Distance = DotProduct;
     type InputVector<'a> = SparseVectorView<'a, u16, f32>;
     type QueryVector<'q> = SparseVectorView<'q, u16, f32>;
     type EncodedVector<'a> = PackedVectorView<'a, u64>;
-    type Evaluator<'e> = DotPacking8f16QueryEvaluator<'e>;
+    type Evaluator<'e> = DotPacking8U16F16QueryEvaluator<'e>;
 
     fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
-        DotPacking8f16QueryEvaluator::new(query, self)
+        DotPacking8U16F16QueryEvaluator::new(query, self)
     }
 
     fn vector_evaluator<'e, 'v>(&'e self, vector: Self::EncodedVector<'v>) -> Self::Evaluator<'e> {
         let decoded = <Self as SparseDataEncoder>::decode_vector(self, vector);
-        DotPacking8f16QueryEvaluator::new(decoded.as_view(), self)
+        DotPacking8U16F16QueryEvaluator::new(decoded.as_view(), self)
     }
 
     fn output_dim(&self) -> usize {
@@ -165,7 +165,7 @@ impl VectorEncoder for DotPacking8f16Encoder {
     }
 }
 
-impl SparseDataEncoder for DotPacking8f16Encoder {
+impl SparseDataEncoder for DotPacking8U16F16Encoder {
     type InputComponentType = u16;
     type InputValueType = f32;
     type OutputComponentType = u16;
@@ -175,7 +175,7 @@ impl SparseDataEncoder for DotPacking8f16Encoder {
         &self,
         encoded: Self::EncodedVector<'a>,
     ) -> SparseVectorOwned<Self::InputComponentType, f32> {
-        let view = unsafe { DotPacking8f16View::from_unchecked_slice(encoded.data()) };
+        let view = unsafe { DotPacking8U16F16View::from_unchecked_slice(encoded.data()) };
         let n = view.n;
 
         let mut decoded_comp = Vec::with_capacity(n);
@@ -226,7 +226,7 @@ impl SparseDataEncoder for DotPacking8f16Encoder {
     }
 }
 
-impl PackedSparseVectorEncoder for DotPacking8f16Encoder {
+impl PackedSparseVectorEncoder for DotPacking8U16F16Encoder {
     type PackedDataType = u64;
 
     fn push_encoded<'a, OutputContainer>(
@@ -296,13 +296,13 @@ impl PackedSparseVectorEncoder for DotPacking8f16Encoder {
     }
 }
 
-pub struct DotPacking8f16QueryEvaluator<'a> {
+pub struct DotPacking8U16F16QueryEvaluator<'a> {
     dense_query: Vec<f32>,
-    _encoder: &'a DotPacking8f16Encoder,
+    _encoder: &'a DotPacking8U16F16Encoder,
 }
 
-impl<'a> DotPacking8f16QueryEvaluator<'a> {
-    pub fn new(query: SparseVectorView<'_, u16, f32>, encoder: &'a DotPacking8f16Encoder) -> Self {
+impl<'a> DotPacking8U16F16QueryEvaluator<'a> {
+    pub fn new(query: SparseVectorView<'_, u16, f32>, encoder: &'a DotPacking8U16F16Encoder) -> Self {
         let mut dense_query = vec![0.0f32; encoder.dim];
         for (&c, &v) in query.components().iter().zip(query.values().iter()) {
             let mapped_c = if let Some(mapping) = &encoder.component_mapping {
@@ -319,22 +319,25 @@ impl<'a> DotPacking8f16QueryEvaluator<'a> {
     }
 }
 
-impl<'a, 'v> QueryEvaluator<PackedVectorView<'v, u64>> for DotPacking8f16QueryEvaluator<'a> {
+impl<'a, 'v> QueryEvaluator<PackedVectorView<'v, u64>> for DotPacking8U16F16QueryEvaluator<'a> {
     type Distance = DotProduct;
 
     #[inline]
     fn compute_distance(&self, vector: PackedVectorView<'v, u64>) -> Self::Distance {
-        let view = unsafe { DotPacking8f16View::from_unchecked_slice(vector.data()) };
+        let view = unsafe { DotPacking8U16F16View::from_unchecked_slice(vector.data()) };
         let mut acc = Simd::<f32, 8>::splat(0.0);
         let mut query_ptr = self.dense_query.as_slice();
 
         let mut iter = view.iter_raw();
         for (gaps, values) in &mut iter {
             let components = simd_prefix_sum(gaps);
-            let query_values = fast_lane_gather(query_ptr, components);
+            // SAFETY: every relative component is < query_ptr.len(), invariant (5) in `common.rs`.
+            let query_values = unsafe { fast_lane_gather(query_ptr, components) };
 
             acc = query_values.mul_add(values, acc);
             let last_component = components[7];
+            debug_assert!(last_component as usize <= query_ptr.len());
+            // SAFETY: `last_component <= query_ptr.len()` by invariant (5) in `common.rs`.
             query_ptr = unsafe { query_ptr.split_at_unchecked(last_component as usize).1 };
         }
         let mut total_unscaled = acc.reduce_sum();
@@ -389,7 +392,7 @@ mod tests {
 
     #[test]
     fn compute_distance_only_bulk() {
-        let encoder = DotPacking8f16Encoder::new(100);
+        let encoder = DotPacking8U16F16Encoder::new(100);
 
         let binding = [1.0, 3.0, 2.0, 3.5, 1.5, 2.0, 1.0, 2.0];
         let input = SparseVectorView::new(&[2, 4, 8, 24, 36, 48, 53, 90], &binding);
@@ -409,7 +412,7 @@ mod tests {
 
     #[test]
     fn compute_distance_bulk_and_tail() {
-        let encoder = DotPacking8f16Encoder::new(100);
+        let encoder = DotPacking8U16F16Encoder::new(100);
 
         let binding = [1.0, 3.0, 2.0, 3.5, 1.5, 2.0, 1.0, 2.0, 3.0, 2.5];
         let input = SparseVectorView::new(&[2, 4, 8, 24, 28, 36, 48, 53, 70, 90], &binding);
@@ -436,7 +439,7 @@ mod tests {
             components.push(curr as u16);
         }
 
-        let encoder = DotPacking8f16Encoder::new(u16::MAX as usize + 1);
+        let encoder = DotPacking8U16F16Encoder::new(u16::MAX as usize + 1);
 
         let values: Vec<_> = (0..num_vals).map(|i| 1.0 + (i % 7) as f32 / 10.0).collect();
         let input = SparseVectorView::new(&components, &values);
@@ -505,7 +508,7 @@ mod tests {
 
     #[test]
     fn block8_decode_roundtrip() {
-        let mut encoder = DotPacking8f16Encoder::new(100);
+        let mut encoder = DotPacking8U16F16Encoder::new(100);
 
         let binding = [1.0, 3.0, 2.0, 3.5];
         let input_components = [0, 4, 8, 24];

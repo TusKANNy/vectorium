@@ -1,8 +1,8 @@
 use crate::encoders::dotpacking8::encoder::{DotPacking8Encoder, DotPacking8QueryEvaluator};
 use crate::encoders::dotpacking8::quantizer::FixedU8Quantizer;
 
-pub type DotPacking8FixedU8Encoder = DotPacking8Encoder<FixedU8Quantizer>;
-pub type DotPacking8Fixedu8QueryEvaluator<'e> = DotPacking8QueryEvaluator<'e, FixedU8Quantizer>;
+pub type DotPacking8U16FixedU8Encoder = DotPacking8Encoder<FixedU8Quantizer>;
+pub type DotPacking8U16FixedU8QueryEvaluator<'e> = DotPacking8QueryEvaluator<'e, FixedU8Quantizer>;
 
 impl DotPacking8Encoder<FixedU8Quantizer> {
     pub fn new(input_dim: usize) -> Self {
@@ -227,12 +227,12 @@ mod tests {
     fn dataset_alias_scores_and_round_trips() {
         use crate::core::dataset::Dataset;
         use crate::{
-            DotPacking8FixedU8Dataset, DotPacking8FixedU8DatasetGrowable, IndexSerializer,
+            DotPacking8U16FixedU8Dataset, DotPacking8U16FixedU8DatasetGrowable, IndexSerializer,
         };
 
         let dim = 128;
         let mut growable =
-            DotPacking8FixedU8DatasetGrowable::new(DotPacking8FixedU8Encoder::new(dim));
+            DotPacking8U16FixedU8DatasetGrowable::new(DotPacking8U16FixedU8Encoder::new(dim));
 
         let c0 = [1_u16, 10, 100];
         let v0 = [1.5_f32, 2.0, 2.5];
@@ -241,7 +241,7 @@ mod tests {
         growable.push(SparseVectorView::new(&c0, &v0));
         growable.push(SparseVectorView::new(&c1, &v1));
 
-        let dataset: DotPacking8FixedU8Dataset = growable.into();
+        let dataset: DotPacking8U16FixedU8Dataset = growable.into();
         assert_eq!(dataset.len(), 2);
         assert_eq!(dataset.nnz(), 5);
 
@@ -263,7 +263,7 @@ mod tests {
         // The alias must also satisfy the blanket `IndexSerializer for T: Dataset`.
         let path = std::env::temp_dir().join("vectorium_dotpacking8_fixedu8_round_trip.bin");
         dataset.save_index(path.to_str().unwrap()).unwrap();
-        let loaded = DotPacking8FixedU8Dataset::load_index(path.to_str().unwrap()).unwrap();
+        let loaded = DotPacking8U16FixedU8Dataset::load_index(path.to_str().unwrap()).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(dataset, loaded);
     }

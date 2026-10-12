@@ -1,3 +1,31 @@
+//! Shared block-8 gap codec of the `dotpacking8` encoders: block packing (`encode_blocks`),
+//! SIMD decoding (`DotPacking8Iter`, `DotPacking8F16Iter`), prefix sums and the gather kernel.
+//!
+//! # Safety invariants
+//!
+//! Decoding is unchecked for speed. It is sound because every encoded vector is produced by
+//! the matching encoder's `push_encoded`, which guarantees:
+//!
+//! 1. **Layout.** `[n: u16][selectors: ceil(ceil(n/8)/2) bytes][gap payload][padding][values]`,
+//!    padded to whole `u64` words. Values are the last `n` entries (`n` bytes, `2n` for `f16`,
+//!    `nibble_bytes(n)` for 4-bit), so the views locate them from the end of the slice.
+//! 2. **Payload over-read.** The decoder reads 16 bytes from the start of every block
+//!    (`load128_and_broadcast_to_256`), more than the block occupies. `compute_safe_simd_padding`
+//!    sizes the padding so that at least 16 bytes are readable from the start of the last block,
+//!    counting the padding and the value bytes that follow.
+//! 3. **Selectors.** Block `i` uses the nibble `i % 2` of selector byte `i / 2`; the iterators
+//!    never go past block `ceil(n/8) - 1`, so `get_unchecked` on the selectors stays in bounds.
+//! 4. **Values.** The value cursor advances by 8 per full block and by `n % 8` in the tail:
+//!    exactly `n` values in total.
+//! 5. **Gather indices.** Components are mapped ids `< dim`, and the dense query has `dim`
+//!    entries. Evaluators gather at `prefix_sum(gaps)` relative to a query slice that starts at
+//!    the previous block's last component, then advance the slice with `split_at_unchecked` by
+//!    the block's last relative component. Every index therefore stays below the remaining
+//!    slice length (`debug_assert!`ed at each site).
+//!
+//! Violating (1)-(4) means the blob was not produced by `push_encoded` (or was corrupted):
+//! this is why the view constructors are `unsafe`.
+
 use half::f16;
 use std::simd::Simd;
 
@@ -100,8 +128,17 @@ pub fn simd_prefix_sum(mut n: Simd<u32, N>) -> Simd<u32, N> {
     n
 }
 
+/// Gather `query_ptr[components[i]]` for the 8 lanes.
+///
+/// # Safety
+///
+/// Every lane of `components` must be `< query_ptr.len()`: the gather is unchecked.
 #[inline(always)]
-pub fn fast_lane_gather(query_ptr: &[f32], components: Simd<u32, N>) -> Simd<f32, N> {
+pub unsafe fn fast_lane_gather(query_ptr: &[f32], components: Simd<u32, N>) -> Simd<f32, N> {
+    debug_assert!(
+        components.to_array().iter().all(|&c| (c as usize) < query_ptr.len()),
+        "gather index out of bounds"
+    );
     #[cfg(target_arch = "x86_64")]
     unsafe {
         use std::arch::x86_64::*;
@@ -159,6 +196,8 @@ pub fn compute_safe_simd_padding(
     space_after - bytes_after_components
 }
 
+/// Block-by-block decoder over one encoded vector with `u8` values. Built by a view
+/// (`iter_raw`) or `nibble4bit::gap_iter`; relies on the module-level safety invariants.
 pub struct DotPacking8Iter<'a> {
     pub bulk_blocks: usize,
     pub block_idx: usize,
@@ -197,13 +236,16 @@ impl<'a> ExactSizeIterator for DotPacking8Iter<'a> {}
 impl<'a> DotPacking8Iter<'a> {
     #[inline(always)]
     fn extract_block_b(&self) -> usize {
+        debug_assert!(self.block_idx / 2 < self.selectors.len());
+        // SAFETY: invariant (3) in the module docs.
         let sel_byte = *unsafe { self.selectors.get_unchecked(self.block_idx / 2) };
         (((sel_byte >> ((self.block_idx & 1) << 2)) & 0x0F) as usize) + 1
     }
 
     #[inline(always)]
     fn decode_lane_with_b(&mut self, b: usize, advance_bytes: usize) -> Simd<u32, 8> {
-        let comps = load128_and_broadcast_to_256(self.payload_ptr);
+        // SAFETY: 16 bytes are readable from the start of every block, invariant (2).
+        let comps = unsafe { load128_and_broadcast_to_256(self.payload_ptr) };
         let table = unsafe { BLOCK8_TABLE.get_unchecked(b - 1) };
         let shuffled = fast_lane_swizzle(comps, table.shuffle);
         let gaps: Simd<u32, 8> = unsafe { std::mem::transmute(shuffled) };
@@ -255,7 +297,8 @@ pub unsafe fn f16_ptr_to_f32x8(ptr: *const f16) -> Simd<f32, 8> {
     }
 }
 
-pub struct DotPacking8f16Iter<'a> {
+/// Same as [`DotPacking8Iter`] with `f16` values.
+pub struct DotPacking8F16Iter<'a> {
     pub bulk_blocks: usize,
     pub block_idx: usize,
     pub n: usize,
@@ -264,7 +307,7 @@ pub struct DotPacking8f16Iter<'a> {
     pub val_ptr: *const f16,
 }
 
-impl<'a> Iterator for DotPacking8f16Iter<'a> {
+impl<'a> Iterator for DotPacking8F16Iter<'a> {
     type Item = (Simd<u32, 8>, Simd<f32, 8>);
 
     #[inline(always)]
@@ -288,18 +331,21 @@ impl<'a> Iterator for DotPacking8f16Iter<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for DotPacking8f16Iter<'a> {}
+impl<'a> ExactSizeIterator for DotPacking8F16Iter<'a> {}
 
-impl<'a> DotPacking8f16Iter<'a> {
+impl<'a> DotPacking8F16Iter<'a> {
     #[inline(always)]
     fn extract_block_b(&self) -> usize {
+        debug_assert!(self.block_idx / 2 < self.selectors.len());
+        // SAFETY: invariant (3) in the module docs.
         let sel_byte = *unsafe { self.selectors.get_unchecked(self.block_idx / 2) };
         (((sel_byte >> ((self.block_idx & 1) << 2)) & 0x0F) as usize) + 1
     }
 
     #[inline(always)]
     fn decode_lane_with_b(&mut self, b: usize, advance_bytes: usize) -> Simd<u32, 8> {
-        let comps = load128_and_broadcast_to_256(self.payload_ptr);
+        // SAFETY: 16 bytes are readable from the start of every block, invariant (2).
+        let comps = unsafe { load128_and_broadcast_to_256(self.payload_ptr) };
         let table = unsafe { BLOCK8_TABLE.get_unchecked(b - 1) };
         let shuffled = fast_lane_swizzle(comps, table.shuffle);
         let gaps: Simd<u32, 8> = unsafe { std::mem::transmute(shuffled) };

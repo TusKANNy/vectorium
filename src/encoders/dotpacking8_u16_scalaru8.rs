@@ -1,8 +1,8 @@
 use crate::encoders::dotpacking8::encoder::{DotPacking8Encoder, DotPacking8QueryEvaluator};
 use crate::encoders::dotpacking8::quantizer::ScalarU8Quantizer;
 
-pub type DotPacking8ScalarU8Encoder = DotPacking8Encoder<ScalarU8Quantizer>;
-pub type DotPacking8Scalaru8QueryEvaluator<'e> = DotPacking8QueryEvaluator<'e, ScalarU8Quantizer>;
+pub type DotPacking8U16ScalarU8Encoder = DotPacking8Encoder<ScalarU8Quantizer>;
+pub type DotPacking8U16ScalarU8QueryEvaluator<'e> = DotPacking8QueryEvaluator<'e, ScalarU8Quantizer>;
 
 impl DotPacking8Encoder<ScalarU8Quantizer> {
     pub fn new(input_dim: usize) -> Self {
@@ -51,7 +51,7 @@ mod tests {
     }
 
     fn quantized_values(
-        encoder: &DotPacking8ScalarU8Encoder,
+        encoder: &DotPacking8U16ScalarU8Encoder,
         components: &[u16],
         values: &[f32],
     ) -> Vec<f32> {
@@ -92,7 +92,7 @@ mod tests {
     fn compute_distance_only_bulk() {
         let comps = [2_u16, 4, 8, 24, 36, 48, 53, 90];
         let training = build_training_data(100, &comps);
-        let mut encoder = DotPacking8ScalarU8Encoder::new(100);
+        let mut encoder = DotPacking8U16ScalarU8Encoder::new(100);
         encoder.train(&training);
 
         let values = [1.0_f32, 3.0, 2.0, 3.0, 1.0, 2.0, 1.0, 2.0];
@@ -115,7 +115,7 @@ mod tests {
     fn compute_distance_bulk_and_tail() {
         let comps = [2_u16, 4, 8, 24, 28, 36, 48, 53, 70, 90];
         let training = build_training_data(100, &comps);
-        let mut encoder = DotPacking8ScalarU8Encoder::new(100);
+        let mut encoder = DotPacking8U16ScalarU8Encoder::new(100);
         encoder.train(&training);
 
         let values = [1.0_f32, 3.0, 2.0, 3.0, 1.0, 2.0, 1.0, 2.0, 3.0, 2.0];
@@ -144,7 +144,7 @@ mod tests {
         }
 
         let training = build_training_data(u16::MAX as usize + 1, &components);
-        let mut encoder = DotPacking8ScalarU8Encoder::new(u16::MAX as usize + 1);
+        let mut encoder = DotPacking8U16ScalarU8Encoder::new(u16::MAX as usize + 1);
         encoder.train(&training);
 
         let values: Vec<_> = (0..num_vals).map(|i| 1.0 + (i % 7) as f32).collect();
@@ -208,7 +208,7 @@ mod tests {
     fn block8_decode_roundtrip() {
         let components = [0_u16, 4, 8, 24];
         let training = build_training_data(100, &components);
-        let mut encoder = DotPacking8ScalarU8Encoder::new(100);
+        let mut encoder = DotPacking8U16ScalarU8Encoder::new(100);
         encoder.train(&training);
 
         let values = [1.0_f32, 3.0, 2.0, 3.0];

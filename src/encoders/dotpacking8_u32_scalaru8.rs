@@ -420,6 +420,9 @@ impl<'e, 'v> QueryEvaluator<PackedVectorView<'v, u64>>
         let mut iter = view.iter_raw();
         for (gaps, values) in &mut iter {
             let components = simd_prefix_sum(gaps);
+            debug_assert!(components.to_array().iter().all(|&c| (c as usize) < query_ptr.len()));
+            // SAFETY: every relative component is < query_ptr.len(), invariant (5) in
+            // `dotpacking8/common.rs` (bridges are mapped ids < dim too).
             let query_values = unsafe {
                 Simd::gather_select_unchecked(
                     query_ptr,
@@ -430,6 +433,8 @@ impl<'e, 'v> QueryEvaluator<PackedVectorView<'v, u64>>
             };
             acc = query_values.mul_add(values.cast(), acc);
             let last_component = components[N - 1];
+            debug_assert!(last_component as usize <= query_ptr.len());
+            // SAFETY: `last_component <= query_ptr.len()` by invariant (5) in `common.rs`.
             query_ptr = unsafe { query_ptr.split_at_unchecked(last_component as usize).1 };
         }
         let mut total = acc.reduce_sum();

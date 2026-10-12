@@ -204,11 +204,13 @@ where
 
 /// Load 16 bytes from `ptr` and broadcast them into both halves of a 256-bit vector.
 ///
-/// The load is unaligned, so `ptr` only needs 16 readable bytes.
+/// # Safety
+///
+/// `ptr` must be valid for reading 16 bytes. The load is unaligned, so no alignment is needed.
 ///
 /// Ported from branch feature/quantization (7e5f5a0), originally by luca.rizzo.
 #[inline(always)]
-pub fn load128_and_broadcast_to_256(ptr: *const u8) -> Simd<u8, 32> {
+pub unsafe fn load128_and_broadcast_to_256(ptr: *const u8) -> Simd<u8, 32> {
     use std::simd::simd_swizzle;
     const BROADCAST_MASK: [usize; 32] = [
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,

@@ -1,7 +1,7 @@
 //! `dotpacking8` component compression blended with 4-bit scalar value compression.
 //!
 //! This is the non-clustered counterpart of `CDotPacking8Scalar4BitEncoder` (not imported on
-//! this branch yet): it keeps the component codec of [`crate::DotPacking8ScalarU8Encoder`]
+//! this branch yet): it keeps the component codec of [`crate::DotPacking8U16ScalarU8Encoder`]
 //! verbatim (decreasing-frequency component permutation + a single variable-bit gap-coded stream over all components, with
 //! a dense-query SIMD gather), but stores the per-component **values** as 4-bit nibbles
 //! instead of full `u8` bytes, roughly halving the value footprint.
@@ -45,14 +45,14 @@ const N: usize = 8;
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-pub struct DotPack8Scalar4BitView<'a> {
+pub struct DotPacking8U16Scalar4BitView<'a> {
     pub n: usize,
     pub selectors: &'a [u8],
     pub payloads: &'a [u8],
     pub values: &'a [u8],
 }
 
-impl<'a> DotPack8Scalar4BitView<'a> {
+impl<'a> DotPacking8U16Scalar4BitView<'a> {
     /// Split one encoded vector into its header, selectors, gap payload and values.
     ///
     /// # Safety
@@ -83,14 +83,14 @@ impl<'a> DotPack8Scalar4BitView<'a> {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct DotPacking8Scalar4BitEncoder {
+pub struct DotPacking8U16Scalar4BitEncoder {
     pub dim: usize,
     pub quantizer: Scalar4BitQuantizer,
     pub component_mapping: Option<Box<[u16]>>,
     pub inverse_component_mapping: Option<Box<[u16]>>,
 }
 
-impl DotPacking8Scalar4BitEncoder {
+impl DotPacking8U16Scalar4BitEncoder {
     pub fn new(input_dim: usize) -> Self {
         Self {
             dim: input_dim,
@@ -140,15 +140,15 @@ impl DotPacking8Scalar4BitEncoder {
 // Query evaluator.
 // ---------------------------------------------------------------------------
 
-pub struct DotPacking8Scalar4BitQueryEvaluator<'a> {
+pub struct DotPacking8U16Scalar4BitQueryEvaluator<'a> {
     dense_query: Vec<f32>,
-    _encoder: &'a DotPacking8Scalar4BitEncoder,
+    _encoder: &'a DotPacking8U16Scalar4BitEncoder,
 }
 
-impl<'a> DotPacking8Scalar4BitQueryEvaluator<'a> {
+impl<'a> DotPacking8U16Scalar4BitQueryEvaluator<'a> {
     pub fn new(
         query: SparseVectorView<'_, u16, f32>,
-        encoder: &'a DotPacking8Scalar4BitEncoder,
+        encoder: &'a DotPacking8U16Scalar4BitEncoder,
     ) -> Self {
         let mut dense_query = vec![0.0f32; encoder.dim];
         for (&c, &v) in query.components().iter().zip(query.values().iter()) {
@@ -166,12 +166,12 @@ impl<'a> DotPacking8Scalar4BitQueryEvaluator<'a> {
     }
 }
 
-impl<'a, 'v> QueryEvaluator<PackedVectorView<'v, u64>> for DotPacking8Scalar4BitQueryEvaluator<'a> {
+impl<'a, 'v> QueryEvaluator<PackedVectorView<'v, u64>> for DotPacking8U16Scalar4BitQueryEvaluator<'a> {
     type Distance = DotProduct;
 
     #[inline]
     fn compute_distance(&self, vector: PackedVectorView<'v, u64>) -> DotProduct {
-        let view = unsafe { DotPack8Scalar4BitView::from_unchecked_slice(vector.data()) };
+        let view = unsafe { DotPacking8U16Scalar4BitView::from_unchecked_slice(vector.data()) };
         let n = view.n;
 
         let mut acc = Simd::<f32, N>::splat(0.0);
@@ -183,10 +183,13 @@ impl<'a, 'v> QueryEvaluator<PackedVectorView<'v, u64>> for DotPacking8Scalar4Bit
             let gaps = it.decode_lane();
             it.block_idx += 1;
             let components = simd_prefix_sum(gaps);
-            let query_values = fast_lane_gather(query_ptr, components);
+            // SAFETY: every relative component is < query_ptr.len(), invariant (5) in `common.rs`.
+            let query_values = unsafe { fast_lane_gather(query_ptr, components) };
             let vals = nib.next_block_f32();
             acc = query_values.mul_add(vals, acc);
             let last_component = components[N - 1];
+            debug_assert!(last_component as usize <= query_ptr.len());
+            // SAFETY: `last_component <= query_ptr.len()` by invariant (5) in `common.rs`.
             query_ptr = unsafe { query_ptr.split_at_unchecked(last_component as usize).1 };
         }
         let mut total_unscaled = acc.reduce_sum();
@@ -208,22 +211,22 @@ impl<'a, 'v> QueryEvaluator<PackedVectorView<'v, u64>> for DotPacking8Scalar4Bit
 // Trait impls.
 // ---------------------------------------------------------------------------
 
-impl VectorEncoder for DotPacking8Scalar4BitEncoder {
+impl VectorEncoder for DotPacking8U16Scalar4BitEncoder {
     type Distance = DotProduct;
     type InputVector<'a> = SparseVectorView<'a, u16, f32>;
     type QueryVector<'q> = SparseVectorView<'q, u16, f32>;
     type EncodedVector<'a> = PackedVectorView<'a, u64>;
     type Evaluator<'e>
-        = DotPacking8Scalar4BitQueryEvaluator<'e>
+        = DotPacking8U16Scalar4BitQueryEvaluator<'e>
     where
         Self: 'e;
 
     fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
-        DotPacking8Scalar4BitQueryEvaluator::new(query, self)
+        DotPacking8U16Scalar4BitQueryEvaluator::new(query, self)
     }
     fn vector_evaluator<'e, 'v>(&'e self, vector: Self::EncodedVector<'v>) -> Self::Evaluator<'e> {
         let decoded = <Self as SparseDataEncoder>::decode_vector(self, vector);
-        DotPacking8Scalar4BitQueryEvaluator::new(decoded.as_view(), self)
+        DotPacking8U16Scalar4BitQueryEvaluator::new(decoded.as_view(), self)
     }
     fn output_dim(&self) -> usize {
         self.dim
@@ -233,7 +236,7 @@ impl VectorEncoder for DotPacking8Scalar4BitEncoder {
     }
 }
 
-impl SparseDataEncoder for DotPacking8Scalar4BitEncoder {
+impl SparseDataEncoder for DotPacking8U16Scalar4BitEncoder {
     type InputComponentType = u16;
     type InputValueType = f32;
     type OutputComponentType = u16;
@@ -243,7 +246,7 @@ impl SparseDataEncoder for DotPacking8Scalar4BitEncoder {
         &self,
         encoded: Self::EncodedVector<'a>,
     ) -> SparseVectorOwned<Self::InputComponentType, f32> {
-        let view = unsafe { DotPack8Scalar4BitView::from_unchecked_slice(encoded.data()) };
+        let view = unsafe { DotPacking8U16Scalar4BitView::from_unchecked_slice(encoded.data()) };
         let n = view.n;
 
         let mut decoded_comp = Vec::with_capacity(n);
@@ -308,7 +311,7 @@ impl SparseDataEncoder for DotPacking8Scalar4BitEncoder {
     }
 }
 
-impl PackedSparseVectorEncoder for DotPacking8Scalar4BitEncoder {
+impl PackedSparseVectorEncoder for DotPacking8U16Scalar4BitEncoder {
     type PackedDataType = u64;
 
     fn push_encoded<'a, OutputContainer>(
@@ -379,7 +382,7 @@ impl PackedSparseVectorEncoder for DotPacking8Scalar4BitEncoder {
     }
 }
 
-impl SpaceUsage for DotPacking8Scalar4BitEncoder {
+impl SpaceUsage for DotPacking8U16Scalar4BitEncoder {
     fn space_usage_bytes(&self) -> usize {
         let mapping_size = self
             .component_mapping
@@ -429,7 +432,7 @@ mod tests {
     }
 
     fn quantized_values(
-        encoder: &DotPacking8Scalar4BitEncoder,
+        encoder: &DotPacking8U16Scalar4BitEncoder,
         components: &[u16],
         values: &[f32],
     ) -> Vec<f32> {
@@ -468,7 +471,7 @@ mod tests {
     /// Encode `input`, score against `query`, and assert the SIMD score equals the
     /// brute-force dot over the encoder's own dequantized values.
     fn assert_parity(
-        encoder: &DotPacking8Scalar4BitEncoder,
+        encoder: &DotPacking8U16Scalar4BitEncoder,
         comps: &[u16],
         in_vals: &[f32],
         query_comps: &[u16],
@@ -502,7 +505,7 @@ mod tests {
         const DIM: usize = 4000;
         let all: Vec<u16> = (0u16..3000).collect();
         let training = build_training_data(DIM, &all);
-        let mut enc = DotPacking8Scalar4BitEncoder::new(DIM);
+        let mut enc = DotPacking8U16Scalar4BitEncoder::new(DIM);
         enc.train(&training);
 
         for &n in &NS {
@@ -518,7 +521,7 @@ mod tests {
         const DIM: usize = 200;
         let all: Vec<u16> = (0u16..100).collect();
         let training = build_training_data(DIM, &all);
-        let mut enc = DotPacking8Scalar4BitEncoder::new(DIM);
+        let mut enc = DotPacking8U16Scalar4BitEncoder::new(DIM);
         enc.train(&training);
 
         let comps: Vec<u16> = vec![0, 4, 8, 24, 28, 36, 48, 53, 70, 90];
@@ -532,7 +535,7 @@ mod tests {
         before_c: &[u16],
         before_v: &[f32],
         after: &SparseVectorView<u16, f32>,
-        encoder: &DotPacking8Scalar4BitEncoder,
+        encoder: &DotPacking8U16Scalar4BitEncoder,
     ) {
         assert_eq!(before_c, after.components());
         for (c, (v1, v2)) in before_c
@@ -553,7 +556,7 @@ mod tests {
         const DIM: usize = 4000;
         let all: Vec<u16> = (0u16..3000).collect();
         let training = build_training_data(DIM, &all);
-        let mut enc = DotPacking8Scalar4BitEncoder::new(DIM);
+        let mut enc = DotPacking8U16Scalar4BitEncoder::new(DIM);
         enc.train(&training);
 
         for &n in &NS {

@@ -61,14 +61,14 @@ pub use encoders::dense_scalar::{
     ScalarDenseQuantizerSquaredEuclidean, ScalarDenseQueryEvaluator, ScalarDenseSupportedDistance,
 };
 pub use encoders::dotpacking8_u16_fixedu8::{
-    DotPacking8FixedU8Encoder, DotPacking8Fixedu8QueryEvaluator,
+    DotPacking8U16FixedU8Encoder, DotPacking8U16FixedU8QueryEvaluator,
 };
-pub use encoders::dotpacking8_u16_f16::{DotPacking8f16Encoder, DotPacking8f16QueryEvaluator};
+pub use encoders::dotpacking8_u16_f16::{DotPacking8U16F16Encoder, DotPacking8U16F16QueryEvaluator};
 pub use encoders::dotpacking8_u16_scalar4bit::{
-    DotPacking8Scalar4BitEncoder, DotPacking8Scalar4BitQueryEvaluator,
+    DotPacking8U16Scalar4BitEncoder, DotPacking8U16Scalar4BitQueryEvaluator,
 };
 pub use encoders::dotpacking8_u16_scalaru8::{
-    DotPacking8ScalarU8Encoder, DotPacking8Scalaru8QueryEvaluator,
+    DotPacking8U16ScalarU8Encoder, DotPacking8U16ScalarU8QueryEvaluator,
 };
 pub use encoders::dotpacking8_u32_scalaru8::{
     BridgedDotPacking8U32ScalarU8Encoder, BridgedDotPacking8U32ScalarU8QueryEvaluator,
@@ -123,17 +123,17 @@ pub type PlainSparseDataset<C, V, D> = SparseDataset<PlainSparseQuantizer<C, V, 
 pub type PlainSparseDatasetGrowable<C, V, D> = SparseDatasetGrowable<PlainSparseQuantizer<C, V, D>>;
 
 // Useful type aliases for packed sparse dataset types
-pub type DotPacking8FixedU8Dataset = PackedSparseDataset<DotPacking8FixedU8Encoder>;
-pub type DotPacking8FixedU8DatasetGrowable =
-    PackedSparseDatasetGrowable<DotPacking8FixedU8Encoder>;
-pub type DotPacking8ScalarU8Dataset = PackedSparseDataset<DotPacking8ScalarU8Encoder>;
-pub type DotPacking8ScalarU8DatasetGrowable =
-    PackedSparseDatasetGrowable<DotPacking8ScalarU8Encoder>;
-pub type DotPacking8f16Dataset = PackedSparseDataset<DotPacking8f16Encoder>;
-pub type DotPacking8f16DatasetGrowable = PackedSparseDatasetGrowable<DotPacking8f16Encoder>;
-pub type DotPacking8Scalar4BitDataset = PackedSparseDataset<DotPacking8Scalar4BitEncoder>;
-pub type DotPacking8Scalar4BitDatasetGrowable =
-    PackedSparseDatasetGrowable<DotPacking8Scalar4BitEncoder>;
+pub type DotPacking8U16FixedU8Dataset = PackedSparseDataset<DotPacking8U16FixedU8Encoder>;
+pub type DotPacking8U16FixedU8DatasetGrowable =
+    PackedSparseDatasetGrowable<DotPacking8U16FixedU8Encoder>;
+pub type DotPacking8U16ScalarU8Dataset = PackedSparseDataset<DotPacking8U16ScalarU8Encoder>;
+pub type DotPacking8U16ScalarU8DatasetGrowable =
+    PackedSparseDatasetGrowable<DotPacking8U16ScalarU8Encoder>;
+pub type DotPacking8U16F16Dataset = PackedSparseDataset<DotPacking8U16F16Encoder>;
+pub type DotPacking8U16F16DatasetGrowable = PackedSparseDatasetGrowable<DotPacking8U16F16Encoder>;
+pub type DotPacking8U16Scalar4BitDataset = PackedSparseDataset<DotPacking8U16Scalar4BitEncoder>;
+pub type DotPacking8U16Scalar4BitDatasetGrowable =
+    PackedSparseDatasetGrowable<DotPacking8U16Scalar4BitEncoder>;
 pub type BridgedDotPacking8U32ScalarU8Dataset =
     PackedSparseDataset<BridgedDotPacking8U32ScalarU8Encoder>;
 pub type BridgedDotPacking8U32ScalarU8DatasetGrowable =
