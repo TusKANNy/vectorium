@@ -71,7 +71,7 @@ pub use encoders::dotpacking8_scalaru8::{
     DotPacking8ScalarU8Encoder, DotPacking8Scalaru8QueryEvaluator,
 };
 pub use encoders::dotpacking8_u32_scalaru8::{
-    OptimisticDotPacking8U32ScalarU8Encoder, OptimisticDotPacking8U32ScalarU8QueryEvaluator,
+    BridgedDotPacking8U32ScalarU8Encoder, BridgedDotPacking8U32ScalarU8QueryEvaluator,
 };
 pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Encoder, DotVByteFixedU8QueryEvaluator};
 #[cfg(feature = "multivec")]
@@ -134,10 +134,10 @@ pub type DotPacking8f16DatasetGrowable = PackedSparseDatasetGrowable<DotPacking8
 pub type DotPacking8Scalar4BitDataset = PackedSparseDataset<DotPacking8Scalar4BitEncoder>;
 pub type DotPacking8Scalar4BitDatasetGrowable =
     PackedSparseDatasetGrowable<DotPacking8Scalar4BitEncoder>;
-pub type OptimisticDotPacking8U32ScalarU8Dataset =
-    PackedSparseDataset<OptimisticDotPacking8U32ScalarU8Encoder>;
-pub type OptimisticDotPacking8U32ScalarU8DatasetGrowable =
-    PackedSparseDatasetGrowable<OptimisticDotPacking8U32ScalarU8Encoder>;
+pub type BridgedDotPacking8U32ScalarU8Dataset =
+    PackedSparseDataset<BridgedDotPacking8U32ScalarU8Encoder>;
+pub type BridgedDotPacking8U32ScalarU8DatasetGrowable =
+    PackedSparseDatasetGrowable<BridgedDotPacking8U32ScalarU8Encoder>;
 
 pub use core::dataset::{ScoredRange, ScoredVector};
 

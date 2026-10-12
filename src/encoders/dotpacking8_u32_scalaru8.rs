@@ -22,17 +22,26 @@ use rusty_perm::PermFromSorting as _;
 
 const N: usize = 8;
 
-/// Optimistic block-8 encoder for sparse vectors with `u32` components and scalar
+/// Bridged block-8 encoder for sparse vectors with `u32` components and scalar
 /// quantized `u8` values.
 ///
-/// Mirrors [`OptimisticDotVByteScalarU8Encoder`] but emits the block-8 packed format
-/// from [`crate::encoders::dotpacking8`] instead of the VByte format. The block-8
-/// encoding stores per-block gap bit-widths in a 4-bit selector field, so individual
-/// gaps must fit in 16 bits (`b <= 16`). To support `u32` components, this encoder
-/// injects synthetic zero-valued "bridge" coordinates whenever a delta would exceed
-/// `u16::MAX`, keeping the encoding on the fast SIMD path.
+/// Mirrors `OptimisticDotVByteScalarU8Encoder` (on `feature/quantization`) but emits the
+/// block-8 packed format from [`crate::encoders::dotpacking8`] instead of the VByte format.
+/// The block-8 encoding stores per-block gap bit-widths in a 4-bit selector field, so
+/// individual gaps must fit in 16 bits (`b <= 16`). To support `u32` components, this encoder
+/// injects synthetic zero-valued "bridge" coordinates whenever a gap (including the first,
+/// relative to 0) would exceed `u16::MAX`, keeping the encoding on the fast SIMD path.
+///
+/// # Invariant: code 0 marks a bridge
+///
+/// A real coordinate never quantizes to code 0: every input value is assumed to be at least
+/// its component's quantization step (`max / 255` over the training data), so its code is in
+/// `1..=255`. Code 0 is therefore reserved for bridges, which score zero and are removed by
+/// `decode_vector` by their code alone. This holds for learned sparse embeddings with
+/// strictly positive values whose components all occur in the training data (checked on
+/// SPLARE: no entry quantizes to 0); it is checked by a `debug_assert!` in `push_encoded`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct OptimisticDotPacking8U32ScalarU8Encoder {
+pub struct BridgedDotPacking8U32ScalarU8Encoder {
     dim: usize,
     quants: Box<[f32]>,
     component_mapping: Option<Box<[u32]>>,
@@ -40,9 +49,9 @@ pub struct OptimisticDotPacking8U32ScalarU8Encoder {
     inverse_component_mapping: Option<Box<[u32]>>,
 }
 
-impl sealed::Sealed for OptimisticDotPacking8U32ScalarU8Encoder {}
+impl sealed::Sealed for BridgedDotPacking8U32ScalarU8Encoder {}
 
-impl OptimisticDotPacking8U32ScalarU8Encoder {
+impl BridgedDotPacking8U32ScalarU8Encoder {
     #[inline]
     pub fn new(input_dim: usize) -> Self {
         Self {
@@ -105,9 +114,11 @@ impl OptimisticDotPacking8U32ScalarU8Encoder {
         self.quants = train_sparse_scalar_quantizer(training_data, 0.0, 1.0).into_boxed_slice();
     }
 
-    /// Inserts synthetic zero-valued coordinates so that every consecutive component
-    /// delta is at most `u16::MAX`. Components must be sorted ascending. The trailing
-    /// real coordinate is preserved as-is.
+    /// Inserts synthetic coordinates ("bridges") with code 0 so that every gap, including the
+    /// first one (relative to 0), is at most `u16::MAX`. Each bridge sits `u16::MAX` after the
+    /// previous coordinate. [`Self::drop_bridges`] recognises them by code 0 alone, which is
+    /// reserved for bridges (see the type-level invariant).
+    /// Components must be sorted ascending; real coordinates are preserved as-is.
     fn inject_zero_bridges(components: &[u32], values: &[u8]) -> (Vec<u32>, Vec<u8>) {
         assert_eq!(
             components.len(),
@@ -122,25 +133,40 @@ impl OptimisticDotPacking8U32ScalarU8Encoder {
         let mut bridged_components = Vec::with_capacity(components.len());
         let mut bridged_values = Vec::with_capacity(values.len());
 
-        bridged_components.push(components[0]);
-        bridged_values.push(values[0]);
-
-        for (&component, &value) in components.iter().zip(values.iter()).skip(1) {
-            let mut last = *bridged_components.last().unwrap();
-            while component.saturating_sub(last) > u16::MAX as u32 {
+        // The first gap is relative to 0 (see `push_encoded`), so it is bridged as well.
+        let mut last = 0u32;
+        for (&component, &value) in components.iter().zip(values.iter()) {
+            while component - last > u16::MAX as u32 {
                 last += u16::MAX as u32;
                 bridged_components.push(last);
                 bridged_values.push(0);
             }
             bridged_components.push(component);
             bridged_values.push(value);
+            last = component;
         }
 
         (bridged_components, bridged_values)
     }
+
+    /// Removes the bridges inserted by [`Self::inject_zero_bridges`] from decoded components:
+    /// the entries with code 0, which real coordinates never have (see the type-level
+    /// invariant).
+    fn drop_bridges(components: &mut Vec<u32>, values: &mut Vec<u8>) {
+        let mut kept = 0;
+        for i in 0..components.len() {
+            if values[i] != 0 {
+                components[kept] = components[i];
+                values[kept] = values[i];
+                kept += 1;
+            }
+        }
+        components.truncate(kept);
+        values.truncate(kept);
+    }
 }
 
-impl SparseDataEncoder for OptimisticDotPacking8U32ScalarU8Encoder {
+impl SparseDataEncoder for BridgedDotPacking8U32ScalarU8Encoder {
     type InputComponentType = u32;
     type InputValueType = f32;
     type OutputComponentType = u32;
@@ -182,6 +208,8 @@ impl SparseDataEncoder for OptimisticDotPacking8U32ScalarU8Encoder {
             }
         }
 
+        Self::drop_bridges(&mut decoded_comp, &mut values_raw);
+
         if let Some(component_mapping) = self.component_mapping() {
             let inverse: Cow<'_, [u32]> = match self.inverse_component_mapping() {
                 Some(inverse) => Cow::Borrowed(inverse),
@@ -217,7 +245,7 @@ impl SparseDataEncoder for OptimisticDotPacking8U32ScalarU8Encoder {
     }
 }
 
-impl PackedSparseVectorEncoder for OptimisticDotPacking8U32ScalarU8Encoder {
+impl PackedSparseVectorEncoder for BridgedDotPacking8U32ScalarU8Encoder {
     type PackedDataType = u64;
 
     fn push_encoded<'a, OutputContainer>(
@@ -241,6 +269,11 @@ impl PackedSparseVectorEncoder for OptimisticDotPacking8U32ScalarU8Encoder {
                 }
             })
             .collect();
+        debug_assert!(
+            q_values.iter().all(|&code| code != 0),
+            "a real coordinate quantized to code 0, which is reserved for bridges: every value \
+             must be at least its component's quantization step"
+        );
 
         let mut q_components: Vec<u32> = if let Some(mapping) = self.component_mapping() {
             input
@@ -267,7 +300,7 @@ impl PackedSparseVectorEncoder for OptimisticDotPacking8U32ScalarU8Encoder {
         }
         assert!(
             n < u16::MAX as usize,
-            "OptimisticDotPacking8U32ScalarU8Encoder only supports vectors (after bridging) shorter than 65535, got {n}"
+            "BridgedDotPacking8U32ScalarU8Encoder only supports vectors (after bridging) shorter than 65535, got {n}"
         );
 
         let mut gaps: Vec<u32> = Vec::with_capacity(n);
@@ -276,7 +309,7 @@ impl PackedSparseVectorEncoder for OptimisticDotPacking8U32ScalarU8Encoder {
             let g = comp - last;
             assert!(
                 g <= u16::MAX as u32,
-                "gap {g} exceeds u16::MAX; optimistic bridge insertion failed"
+                "gap {g} exceeds u16::MAX; bridge insertion failed"
             );
             gaps.push(g);
             last = comp;
@@ -303,24 +336,24 @@ impl PackedSparseVectorEncoder for OptimisticDotPacking8U32ScalarU8Encoder {
     }
 }
 
-impl VectorEncoder for OptimisticDotPacking8U32ScalarU8Encoder {
+impl VectorEncoder for BridgedDotPacking8U32ScalarU8Encoder {
     type Distance = DotProduct;
     type InputVector<'a> = SparseVectorView<'a, u32, f32>;
     type QueryVector<'q> = SparseVectorView<'q, u32, f32>;
     type EncodedVector<'a> = PackedVectorView<'a, u64>;
 
     type Evaluator<'e>
-        = OptimisticDotPacking8U32ScalarU8QueryEvaluator<'e>
+        = BridgedDotPacking8U32ScalarU8QueryEvaluator<'e>
     where
         Self: 'e;
 
     fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
-        OptimisticDotPacking8U32ScalarU8QueryEvaluator::new(query, self)
+        BridgedDotPacking8U32ScalarU8QueryEvaluator::new(query, self)
     }
 
     fn vector_evaluator<'e, 'v>(&'e self, vector: Self::EncodedVector<'v>) -> Self::Evaluator<'e> {
         let decoded = <Self as SparseDataEncoder>::decode_vector(self, vector);
-        OptimisticDotPacking8U32ScalarU8QueryEvaluator::new(decoded.as_view(), self)
+        BridgedDotPacking8U32ScalarU8QueryEvaluator::new(decoded.as_view(), self)
     }
 
     #[inline]
@@ -335,15 +368,15 @@ impl VectorEncoder for OptimisticDotPacking8U32ScalarU8Encoder {
 }
 
 #[derive(Debug, Clone)]
-pub struct OptimisticDotPacking8U32ScalarU8QueryEvaluator<'e> {
+pub struct BridgedDotPacking8U32ScalarU8QueryEvaluator<'e> {
     dense_query_transformed: Vec<f32>,
     _phantom: PhantomData<&'e ()>,
 }
 
-impl<'e> OptimisticDotPacking8U32ScalarU8QueryEvaluator<'e> {
+impl<'e> BridgedDotPacking8U32ScalarU8QueryEvaluator<'e> {
     pub fn new(
         query: SparseVectorView<'_, u32, f32>,
-        encoder: &'e OptimisticDotPacking8U32ScalarU8Encoder,
+        encoder: &'e BridgedDotPacking8U32ScalarU8Encoder,
     ) -> Self {
         assert_eq!(
             query.components().len(),
@@ -374,7 +407,7 @@ impl<'e> OptimisticDotPacking8U32ScalarU8QueryEvaluator<'e> {
 }
 
 impl<'e, 'v> QueryEvaluator<PackedVectorView<'v, u64>>
-    for OptimisticDotPacking8U32ScalarU8QueryEvaluator<'e>
+    for BridgedDotPacking8U32ScalarU8QueryEvaluator<'e>
 {
     type Distance = DotProduct;
 
@@ -413,7 +446,7 @@ impl<'e, 'v> QueryEvaluator<PackedVectorView<'v, u64>>
     }
 }
 
-impl SpaceUsage for OptimisticDotPacking8U32ScalarU8Encoder {
+impl SpaceUsage for BridgedDotPacking8U32ScalarU8Encoder {
     fn space_usage_bytes(&self) -> usize {
         let mapping_size = self
             .component_mapping
@@ -454,7 +487,7 @@ mod tests {
 
     #[test]
     fn new_creates_encoder() {
-        let encoder = OptimisticDotPacking8U32ScalarU8Encoder::new(100);
+        let encoder = BridgedDotPacking8U32ScalarU8Encoder::new(100);
         assert_eq!(encoder.input_dim(), 100);
         assert_eq!(encoder.output_dim(), 100);
         assert!(encoder.component_mapping().is_none());
@@ -463,7 +496,7 @@ mod tests {
 
     #[test]
     fn training_sets_component_mapping_and_quants() {
-        let mut encoder = OptimisticDotPacking8U32ScalarU8Encoder::new(5);
+        let mut encoder = BridgedDotPacking8U32ScalarU8Encoder::new(5);
         let td = build_training_data(
             5,
             &[
@@ -494,7 +527,7 @@ mod tests {
         let components = vec![0u32, 1, 2, 3];
         let values = vec![10u8, 20, 30, 40];
         let (bc, bv) =
-            OptimisticDotPacking8U32ScalarU8Encoder::inject_zero_bridges(&components, &values);
+            BridgedDotPacking8U32ScalarU8Encoder::inject_zero_bridges(&components, &values);
         assert_eq!(bc, components);
         assert_eq!(bv, values);
     }
@@ -505,7 +538,7 @@ mod tests {
         let components = vec![0u32, gap];
         let values = vec![10u8, 20];
         let (bc, bv) =
-            OptimisticDotPacking8U32ScalarU8Encoder::inject_zero_bridges(&components, &values);
+            BridgedDotPacking8U32ScalarU8Encoder::inject_zero_bridges(&components, &values);
         assert!(bc.len() > 2);
         assert_eq!(*bc.last().unwrap(), gap);
         assert_eq!(*bv.last().unwrap(), 20);
@@ -519,7 +552,7 @@ mod tests {
 
     #[test]
     fn encode_decode_preserves_structure() {
-        let mut encoder = OptimisticDotPacking8U32ScalarU8Encoder::new(10);
+        let mut encoder = BridgedDotPacking8U32ScalarU8Encoder::new(10);
         let td = build_training_data(
             10,
             &[
@@ -551,7 +584,7 @@ mod tests {
     /// dot = 100*2 + 150*3 + 200*1 = 850.
     #[test]
     fn encode_decode_dot_product_exact() {
-        let mut encoder = OptimisticDotPacking8U32ScalarU8Encoder::new(4);
+        let mut encoder = BridgedDotPacking8U32ScalarU8Encoder::new(4);
         let td = build_training_data(4, &[(&[0_u32, 1, 2, 3], &[255.0_f32, 255.0, 255.0, 255.0])]);
         encoder.train(&td);
         assert!(
@@ -591,7 +624,7 @@ mod tests {
     #[test]
     fn dot_product_with_bridged_large_gap() {
         let dim = (u16::MAX as usize) + 200;
-        let mut encoder = OptimisticDotPacking8U32ScalarU8Encoder::new(dim);
+        let mut encoder = BridgedDotPacking8U32ScalarU8Encoder::new(dim);
         let gap = u16::MAX as u32 + 100;
         let comps = [0_u32, gap];
         let td = build_training_data(dim, &[(&comps, &[255.0_f32, 255.0])]);
@@ -615,11 +648,82 @@ mod tests {
         );
     }
 
+    /// An encoder with no component mapping and a unit step for every component, so
+    /// encoded codes equal the (integer) input values.
+    fn unit_step_encoder(dim: usize) -> BridgedDotPacking8U32ScalarU8Encoder {
+        let mut encoder = BridgedDotPacking8U32ScalarU8Encoder::new(dim);
+        encoder.quants = vec![1.0_f32; dim].into_boxed_slice();
+        encoder
+    }
+
+    #[test]
+    fn inject_zero_bridges_first_component_beyond_u16() {
+        // The first gap is relative to 0, so it must be bridged as well.
+        let components = vec![u16::MAX as u32 * 2 + 10];
+        let (bc, bv) =
+            BridgedDotPacking8U32ScalarU8Encoder::inject_zero_bridges(&components, &[7u8]);
+        assert_eq!(bc, vec![u16::MAX as u32, 2 * u16::MAX as u32, components[0]]);
+        assert_eq!(bv, vec![0, 0, 7]);
+    }
+
+    /// A vector whose smallest component exceeds `u16::MAX` must encode, decode to exactly
+    /// its own components (no bridges), and score correctly.
+    #[test]
+    fn first_component_beyond_u16_roundtrip_and_dot() {
+        let dim = 200_000;
+        let encoder = unit_step_encoder(dim);
+        let comps = [70_000_u32, 70_010, 140_000, 199_999];
+        let values = [10.0_f32, 20.0, 30.0, 40.0];
+        let mut buffer = Vec::new();
+        encoder.push_encoded(SparseVectorView::new(&comps, &values), &mut buffer);
+
+        let decoded = encoder.decode_vector(PackedVectorView::new(&buffer));
+        assert_eq!(decoded.components(), &comps);
+        assert_eq!(decoded.values(), &values);
+
+        let query_values = [1.0_f32, 2.0, 3.0, 4.0];
+        let evaluator = encoder.query_evaluator(SparseVectorView::new(&comps, &query_values));
+        let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
+        assert!((dist.0 - 300.0).abs() < 1e-3, "expected 300, got {}", dist.0);
+    }
+
+    /// Bridges are an encoding artifact: decoding returns only the input components, also
+    /// across a bulk block (> 8 entries after bridging) and with several bridges in a row.
+    #[test]
+    fn decode_drops_bridges() {
+        let dim = 400_000;
+        let encoder = unit_step_encoder(dim);
+        let comps: Vec<u32> = vec![0, 3, 200_000, 200_001, 200_002, 200_003, 200_004, 399_999];
+        let values: Vec<f32> = (1..=comps.len()).map(|i| i as f32).collect();
+        let mut buffer = Vec::new();
+        encoder.push_encoded(SparseVectorView::new(&comps, &values), &mut buffer);
+
+        let decoded = encoder.decode_vector(PackedVectorView::new(&buffer));
+        assert_eq!(decoded.components(), comps.as_slice());
+        assert_eq!(decoded.values(), values.as_slice());
+    }
+
+    /// A genuine component exactly `u16::MAX` after the previous one needs no bridge and must
+    /// be kept by the decoder.
+    #[test]
+    fn decode_keeps_real_component_at_max_gap() {
+        let dim = 200_000;
+        let encoder = unit_step_encoder(dim);
+        let comps = [5_u32, 5 + u16::MAX as u32];
+        let values = [3.0_f32, 4.0];
+        let mut buffer = Vec::new();
+        encoder.push_encoded(SparseVectorView::new(&comps, &values), &mut buffer);
+
+        let decoded = encoder.decode_vector(PackedVectorView::new(&buffer));
+        assert_eq!(decoded.components(), &comps);
+        assert_eq!(decoded.values(), &values);
+    }
+
     /// Vector length not a multiple of 8 → exercises `decode_tail`.
     #[test]
     fn bulk_and_tail_blocks() {
         let dim = 256;
-        let mut encoder = OptimisticDotPacking8U32ScalarU8Encoder::new(dim);
+        let mut encoder = BridgedDotPacking8U32ScalarU8Encoder::new(dim);
         let comps: Vec<u32> = (0_u32..10).map(|i| i * 5).collect();
         let train_values: Vec<f32> = (0..10).map(|_| 255.0).collect();
         let td = build_training_data(dim, &[(&comps, &train_values)]);
