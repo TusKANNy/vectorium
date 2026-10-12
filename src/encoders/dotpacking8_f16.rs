@@ -22,6 +22,13 @@ pub struct DotPacking8f16View<'a> {
 }
 
 impl<'a> DotPacking8f16View<'a> {
+    /// Split one encoded vector into its header, selectors, gap payload and values.
+    ///
+    /// # Safety
+    ///
+    /// `slice` must be exactly one vector produced by this encoder's `push_encoded`. Decoders
+    /// built from the view read the gap payload with unchecked 16-byte loads whose bounds rely
+    /// on the padding `push_encoded` inserts before the values.
     pub unsafe fn from_unchecked_slice(slice: &'a [u64]) -> Self {
         let bytes = cast_slice::<u64, u8>(slice);
         let n = bytemuck::from_bytes::<u16>(&bytes[0..2]).to_le() as usize;

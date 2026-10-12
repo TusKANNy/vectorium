@@ -106,7 +106,7 @@ pub fn fast_lane_gather(query_ptr: &[f32], components: Simd<u32, N>) -> Simd<f32
     unsafe {
         use std::arch::x86_64::*;
         let q_vals: __m256 =
-            _mm256_i32gather_ps(query_ptr.as_ptr() as *const f32, components.into(), 4);
+            _mm256_i32gather_ps(query_ptr.as_ptr(), components.into(), 4);
         Simd::<f32, N>::from(q_vals)
     }
 
@@ -232,6 +232,11 @@ impl<'a> DotPacking8Iter<'a> {
     }
 }
 
+/// Load 8 consecutive `f16` values from `ptr` and widen them to `f32`.
+///
+/// # Safety
+///
+/// `ptr` must be valid for reading 8 `f16` values (16 bytes). It does not need to be aligned.
 #[inline(always)]
 pub unsafe fn f16_ptr_to_f32x8(ptr: *const f16) -> Simd<f32, 8> {
     #[cfg(all(target_arch = "x86_64", target_feature = "f16c"))]
@@ -323,6 +328,11 @@ impl<'a> DotPacking8f16Iter<'a> {
     }
 }
 
+/// Add `query_value * vbits[i]` to `acc` in every lane `i` where `comps[i] == query_component`.
+///
+/// # Safety
+///
+/// The CPU must support AVX2 and FMA.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[target_feature(enable = "fma")]

@@ -178,7 +178,11 @@ pub fn fast_lane_swizzle(bytes: Simd<u8, 32>, idxs: Simd<u8, 32>) -> Simd<u8, 32
     #[cfg(target_arch = "x86_64")]
     unsafe {
         use core::arch::x86_64::_mm256_shuffle_epi8;
-        mem::transmute(_mm256_shuffle_epi8(mem::transmute(bytes), mem::transmute(idxs)))
+        use core::arch::x86_64::__m256i;
+        mem::transmute::<__m256i, Simd<u8, 32>>(_mm256_shuffle_epi8(
+            mem::transmute::<Simd<u8, 32>, __m256i>(bytes),
+            mem::transmute::<Simd<u8, 32>, __m256i>(idxs),
+        ))
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
