@@ -1,14 +1,14 @@
 use bytemuck::{cast_slice, from_bytes};
 use rusty_perm::{PermApply as _, PermFromSorting as _};
-use std::borrow::Cow;
 use std::simd::{Simd, StdFloat, prelude::*};
 
-use crate::{Dataset, PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
+use crate::{PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
 use crate::core::vector::{PackedVectorView, SparseVectorView};
 use crate::core::vector_encoder::{
     PackedSparseVectorEncoder, QueryEvaluator, SparseDataEncoder, SparseVectorOwned, VectorEncoder,
 };
 use crate::distances::DotProduct;
+use crate::encoders::dotpacking8::mapping::ComponentMapping;
 use crate::encoders::dotpacking8::common::{
     DotPacking8Iter, compute_safe_simd_padding, encode_blocks, simd_prefix_sum, fast_lane_gather
 };
@@ -68,8 +68,7 @@ where
 {
     pub dim: usize,
     pub quantizer: Q,
-    pub component_mapping: Option<Box<[u16]>>,
-    pub inverse_component_mapping: Option<Box<[u16]>>,
+    pub mapping: Option<ComponentMapping<u16>>,
 }
 
 impl<Q> DotPacking8Encoder<Q>
@@ -80,44 +79,19 @@ where
         Self {
             dim,
             quantizer,
-            component_mapping: None,
-            inverse_component_mapping: None,
+            mapping: None,
         }
     }
 
     #[inline]
     pub fn component_mapping(&self) -> Option<&[u16]> {
-        self.component_mapping.as_deref()
+        self.mapping.as_ref().map(|m| m.forward())
     }
 
-    fn compute_inverse_mapping(component_mapping: &[u16]) -> Vec<u16> {
-        let dim = component_mapping.len();
-        let mut inverse = vec![0u16; dim];
-        let mut seen = vec![false; dim];
-
-        for (old, &new) in component_mapping.iter().enumerate() {
-            let new = new as usize;
-            assert!(
-                new < dim,
-                "component_mapping maps component {} to out-of-bounds index {} (dim={})",
-                old,
-                new,
-                dim
-            );
-            assert!(
-                !seen[new],
-                "component_mapping is not a permutation: duplicate mapped index {}",
-                new
-            );
-            seen[new] = true;
-            inverse[new] = old as u16;
-        }
-        inverse
-    }
     
     #[inline]
     pub fn inverse_component_mapping(&self) -> Option<&[u16]> {
-        self.inverse_component_mapping.as_deref()
+        self.mapping.as_ref().map(|m| m.inverse())
     }
 
     /// Reorder components by decreasing frequency in `training_data`, which shortens gaps,
@@ -127,13 +101,10 @@ where
     where
         D: ScalarSparseSupportedDistance,
     {
-        let components_iter = training_data.iter().map(|v| v.components());
-        let permutation =
-            crate::utils::permute_components_by_frequency(self.input_dim(), components_iter);
-        let component_mapping: Vec<u16> = permutation.iter().map(|i| *i as u16).collect();
-        let inverse = Self::compute_inverse_mapping(&component_mapping);
-        self.component_mapping = Some(component_mapping.into_boxed_slice());
-        self.inverse_component_mapping = Some(inverse.into_boxed_slice());
+        self.mapping = Some(ComponentMapping::by_decreasing_frequency(
+            self.input_dim(),
+            training_data,
+        ));
         self.quantizer.train(training_data);
     }
 }
@@ -153,7 +124,7 @@ where
     pub fn new(query: SparseVectorView<'_, u16, f32>, encoder: &'a DotPacking8Encoder<Q>) -> Self {
         let mut dense_query = vec![0.0f32; encoder.dim];
         for (&c, &v) in query.components().iter().zip(query.values().iter()) {
-            let mapped_c = if let Some(mapping) = &encoder.component_mapping {
+            let mapped_c = if let Some(mapping) = encoder.component_mapping() {
                 mapping[c as usize]
             } else {
                 c
@@ -275,11 +246,8 @@ where
             values_raw.push(tail_values[i]);
         }
 
-        if let Some(component_mapping) = &self.component_mapping {
-            let inverse: Cow<'_, [u16]> = match &self.inverse_component_mapping {
-                Some(inverse) => Cow::Borrowed(inverse),
-                None => Cow::Owned(Self::compute_inverse_mapping(component_mapping)),
-            };
+        if let Some(mapping) = &self.mapping {
+            let inverse = mapping.inverse();
 
             for c in decoded_comp.iter_mut() {
                 *c = inverse[*c as usize];
@@ -331,7 +299,7 @@ where
             .map(|(&c, &v)| self.quantizer.encode_value(c, v))
             .collect();
 
-        let mut q_components: Vec<u16> = if let Some(mapping) = &self.component_mapping {
+        let mut q_components: Vec<u16> = if let Some(mapping) = self.component_mapping() {
             input
                 .components()
                 .iter()
@@ -341,7 +309,7 @@ where
             input.components().to_vec()
         };
 
-        if self.component_mapping.is_some() {
+        if self.mapping.is_some() {
             let permutation = rusty_perm::PermD::from_sort(q_components.as_slice());
             permutation.apply(q_values.as_mut_slice()).unwrap();
             permutation.apply(q_components.as_mut_slice()).unwrap();
@@ -387,14 +355,7 @@ where
     Q: DotPacking8Quantizer,
 {
     fn space_usage_bytes(&self) -> usize {
-        let mapping_size = self
-            .component_mapping
-            .as_ref()
-            .map_or(0, |m| m.len() * std::mem::size_of::<u16>());
-        let inverse_mapping_size = self
-            .inverse_component_mapping
-            .as_ref()
-            .map_or(0, |m| m.len() * std::mem::size_of::<u16>());
-        mapping_size + inverse_mapping_size + self.quantizer.space_usage_bytes()
+        let mapping_size = self.mapping.as_ref().map_or(0, |m| m.space_usage_bytes());
+        mapping_size + self.quantizer.space_usage_bytes()
     }
 }

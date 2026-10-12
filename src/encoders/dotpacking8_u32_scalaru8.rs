@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::simd::num::{SimdFloat, SimdUint};
 use std::simd::{Mask, Simd, StdFloat};
@@ -10,12 +9,13 @@ use crate::core::vector_encoder::{
     PackedSparseVectorEncoder, QueryEvaluator, SparseDataEncoder, SparseVectorOwned, VectorEncoder,
 };
 use crate::distances::DotProduct;
+use crate::encoders::dotpacking8::mapping::ComponentMapping;
 use crate::encoders::dotpacking8::common::{
     compute_safe_simd_padding, encode_blocks, simd_prefix_sum,
 };
 use crate::encoders::dotpacking8::encoder::DotPacking8View;
-use crate::utils::{permute_components_by_frequency, train_sparse_scalar_quantizer};
-use crate::{Dataset, PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
+use crate::utils::train_sparse_scalar_quantizer;
+use crate::{PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
 
 use rusty_perm::PermApply as _;
 use rusty_perm::PermFromSorting as _;
@@ -44,9 +44,7 @@ const N: usize = 8;
 pub struct BridgedDotPacking8U32ScalarU8Encoder {
     dim: usize,
     quants: Box<[f32]>,
-    component_mapping: Option<Box<[u32]>>,
-    #[serde(default)]
-    inverse_component_mapping: Option<Box<[u32]>>,
+    mapping: Option<ComponentMapping<u32>>,
 }
 
 impl sealed::Sealed for BridgedDotPacking8U32ScalarU8Encoder {}
@@ -57,46 +55,20 @@ impl BridgedDotPacking8U32ScalarU8Encoder {
         Self {
             dim: input_dim,
             quants: vec![0.0_f32; input_dim].into_boxed_slice(),
-            component_mapping: None,
-            inverse_component_mapping: None,
+            mapping: None,
         }
     }
 
     #[inline]
     pub fn component_mapping(&self) -> Option<&[u32]> {
-        self.component_mapping.as_deref()
+        self.mapping.as_ref().map(|m| m.forward())
     }
 
     #[inline]
     pub fn inverse_component_mapping(&self) -> Option<&[u32]> {
-        self.inverse_component_mapping.as_deref()
+        self.mapping.as_ref().map(|m| m.inverse())
     }
 
-    fn compute_inverse_mapping(component_mapping: &[u32]) -> Vec<u32> {
-        let dim = component_mapping.len();
-        let mut inverse = vec![0u32; dim];
-        let mut seen = vec![false; dim];
-
-        for (old, &new) in component_mapping.iter().enumerate() {
-            let new = new as usize;
-            assert!(
-                new < dim,
-                "component_mapping maps component {} to out-of-bounds index {} (dim={})",
-                old,
-                new,
-                dim
-            );
-            assert!(
-                !seen[new],
-                "component_mapping is not a permutation: duplicate mapped index {}",
-                new
-            );
-            seen[new] = true;
-            inverse[new] = old as u32;
-        }
-
-        inverse
-    }
 
     /// Reorder components by decreasing frequency in `training_data`, which shortens gaps,
     /// then fit the per-component `u8` steps. The dataset's distance does not matter.
@@ -104,12 +76,10 @@ impl BridgedDotPacking8U32ScalarU8Encoder {
     where
         D: ScalarSparseSupportedDistance,
     {
-        let components_iter = training_data.iter().map(|v| v.components());
-        let permutation = permute_components_by_frequency(self.input_dim(), components_iter);
-        let component_mapping: Vec<u32> = permutation.iter().map(|i| *i as u32).collect();
-        let inverse = Self::compute_inverse_mapping(&component_mapping);
-        self.component_mapping = Some(component_mapping.into_boxed_slice());
-        self.inverse_component_mapping = Some(inverse.into_boxed_slice());
+        self.mapping = Some(ComponentMapping::by_decreasing_frequency(
+            self.input_dim(),
+            training_data,
+        ));
 
         self.quants = train_sparse_scalar_quantizer(training_data, 0.0, 1.0).into_boxed_slice();
     }
@@ -210,11 +180,8 @@ impl SparseDataEncoder for BridgedDotPacking8U32ScalarU8Encoder {
 
         Self::drop_bridges(&mut decoded_comp, &mut values_raw);
 
-        if let Some(component_mapping) = self.component_mapping() {
-            let inverse: Cow<'_, [u32]> = match self.inverse_component_mapping() {
-                Some(inverse) => Cow::Borrowed(inverse),
-                None => Cow::Owned(Self::compute_inverse_mapping(component_mapping)),
-            };
+        if let Some(mapping) = &self.mapping {
+            let inverse = mapping.inverse();
 
             for c in decoded_comp.iter_mut() {
                 *c = inverse[*c as usize];
@@ -285,7 +252,7 @@ impl PackedSparseVectorEncoder for BridgedDotPacking8U32ScalarU8Encoder {
             input.components().to_vec()
         };
 
-        if self.component_mapping.is_some() {
+        if self.mapping.is_some() {
             let permutation = rusty_perm::PermD::from_sort(q_components.as_slice());
             permutation.apply(q_values.as_mut_slice()).unwrap();
             permutation.apply(q_components.as_mut_slice()).unwrap();
@@ -453,16 +420,9 @@ impl<'e, 'v> QueryEvaluator<PackedVectorView<'v, u64>>
 
 impl SpaceUsage for BridgedDotPacking8U32ScalarU8Encoder {
     fn space_usage_bytes(&self) -> usize {
-        let mapping_size = self
-            .component_mapping
-            .as_ref()
-            .map_or(0, |m| m.len() * std::mem::size_of::<u32>());
-        let inverse_mapping_size = self
-            .inverse_component_mapping
-            .as_ref()
-            .map_or(0, |m| m.len() * std::mem::size_of::<u32>());
+        let mapping_size = self.mapping.as_ref().map_or(0, |m| m.space_usage_bytes());
         let quants_size = self.quants.len() * std::mem::size_of::<f32>();
-        mapping_size + inverse_mapping_size + quants_size
+        mapping_size + quants_size
     }
 }
 

@@ -55,8 +55,7 @@ mod tests {
         let encoder = DotPacking8Encoder {
             dim: 100,
             quantizer: FixedU8Quantizer,
-            component_mapping: None,
-            inverse_component_mapping: None,
+            mapping: None,
         };
 
         let binding = [1.0, 3.0, 2.0, 3.5, 1.5, 2.0, 1.0, 2.0];
@@ -80,8 +79,7 @@ mod tests {
         let encoder = DotPacking8Encoder {
             dim: 100,
             quantizer: FixedU8Quantizer,
-            component_mapping: None,
-            inverse_component_mapping: None,
+            mapping: None,
         };
 
         let binding = [1.0, 3.0, 2.0, 3.5, 1.5, 2.0, 1.0, 2.0, 3.0, 2.5];
@@ -113,8 +111,7 @@ mod tests {
         let encoder = DotPacking8Encoder {
             dim: u16::MAX as usize + 1,
             quantizer: FixedU8Quantizer,
-            component_mapping: None,
-            inverse_component_mapping: None,
+            mapping: None,
         };
 
         let values: Vec<_> = (0..num_vals).map(|i| 1.0 + (i % 7) as f32 / 10.0).collect();
@@ -187,8 +184,7 @@ mod tests {
         let mut encoder = DotPacking8Encoder {
             dim: 100,
             quantizer: FixedU8Quantizer,
-            component_mapping: None,
-            inverse_component_mapping: None,
+            mapping: None,
         };
 
         let binding = [1.0, 3.0, 2.0, 3.5];

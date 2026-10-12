@@ -25,6 +25,7 @@ use crate::core::vector_encoder::{
     PackedSparseVectorEncoder, QueryEvaluator, SparseDataEncoder, SparseVectorOwned, VectorEncoder,
 };
 use crate::distances::DotProduct;
+use crate::encoders::dotpacking8::mapping::ComponentMapping;
 use crate::encoders::dotpacking8::common::{
     compute_safe_simd_padding, encode_blocks, fast_lane_gather, simd_prefix_sum,
 };
@@ -32,10 +33,9 @@ use crate::encoders::dotpacking8::nibble4bit::{
     gap_iter, nibble_bytes, pack_nibbles, NibbleReader, Scalar4BitQuantizer,
 };
 use crate::encoders::dotpacking8::quantizer::DotPacking8Quantizer;
-use crate::{Dataset, PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
+use crate::{PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
 use bytemuck::{cast_slice, from_bytes};
 use rusty_perm::{PermApply, PermFromSorting};
-use std::borrow::Cow;
 use std::simd::{prelude::*, StdFloat};
 
 const N: usize = 8;
@@ -86,8 +86,7 @@ impl<'a> DotPacking8U16Scalar4BitView<'a> {
 pub struct DotPacking8U16Scalar4BitEncoder {
     pub dim: usize,
     pub quantizer: Scalar4BitQuantizer,
-    pub component_mapping: Option<Box<[u16]>>,
-    pub inverse_component_mapping: Option<Box<[u16]>>,
+    pub mapping: Option<ComponentMapping<u16>>,
 }
 
 impl DotPacking8U16Scalar4BitEncoder {
@@ -95,8 +94,7 @@ impl DotPacking8U16Scalar4BitEncoder {
         Self {
             dim: input_dim,
             quantizer: Scalar4BitQuantizer::new(vec![0.0f32; input_dim].into_boxed_slice()),
-            component_mapping: None,
-            inverse_component_mapping: None,
+            mapping: None,
         }
     }
 
@@ -106,33 +104,22 @@ impl DotPacking8U16Scalar4BitEncoder {
     where
         D: ScalarSparseSupportedDistance,
     {
-        let components_iter = training_data.iter().map(|v| v.components());
-        let permutation =
-            crate::utils::permute_components_by_frequency(self.input_dim(), components_iter);
-        let component_mapping: Vec<u16> = permutation.iter().map(|i| *i as u16).collect();
-        let inverse = Self::compute_inverse_mapping(&component_mapping);
-        self.component_mapping = Some(component_mapping.into_boxed_slice());
-        self.inverse_component_mapping = Some(inverse.into_boxed_slice());
+        self.mapping = Some(ComponentMapping::by_decreasing_frequency(
+            self.input_dim(),
+            training_data,
+        ));
         self.quantizer.train(training_data);
     }
 
-    fn compute_inverse_mapping(component_mapping: &[u16]) -> Vec<u16> {
-        let dim = component_mapping.len();
-        let mut inverse = vec![0u16; dim];
-        for (old, &new) in component_mapping.iter().enumerate() {
-            inverse[new as usize] = old as u16;
-        }
-        inverse
-    }
 
     #[inline]
     pub fn component_mapping(&self) -> Option<&[u16]> {
-        self.component_mapping.as_deref()
+        self.mapping.as_ref().map(|m| m.forward())
     }
 
     #[inline]
     pub fn inverse_component_mapping(&self) -> Option<&[u16]> {
-        self.inverse_component_mapping.as_deref()
+        self.mapping.as_ref().map(|m| m.inverse())
     }
 }
 
@@ -152,7 +139,7 @@ impl<'a> DotPacking8U16Scalar4BitQueryEvaluator<'a> {
     ) -> Self {
         let mut dense_query = vec![0.0f32; encoder.dim];
         for (&c, &v) in query.components().iter().zip(query.values().iter()) {
-            let mapped_c = if let Some(mapping) = &encoder.component_mapping {
+            let mapped_c = if let Some(mapping) = encoder.component_mapping() {
                 mapping[c as usize]
             } else {
                 c
@@ -281,11 +268,8 @@ impl SparseDataEncoder for DotPacking8U16Scalar4BitEncoder {
             }
         }
 
-        if let Some(component_mapping) = &self.component_mapping {
-            let inverse: Cow<'_, [u16]> = match &self.inverse_component_mapping {
-                Some(inverse) => Cow::Borrowed(inverse),
-                None => Cow::Owned(Self::compute_inverse_mapping(component_mapping)),
-            };
+        if let Some(mapping) = &self.mapping {
+            let inverse = mapping.inverse();
             for c in decoded_comp.iter_mut() {
                 *c = inverse[*c as usize];
             }
@@ -328,7 +312,7 @@ impl PackedSparseVectorEncoder for DotPacking8U16Scalar4BitEncoder {
             .map(|(&c, &v)| self.quantizer.encode_value(c, v))
             .collect();
 
-        let mut q_components: Vec<u16> = if let Some(mapping) = &self.component_mapping {
+        let mut q_components: Vec<u16> = if let Some(mapping) = self.component_mapping() {
             input
                 .components()
                 .iter()
@@ -338,7 +322,7 @@ impl PackedSparseVectorEncoder for DotPacking8U16Scalar4BitEncoder {
             input.components().to_vec()
         };
 
-        if self.component_mapping.is_some() {
+        if self.mapping.is_some() {
             let permutation = rusty_perm::PermD::from_sort(q_components.as_slice());
             permutation.apply(q_values.as_mut_slice()).unwrap();
             permutation.apply(q_components.as_mut_slice()).unwrap();
@@ -384,15 +368,8 @@ impl PackedSparseVectorEncoder for DotPacking8U16Scalar4BitEncoder {
 
 impl SpaceUsage for DotPacking8U16Scalar4BitEncoder {
     fn space_usage_bytes(&self) -> usize {
-        let mapping_size = self
-            .component_mapping
-            .as_ref()
-            .map_or(0, |m| m.len() * std::mem::size_of::<u16>());
-        let inverse_mapping_size = self
-            .inverse_component_mapping
-            .as_ref()
-            .map_or(0, |m| m.len() * std::mem::size_of::<u16>());
-        mapping_size + inverse_mapping_size + self.quantizer.space_usage_bytes()
+        let mapping_size = self.mapping.as_ref().map_or(0, |m| m.space_usage_bytes());
+        mapping_size + self.quantizer.space_usage_bytes()
     }
 }
 
