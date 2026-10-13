@@ -57,7 +57,7 @@ struct Args {
     #[arg(default_value = "u32")]
     component_type: String,
 
-    /// Encoder: 'plain', 'pq' (dense only), 'dotvbyte', or 'dotpacking8' (default: plain)
+    /// Encoder: 'plain', 'pq' (dense only), 'dotvbyte', 'dotpacking8' or 'blocked' (default: plain)
     #[clap(long, value_parser)]
     #[arg(default_value = "plain")]
     encoder: String,
@@ -188,9 +188,16 @@ fn dispatch(args: Args) -> bool {
             if args.no_train { "disabled" } else { "enabled" }
         );
     }
-    if encoder != "plain" && encoder != "dotvbyte" && encoder != "dotpacking8" && encoder != "pq" {
+    if encoder == "blocked" {
+        println!(
+            "Blocked encoder: u16 components, f16 values in 64-byte blocks; jump_dot for \
+             queries with fewer than {} components.",
+            vectorium::SPARSE_QUERY_THRESHOLD
+        );
+    }
+    if !matches!(encoder.as_str(), "plain" | "dotvbyte" | "dotpacking8" | "blocked" | "pq") {
         eprintln!(
-            "Unknown encoder='{}'. Use encoder='plain'|'dotvbyte'|'dotpacking8'|'pq' (dense only).",
+            "Unknown encoder='{}'. Use encoder='plain'|'dotvbyte'|'dotpacking8'|'blocked'|'pq' (dense only).",
             encoder
         );
         return false;
@@ -314,6 +321,29 @@ fn dispatch(args: Args) -> bool {
                     &args.dotpacking8_values.to_lowercase(),
                     !args.no_train,
                 );
+            }
+            if encoder == "blocked" {
+                if component_type != "u16" {
+                    eprintln!(
+                        "Blocked encoder requires component_type='u16' (found '{}').",
+                        component_type
+                    );
+                    return false;
+                }
+                if distance != "dotproduct" {
+                    eprintln!("Blocked encoder supports only distance='dotproduct'.");
+                    return false;
+                }
+                if value_type != "f32" {
+                    eprintln!(
+                        "Blocked encoder reads f32 inputs and stores f16 values; \
+                         use value_type='f32' (found '{}').",
+                        value_type
+                    );
+                    return false;
+                }
+                compute_sparse_groundtruth_blocked(input_path, query_path, output_path, k);
+                return true;
             }
             if encoder == "dotvbyte" {
                 if component_type != "u16" {
@@ -1039,6 +1069,24 @@ fn compute_sparse_groundtruth_dotpacking8(
     true
 }
 
+/// Converts the dataset into a `BlockedSparseDataset` and runs the exhaustive search.
+fn compute_sparse_groundtruth_blocked(input_path: String, query_path: String, output_path: String, k: usize) {
+    use vectorium::BlockedSparseDataset;
+
+    let dataset_plain: PlainSparseDataset<u16, f32, distances::DotProduct> =
+        readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
+    let queries: PlainSparseDataset<u16, f32, distances::DotProduct> =
+        readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
+    let plain_bytes = dataset_plain.space_usage_bytes();
+    let nnz = dataset_plain.nnz();
+
+    let start = Instant::now();
+    let dataset: BlockedSparseDataset = dataset_plain.into();
+    println!("Encoding completed in {:.3}s", start.elapsed().as_secs_f64());
+
+    search_packed_sparse_and_report(dataset, plain_bytes, nnz, &queries, output_path, k);
+}
+
 /// Encodes `dataset_plain` with an already trained packed `encoder`, runs the exhaustive
 /// top-k search for every query, prints size/timing statistics and writes the results.
 fn run_packed_sparse_groundtruth<E>(
@@ -1067,6 +1115,25 @@ fn run_packed_sparse_groundtruth<E>(
     let dataset: PackedSparseDataset<E> = growable.into();
     println!("Encoding completed in {:.3}s", start.elapsed().as_secs_f64());
 
+    search_packed_sparse_and_report(dataset, plain_bytes, nnz, queries, output_path, k);
+}
+
+/// Prints size statistics of an encoded `dataset` (against the plain `f32` sparse dataset of
+/// `plain_bytes` bytes and `nnz` entries), runs the exhaustive top-k search for every query
+/// and writes the results.
+fn search_packed_sparse_and_report<E>(
+    dataset: vectorium::PackedSparseDataset<E>,
+    plain_bytes: usize,
+    nnz: usize,
+    queries: &PlainSparseDataset<E::InputComponentType, f32, distances::DotProduct>,
+    output_path: String,
+    k: usize,
+) where
+    E: vectorium::PackedSparseVectorEncoder
+        + vectorium::VectorEncoder<Distance = distances::DotProduct>
+        + SpaceUsage
+        + Sync,
+{
     println!("N documents: {}", dataset.len());
     println!("N dims: {}", dataset.input_dim());
     println!("N packed words: {}", dataset.nnz());
