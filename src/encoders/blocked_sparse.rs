@@ -714,4 +714,84 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Golden test: freezes the f16 blocks, scores (both query paths) and decoded vectors.
+    // -----------------------------------------------------------------------
+
+    fn golden_fnv(words: impl IntoIterator<Item = u64>) -> u64 {
+        let mut h = 0xcbf29ce484222325u64;
+        for w in words {
+            for b in w.to_le_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+        }
+        h
+    }
+
+    /// Deterministic sorted vectors in `0..dim` with values in [0.05, 3.9]; lengths cover
+    /// empty vectors, partial blocks and several blocks.
+    fn golden_vectors(dim: u64, seed: u64, lens: &[usize]) -> Vec<(Vec<u16>, Vec<f32>)> {
+        let mut x = seed;
+        let mut next = move |m: u64| {
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            x.wrapping_mul(0x2545F4914F6CDD1D) % m
+        };
+        lens.iter()
+            .map(|&len| {
+                let mut c: Vec<u16> = Vec::new();
+                while c.len() < len {
+                    let id = if next(2) == 0 { next(dim / 100 + 1) } else { next(dim) };
+                    c.push(id as u16);
+                    c.sort_unstable();
+                    c.dedup();
+                }
+                let v = c.iter().map(|_| 0.05 + next(1000) as f32 * 0.00385).collect();
+                (c, v)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn golden_blocked_f16() {
+        let dim = 30_000u64;
+        let docs = golden_vectors(dim, 0x9E3779B97F4A7C15, &[0, 1, 15, 16, 17, 31, 32, 33, 64, 130, 3, 40]);
+        // Short queries (jump_dot) and long queries (dense path).
+        let queries = golden_vectors(dim, 0xD1B54A32D192ED03, &[1, 5, 20, 32, 33, 60, 100]);
+
+        let encoder = BlockedSparseEncoder::new(dim as usize);
+        let mut words: Vec<u64> = Vec::new();
+        let mut blobs: Vec<Vec<DataBlock>> = Vec::new();
+        for (c, v) in &docs {
+            let v16: Vec<f16> = v.iter().map(|&x| f16::from_f32(x)).collect();
+            let mut blob = Vec::new();
+            encoder.push_encoded(SparseVectorView::new(c, &v16), &mut blob);
+            for b in &blob {
+                words.extend(b.components.iter().map(|&x| x as u64));
+                words.extend(b.values.iter().map(|x| x.to_bits() as u64));
+            }
+            words.push(u64::MAX);
+            blobs.push(blob);
+        }
+        let mut scores: Vec<u64> = Vec::new();
+        for (qc, qv) in &queries {
+            let eval = encoder.query_evaluator(SparseVectorView::new(qc, qv));
+            for blob in &blobs {
+                scores.push(eval.compute_distance(PackedVectorView::new(blob)).distance().to_bits() as u64);
+            }
+        }
+        let mut decoded: Vec<u64> = Vec::new();
+        for blob in &blobs {
+            let d = encoder.decode_vector(PackedVectorView::new(blob));
+            decoded.extend(d.components().iter().map(|&c| c as u64));
+            decoded.extend(d.values().iter().map(|v| v.to_bits() as u64));
+            decoded.push(u64::MAX);
+        }
+        let got = (golden_fnv(words), golden_fnv(scores), golden_fnv(decoded));
+        println!("golden_blocked_f16: {:#018x}, {:#018x}, {:#018x}", got.0, got.1, got.2);
+        assert_eq!(got, (0x946376a33e72e409, 0x67dd56f9d19e69d3, 0x92677293522f8f3b));
+    }
 }
