@@ -86,6 +86,11 @@ struct Args {
     /// smaller, faster index.
     #[clap(long, action)]
     no_train: bool,
+
+    /// Values stored by the blocked encoder: 'f16' (default), 'scalaru8' or 'scalaru16'
+    /// (trained per-component steps; 48-byte blocks for scalaru8).
+    #[clap(long, value_parser, default_value = "f16")]
+    blocked_values: String,
 }
 
 fn main() {
@@ -189,8 +194,9 @@ fn dispatch(args: Args) -> bool {
     }
     if encoder == "blocked" {
         println!(
-            "Blocked encoder: u16 components, f16 values in 64-byte blocks; jump_dot for \
+            "Blocked encoder: u16 components, {} values in blocks of 16; jump_dot for \
              queries with fewer than {} components.",
+            args.blocked_values,
             vectorium::SPARSE_QUERY_THRESHOLD
         );
     }
@@ -335,14 +341,30 @@ fn dispatch(args: Args) -> bool {
                 }
                 if value_type != "f32" {
                     eprintln!(
-                        "Blocked encoder reads f32 inputs and stores f16 values; \
+                        "Blocked encoder reads f32 inputs and stores f16 or scalar codes; \
                          use value_type='f32' (found '{}').",
                         value_type
                     );
                     return false;
                 }
-                compute_sparse_groundtruth_blocked(input_path, query_path, output_path, k);
-                return true;
+                return match args.blocked_values.to_lowercase().as_str() {
+                    "f16" => {
+                        compute_sparse_groundtruth_blocked::<vectorium::BlockF16Values>(input_path, query_path, output_path, k);
+                        true
+                    }
+                    "scalaru8" => {
+                        compute_sparse_groundtruth_blocked::<vectorium::BlockScalarU8Values>(input_path, query_path, output_path, k);
+                        true
+                    }
+                    "scalaru16" => {
+                        compute_sparse_groundtruth_blocked::<vectorium::BlockScalarU16Values>(input_path, query_path, output_path, k);
+                        true
+                    }
+                    other => {
+                        eprintln!("Unknown blocked values='{other}'. Use 'f16'|'scalaru8'|'scalaru16'.");
+                        false
+                    }
+                };
             }
             // Plain sparse search: cast value types are read directly; ScalarU8/ScalarU16
             // are trained on the f32 dataset and built with `convert_from`.
@@ -961,9 +983,15 @@ fn compute_sparse_groundtruth_dotpacking8(
     true
 }
 
-/// Converts the dataset into a `BlockedSparseDataset` and runs the exhaustive search.
-fn compute_sparse_groundtruth_blocked(input_path: String, query_path: String, output_path: String, k: usize) {
-    use vectorium::BlockedSparseDataset;
+/// Converts the dataset into a blocked dataset with values `V` (training the per-component
+/// steps of scalar codes) and runs the exhaustive search.
+fn compute_sparse_groundtruth_blocked<V: vectorium::BlockValues>(
+    input_path: String,
+    query_path: String,
+    output_path: String,
+    k: usize,
+) {
+    use vectorium::{BlockedSparseEncoder, PackedSparseDataset};
 
     let dataset_plain: PlainSparseDataset<u16, f32, distances::DotProduct> =
         readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
@@ -973,7 +1001,7 @@ fn compute_sparse_groundtruth_blocked(input_path: String, query_path: String, ou
     let nnz = dataset_plain.nnz();
 
     let start = Instant::now();
-    let dataset: BlockedSparseDataset = dataset_plain.into();
+    let dataset: PackedSparseDataset<BlockedSparseEncoder<V>> = dataset_plain.into();
     println!("Encoding completed in {:.3}s", start.elapsed().as_secs_f64());
 
     search_packed_sparse_and_report(dataset, plain_bytes, nnz, &queries, output_path, k);

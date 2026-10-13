@@ -56,9 +56,11 @@ pub use core::vector_encoder::{
 pub use clustering::{KMeans, KMeansBuilder};
 
 pub use encoders::blocked_sparse::{
-    BlockedSparseEncoder, BlockedSparseQueryEvaluator, SPARSE_QUERY_THRESHOLD,
+    BlockF16Values, BlockScalarU8Values, BlockScalarU16Values, BlockValues, BlockedSparseEncoder,
+    BlockedSparseQueryEvaluator, BlockedSparseScalarU8Encoder, BlockedSparseScalarU16Encoder,
+    SPARSE_QUERY_THRESHOLD,
 };
-pub use core::data_block::{DataBlock, BLOCK_SIZE};
+pub use core::data_block::{Block, DataBlock, DataBlockU8, DataBlockU16, BLOCK_SIZE};
 pub use encoders::sparse_scalar_step::{
     ScalarStepSparseQuantizer, ScalarStepSparseQueryEvaluator, ScalarU8SparseDataset,
     ScalarU8SparseDatasetGrowable, ScalarU8SparseQuantizer, ScalarU16SparseDataset,
@@ -139,6 +141,11 @@ pub type PlainSparseDatasetGrowable<C, V, D> = SparseDatasetGrowable<PlainSparse
 // Useful type aliases for packed sparse dataset types
 pub type BlockedSparseDataset = PackedSparseDataset<BlockedSparseEncoder>;
 pub type BlockedSparseDatasetGrowable = PackedSparseDatasetGrowable<BlockedSparseEncoder>;
+pub type BlockedSparseScalarU8Dataset = PackedSparseDataset<BlockedSparseScalarU8Encoder>;
+pub type BlockedSparseScalarU8DatasetGrowable = PackedSparseDatasetGrowable<BlockedSparseScalarU8Encoder>;
+pub type BlockedSparseScalarU16Dataset = PackedSparseDataset<BlockedSparseScalarU16Encoder>;
+pub type BlockedSparseScalarU16DatasetGrowable =
+    PackedSparseDatasetGrowable<BlockedSparseScalarU16Encoder>;
 pub type DotPacking8U16FixedU8Dataset = PackedSparseDataset<DotPacking8U16FixedU8Encoder>;
 pub type DotPacking8U16FixedU8DatasetGrowable =
     PackedSparseDatasetGrowable<DotPacking8U16FixedU8Encoder>;

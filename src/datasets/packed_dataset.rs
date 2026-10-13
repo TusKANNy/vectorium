@@ -383,33 +383,34 @@ where
     }
 }
 
-impl<EIn, S> From<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
-    for PackedSparseDataset<crate::encoders::blocked_sparse::BlockedSparseEncoder>
+impl<EIn, S, V> From<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
+    for PackedSparseDataset<crate::encoders::blocked_sparse::BlockedSparseEncoder<V>>
 where
     EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
     EIn::OutputValueType: crate::ValueType + crate::Float,
-    for<'a> EIn::EncodedVector<'a>: crate::VectorView,
     S: crate::core::storage::SparseStorage<EIn>,
+    V: crate::encoders::blocked_sparse::BlockValues,
 {
+    /// Trains the value format on `dataset` (no-op for `f16`) and packs every vector into
+    /// blocks. Values of any float type are widened to `f32` per entry; no copy of the dataset
+    /// is made.
     fn from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>) -> Self {
-        use crate::SparseVectorEncoder;
         use crate::encoders::blocked_sparse::BlockedSparseEncoder;
-        use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
-        use crate::DotProduct;
-        use half::f16;
+        use num_traits::ToPrimitive as _;
 
         let dim = dataset.output_dim();
-        let scalar =
-            ScalarSparseQuantizer::<u16, EIn::OutputValueType, f16, DotProduct>::new(dim, dim);
-        let encoder = BlockedSparseEncoder::new(dim);
+        let mut encoder = BlockedSparseEncoder::<V>::new(dim);
+        encoder.train(&dataset);
 
         let mut offsets = Vec::with_capacity(dataset.len() + 1);
         offsets.push(0);
         let mut data = Vec::new();
-
         for v in dataset.iter() {
-            let q_vec = scalar.encode_vector(v);
-            encoder.push_encoded(q_vec.as_view(), &mut data);
+            encoder.push_blocks(
+                v.components(),
+                v.values().iter().map(|x| x.to_f32().unwrap()),
+                &mut data,
+            );
             offsets.push(data.len());
         }
 
@@ -422,13 +423,13 @@ where
     }
 }
 
-impl<EIn, S> crate::dataset::ConvertFrom<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
-    for PackedSparseDataset<crate::encoders::blocked_sparse::BlockedSparseEncoder>
+impl<EIn, S, V> crate::dataset::ConvertFrom<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
+    for PackedSparseDataset<crate::encoders::blocked_sparse::BlockedSparseEncoder<V>>
 where
     EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
     EIn::OutputValueType: crate::ValueType + crate::Float,
-    for<'a> EIn::EncodedVector<'a>: crate::VectorView,
     S: crate::core::storage::SparseStorage<EIn>,
+    V: crate::encoders::blocked_sparse::BlockValues,
 {
     fn convert_from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>) -> Self {
         dataset.into()
