@@ -208,7 +208,67 @@ assert_eq!(frozen.len(), 2);
 assert_eq!(frozen.get(0).components(), &[1_u16, 3]);
 ```
 
-### 3) Distance computation with a query evaluator (index-style)
+### 3) Choosing a sparse representation
+
+Every sparse representation is built from a plain sparse dataset with `ConvertFrom` (or `.into()` for the packed ones).
+Representations with trained parameters (ScalarU8/ScalarU16 steps, DotPacking8 component order) train on the input inside the
+conversion; the input is read in place, never copied.
+
+```rust
+use vectorium::dataset::ConvertFrom;
+use vectorium::{
+    BlockedSparseScalarU8Dataset, Dataset, DatasetGrowable, DotPacking8U16ScalarU8Dataset, DotProduct, PlainSparseDataset,
+    PlainSparseDatasetGrowable, PlainSparseQuantizer, ScalarU16SparseDataset, SparseVectorView,
+};
+
+let mut growable = PlainSparseDatasetGrowable::new(PlainSparseQuantizer::<u16, f32, DotProduct>::new(100, 100));
+growable.push(SparseVectorView::new(&[1_u16, 7, 42], &[0.5, 1.25, 3.0]));
+growable.push(SparseVectorView::new(&[7_u16, 9], &[2.0, 0.75]));
+let plain: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
+
+// Plain sparse layout, 16-bit codes with one trained step per component.
+let scalar16 = ScalarU16SparseDataset::<u16, DotProduct>::convert_from(plain.clone());
+// DotPacking8: gap-compressed components, 8-bit codes, trained component order.
+let packed: DotPacking8U16ScalarU8Dataset = plain.clone().into();
+// Blocked: uncompressed 16-entry blocks, 8-bit codes (48-byte blocks), jump_dot for short queries.
+let blocked: BlockedSparseScalarU8Dataset = plain.into();
+assert_eq!((scalar16.len(), packed.len(), blocked.len()), (2, 2, 2));
+```
+
+**Sparse datasets and compressors.** All of them score a sparse `f32` query without decoding the stored vectors.
+
+- **Plain sparse** (`SparseDataset<E>`, e.g. `PlainSparseDataset`, `ScalarSparseDataset`, `ScalarU8SparseDataset`,
+  `ScalarU16SparseDataset`): offsets, components and values stored as plain arrays. Components can be `u16` or `u32`;
+  supports dot product and squared Euclidean distance. Values: `f32`, `f16`, `bf16`, `FixedU8Q`, `FixedU16Q`
+  (`ScalarSparseDataset<C, f32, V, D>`), ScalarU8, ScalarU16. The most flexible format and the baseline for all the others.
+- **DotPacking8** (`DotPacking8U16*Dataset`, `BridgedDotPacking8U32*Dataset`): components are reordered by decreasing
+  frequency and stored as gaps packed in SIMD blocks of 8, followed by the values. The most compact format; dot product only.
+  Values: `u16` components with `FixedU8Q`, ScalarU8, ScalarU16, `f16` or Scalar4Bit; `u32` components with ScalarU8 or
+  ScalarU16.
+  The `DotPacking8U16*` encoders need component ids that fit in `u16`; the Bridged `u32` encoders
+  (`BridgedDotPacking8U32ScalarU8Dataset`, `BridgedDotPacking8U32ScalarU16Dataset`) **must be used when the number of
+  components exceeds 65,536**: they insert zero-valued "bridge" entries so that every gap fits in 16 bits.
+- **Blocked** (`BlockedSparseDataset`, `BlockedSparseScalarU8Dataset`, `BlockedSparseScalarU16Dataset`): uncompressed blocks of
+  16 `(component, value)` pairs (64-byte blocks for `f16` and ScalarU16, 48-byte for ScalarU8); dot product only. Queries with fewer than `SPARSE_QUERY_THRESHOLD` (33) components are scored
+  with **jump_dot**, which skips every block whose last component is smaller than the current query component and matches the
+  rest with AVX2; longer queries are densified. Use it **when queries have few non-zero components** (short queries) and the
+  number of components fits in `u16` (at most 65,536). It requires x86_64 with AVX2/F16C/FMA (not checked at run time).
+
+**Value types.**
+
+- **`f32`**: exact; twice the memory of the 16-bit types.
+- **`f16`**: no training; recall is usually on par with `f32`. The safe default when 16 bits per value are affordable.
+- **`bf16`**: no training; fewer mantissa bits than `f16`, so lower recall.
+- **Fixed-point, `FixedU8Q` / `FixedU16Q`**: one global step (1/64 and 1/8192), no training and no per-component state.
+  **Prefer them when their recall loss is acceptable.** They saturate near 3.98 (`FixedU8Q`) and 8 (`FixedU16Q`): larger
+  values are clipped.
+- **Per-component scalar, ScalarU8 / ScalarU16** (and Scalar4Bit in DotPacking8): each component gets its own step
+  (its maximum over the training data divided by 255, 65,535 or 15), trained on the data inside the conversion. They **may
+  improve recall** over the fixed-point types of the same size, since every component uses its whole code range, but they need
+  a table of `dim` `f32` steps that is kept in memory and read while scoring: **with many components this table can become a
+  problem** (memory and cache misses).
+
+### 4) Distance computation with a query evaluator (index-style)
 
 The typical pattern for an index is: build the evaluator once, then score many candidates.
 
@@ -229,7 +289,7 @@ let score = evaluator.compute_distance(dataset.get(candidate));
 let _ = score;
 ```
 
-### 4) Exhaustive search (top‑k baseline)
+### 5) Exhaustive search (top‑k baseline)
 
 `FlatIndex` wraps any dataset and searches it exhaustively. It is the brute-force implementation
 of the `Index` trait, provides an exhaustive top‑k baseline:
@@ -248,7 +308,7 @@ let top2 = FlatIndex::from(&dataset).search(query, 2, &());
 assert_eq!(top2.len(), 2);
 ```
 
-### 5) Parallel ground-truth computation in Rust (query-level parallelism)
+### 6) Parallel ground-truth computation in Rust (query-level parallelism)
 
 The easiest way to use multiple CPU cores is to parallelize across queries. This is the strategy used by
 `compute_groundtruth`.
@@ -271,7 +331,7 @@ let results: Vec<_> = queries
 assert_eq!(results.len(), 2);
 ```
 
-### 6) Multivector datasets (requires `multivec` feature)
+### 7) Multivector datasets (requires `multivec` feature)
 
 Multivector datasets store variable-length sequences of token vectors — the representation used by late-interaction models such as ColBERT.
 Enable the feature in your `Cargo.toml` first (see [Cargo features](#cargo-features)).
@@ -298,7 +358,7 @@ assert_eq!(frozen.len(), 2);
 # }
 ```
 
-### 7) Range-based access and prefetch
+### 8) Range-based access and prefetch
 
 Datasets expose `range_from_id`/`id_from_range` so callers can keep lightweight handles to the underlying storage ranges.
 This is mainly useful for sparse/packed layouts, where range lookups can be a cache miss and prefetching can help.

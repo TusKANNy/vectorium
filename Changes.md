@@ -15,7 +15,16 @@ plain sparse dataset with `ConvertFrom` / `.into()` (in Seismic: `convert_datase
 | `DotPacking8U16F16Dataset` | `u16` | `f16` | available (`0bcdd01`) |
 | `DotPacking8U16Scalar4BitDataset` | `u16` | 4-bit per-component scalar | available (`0bcdd01`) |
 | `BridgedDotPacking8U32ScalarU8Dataset` | `u32` | 8-bit per-component scalar | available (`0bcdd01`) |
-| `DotPacking8U16FixedU8Dataset` | `u16` | `FixedU8Q` | available (`0bcdd01`), but FixedU8 is scheduled for removal: do not adopt |
+| `DotPacking8U16FixedU8Dataset` | `u16` | `FixedU8Q` | available (`0bcdd01`) |
+| `DotPacking8U16ScalarU16Dataset` | `u16` | 16-bit per-component scalar | available (`f3afe08`) |
+| `BridgedDotPacking8U32ScalarU16Dataset` | `u32` | 16-bit per-component scalar | available (`f3afe08`) |
+| `ScalarU8SparseDataset<C, D>` (plain sparse; dot product and Euclidean) | `u16`, `u32` | 8-bit per-component scalar | available (`deab0cd`), `ConvertFrom<plain sparse dataset>` |
+| `ScalarU16SparseDataset<C, D>` (plain sparse; dot product and Euclidean) | `u16`, `u32` | 16-bit per-component scalar | available (`deab0cd`), `ConvertFrom<plain sparse dataset>` |
+| `BlockedSparseScalarU8Dataset` (48-byte blocks, jump_dot) | `u16` | 8-bit per-component scalar | `2d91d56` |
+| `BlockedSparseScalarU16Dataset` (jump_dot) | `u16` | 16-bit per-component scalar | `2d91d56` |
+
+The README section "Choosing a sparse representation" (also the crate rustdoc) describes all of them and when to use each; measurements are in `local_docs/Benchmarks.md`.
+`FixedU8Q`/`FixedU16Q` stay: the plan to remove them was cancelled (user, 2026-10-13).
 
 How to use it when updating a dependent crate: read **Breaking changes** first (things that
 stop compiling or change results), then **Renames** if the crate used `feature/quantization`,
@@ -25,16 +34,12 @@ then **Additions** for what can replace removed pieces.
 
 ## Breaking changes (relative to `main`)
 
-### Planned, not yet done
-
-| Change | Who is hit | Migration |
-|---|---|---|
-| **FixedU8 / FixedU16 removed** (`FixedU8Q`, `FixedU16Q` and their users; FixedU8 replaced by ScalarU8 where needed). Not planned in detail yet. | **Seismic**: `src/lib.rs:36` re-exports `FixedU8Q, FixedU16Q`; `src/bin/build_inverted_index.rs:271-280` builds `ScalarSparseDataset<…, FixedU16Q|FixedU8Q, …>`. | To be defined with the plan. |
-
 ### Done
 
 | Commit | Change | Who is hit | Migration |
 |---|---|---|---|
+| `2d91d56` | `BlockedSparseEncoder` and `BlockedSparseQueryEvaluator` take a value-format parameter (`BlockedSparseEncoder<V = BlockF16Values>`); `BlockedSparseEncoder` without parameters is still the `f16` encoder with the same serialized form and bytes. | `let e = BlockedSparseEncoder::new(dim);` with nothing else fixing the type no longer compiles ("type annotations needed"). | Write `let e: BlockedSparseEncoder = BlockedSparseEncoder::new(dim);`. |
+| `2d91d56` | Blocked decoding and `DataBlock::len` find padding by its repeated component instead of a zero value: a real value stored as zero (an `f16` underflow) no longer truncates the decoded vector. | Only results of `decode_vector` / `len` on such vectors (scores were already correct). | None. |
 | `a6a5ddd` | **DotVByte removed**: `DotVByteFixedU8Encoder`, `DotVByteFixedU8QueryEvaluator`, the `encoders::dotvbyte_fixedu8` module, the `SparseDataset -> PackedSparseDataset<DotVByteFixedU8Encoder>` conversion, `--encoder dotvbyte` in `compute_groundtruth`. | **Seismic**: `src/bin/build_inverted_index.rs:20,303` and `src/pylib/dotvbyte.rs` (`SeismicIndexDotVByte`). | Replace `PackedSparseDataset<DotVByteFixedU8Encoder>` with a DotPacking8 dataset, e.g. `DotPacking8U16ScalarU8Dataset`: `convert_dataset_into::<DotPacking8U16ScalarU8Dataset>()` works the same way (it trains inside). Rebuild serialized DotVByte indexes. |
 | `0bcdd01` | `DotPacking8Encoder::train` takes any sparse dataset (`&SparseDatasetGeneric<E, S>` with `E::OutputComponentType = C`, any `ValueType` values, growable or immutable) instead of `&PlainSparseDataset<C, f32, D>`. Same result for the same data. `ComponentMapping::by_decreasing_frequency(dim, components_iter)` takes an iterator of component slices instead of a dataset. | Code that let `train` infer the dataset type, e.g. `let d = growable.into(); enc.train(&d);`, no longer compiles ("type annotations needed"). | Train on the growable dataset directly (`enc.train(&growable)`), or annotate the type. |
 | `0db4183` | Component reordering uses **decreasing document frequency** instead of graph bisection; the `rgb` (enhanced-graph-bisection) git dependency is gone. The internal helper `permute_components_with_bisection` became `permute_components_by_frequency` (`pub(crate)`, not visible outside). | Anyone building a DotVByte (or DotPacking8) dataset: the component permutation, hence the encoded bytes and the index size, differ from `main`. Scores do not change (the permutation is applied to queries too). Serialized indexes from `main` still load (the mapping is stored). | None needed. Drop any `rgb`-related patch/feature in the dependent crate. |
@@ -86,6 +91,10 @@ API differences besides the names:
 
 | Commit | Addition |
 |---|---|
+| `2d91d56` | Blocked ScalarU8/ScalarU16: `BlockScalarU8Values` (48-byte `DataBlockU8`) and `BlockScalarU16Values` (64-byte `DataBlockU16`), aliases `BlockedSparseScalarU8Encoder`/`…U16Encoder`, `BlockedSparseScalarU8Dataset`/`…U16Dataset` (+ `Growable`), the `Block` and `BlockValues` traits; `From`/`ConvertFrom<SparseDataset>` trains the steps; `compute_groundtruth --encoder blocked --blocked-values f16|scalaru8|scalaru16`. |
+| `f3afe08` | DotPacking8 ScalarU16: `ScalarU16Values`, `DotPacking8U16ScalarU16Encoder`, `BridgedDotPacking8U32ScalarU16Encoder` with evaluators and datasets; `--dotpacking8-values scalaru16`. |
+| `c57bf4e` | `compute_groundtruth`: sparse `--value-type scalaru8|scalaru16`, and `--distance euclidean` for every plain sparse value type; reports ms/query. |
+| `deab0cd` | `ScalarStepSparseQuantizer<C, Code, D>` (plain sparse, `u8`/`u16` codes, one trained step per component, rounded to nearest; dot product and squared Euclidean), aliases `ScalarU8SparseQuantizer`, `ScalarU16SparseQuantizer`, datasets `ScalarU8SparseDataset<C, D>`, `ScalarU16SparseDataset<C, D>` (+ `Growable`), `StepCode`; `ConvertFrom<plain or cast-quantized sparse dataset>` trains the steps without copying the input. Replaces `ScalarSparseDataset<C, f32, FixedU8Q|FixedU16Q, D>` with better recall at the same size (see README). |
 | `0bcdd01` | `From` / `ConvertFrom<SparseDataset<…>>` for every DotPacking8 dataset (one generic impl over `DotPacking8Encoder<C, V>`). Trains component order and value steps on the input, widens values of any float type to `f32` per vector, and makes no copy of the input. Produces exactly the bytes of `train` + `push`. |
 | `1569f03` | `BlockedSparseEncoder`, `BlockedSparseQueryEvaluator`, `BlockedSparseDataset[Growable]`, `DataBlock`, `BLOCK_SIZE`, `SPARSE_QUERY_THRESHOLD` (= 33). Uncompressed `u16`/`f16` sparse vectors in 64-byte blocks of 16 entries. Queries with fewer than 33 components use **jump_dot** (skip every block whose last component is below the current query component); longer queries are densified. `From`/`ConvertFrom<SparseDataset<…, u16, …>>` for `PackedSparseDataset<BlockedSparseEncoder>`. Requires x86_64 with AVX2/F16C/FMA (not checked at run time). |
 | `23ded88` … `d3c38f0` | DotPacking8 family: `DotPacking8U16{FixedU8,ScalarU8,F16,Scalar4Bit}Encoder`, `BridgedDotPacking8U32ScalarU8Encoder`, matching `…QueryEvaluator` and `…Dataset[Growable]` aliases. `DotProduct` only. Encode with `PackedSparseDatasetGrowable::new(encoder)` + `push`, after `encoder.train(&plain_dataset)`. No `From<SparseDataset>` conversion yet. |
