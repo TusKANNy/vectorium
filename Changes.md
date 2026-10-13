@@ -11,11 +11,11 @@ plain sparse dataset with `ConvertFrom` / `.into()` (in Seismic: `convert_datase
 | Dataset type | Components | Values | Conversion status |
 |---|---|---|---|
 | `BlockedSparseDataset` (jump_dot for queries with < 33 components) | `u16` | `f16`, uncompressed | available (`1569f03`) |
-| `DotPacking8U16ScalarU8Dataset` | `u16` | 8-bit per-component scalar | available (0bcdd01) |
-| `DotPacking8U16F16Dataset` | `u16` | `f16` | available (0bcdd01) |
-| `DotPacking8U16Scalar4BitDataset` | `u16` | 4-bit per-component scalar | available (0bcdd01) |
-| `BridgedDotPacking8U32ScalarU8Dataset` | `u32` | 8-bit per-component scalar | available (0bcdd01) |
-| `DotPacking8U16FixedU8Dataset` | `u16` | `FixedU8Q` | available (0bcdd01), but FixedU8 is scheduled for removal: do not adopt |
+| `DotPacking8U16ScalarU8Dataset` | `u16` | 8-bit per-component scalar | available (`0bcdd01`) |
+| `DotPacking8U16F16Dataset` | `u16` | `f16` | available (`0bcdd01`) |
+| `DotPacking8U16Scalar4BitDataset` | `u16` | 4-bit per-component scalar | available (`0bcdd01`) |
+| `BridgedDotPacking8U32ScalarU8Dataset` | `u32` | 8-bit per-component scalar | available (`0bcdd01`) |
+| `DotPacking8U16FixedU8Dataset` | `u16` | `FixedU8Q` | available (`0bcdd01`), but FixedU8 is scheduled for removal: do not adopt |
 
 How to use it when updating a dependent crate: read **Breaking changes** first (things that
 stop compiling or change results), then **Renames** if the crate used `feature/quantization`,
@@ -29,13 +29,13 @@ then **Additions** for what can replace removed pieces.
 
 | Change | Who is hit | Migration |
 |---|---|---|
-| **DotVByte removed** (`DotVByteFixedU8Encoder`, `DotVByteFixedU8QueryEvaluator`, the `encoders::dotvbyte_fixedu8` module, `--encoder dotvbyte` in `compute_groundtruth`). Plan: `plans/Plan_Remove_DotVByte.md`. | **Seismic**: `src/bin/build_inverted_index.rs:20,303` and `src/pylib/dotvbyte.rs` (`SeismicIndexDotVByte`) use `PackedSparseDataset<DotVByteFixedU8Encoder>` and `convert_dataset_into::<…>()`. | Replace the type with a DotPacking8 dataset alias, e.g. `DotPacking8U16ScalarU8Dataset` (the conversion trains inside, as DotVByte's did; available since 0bcdd01). |
 | **FixedU8 / FixedU16 removed** (`FixedU8Q`, `FixedU16Q` and their users; FixedU8 replaced by ScalarU8 where needed). Not planned in detail yet. | **Seismic**: `src/lib.rs:36` re-exports `FixedU8Q, FixedU16Q`; `src/bin/build_inverted_index.rs:271-280` builds `ScalarSparseDataset<…, FixedU16Q|FixedU8Q, …>`. | To be defined with the plan. |
 
 ### Done
 
 | Commit | Change | Who is hit | Migration |
 |---|---|---|---|
+| `a6a5ddd` | **DotVByte removed**: `DotVByteFixedU8Encoder`, `DotVByteFixedU8QueryEvaluator`, the `encoders::dotvbyte_fixedu8` module, the `SparseDataset -> PackedSparseDataset<DotVByteFixedU8Encoder>` conversion, `--encoder dotvbyte` in `compute_groundtruth`. | **Seismic**: `src/bin/build_inverted_index.rs:20,303` and `src/pylib/dotvbyte.rs` (`SeismicIndexDotVByte`). | Replace `PackedSparseDataset<DotVByteFixedU8Encoder>` with a DotPacking8 dataset, e.g. `DotPacking8U16ScalarU8Dataset`: `convert_dataset_into::<DotPacking8U16ScalarU8Dataset>()` works the same way (it trains inside). Rebuild serialized DotVByte indexes. |
 | `0bcdd01` | `DotPacking8Encoder::train` takes any sparse dataset (`&SparseDatasetGeneric<E, S>` with `E::OutputComponentType = C`, any `ValueType` values, growable or immutable) instead of `&PlainSparseDataset<C, f32, D>`. Same result for the same data. `ComponentMapping::by_decreasing_frequency(dim, components_iter)` takes an iterator of component slices instead of a dataset. | Code that let `train` infer the dataset type, e.g. `let d = growable.into(); enc.train(&d);`, no longer compiles ("type annotations needed"). | Train on the growable dataset directly (`enc.train(&growable)`), or annotate the type. |
 | `0db4183` | Component reordering uses **decreasing document frequency** instead of graph bisection; the `rgb` (enhanced-graph-bisection) git dependency is gone. The internal helper `permute_components_with_bisection` became `permute_components_by_frequency` (`pub(crate)`, not visible outside). | Anyone building a DotVByte (or DotPacking8) dataset: the component permutation, hence the encoded bytes and the index size, differ from `main`. Scores do not change (the permutation is applied to queries too). Serialized indexes from `main` still load (the mapping is stored). | None needed. Drop any `rgb`-related patch/feature in the dependent crate. |
 | `0db4183` | The plain-sparse → `PackedSparseDataset<DotVByteFixedU8Encoder>` conversion trains the permutation on **all** vectors instead of the first 5% (min 50,000). | Build time of DotVByte conversions (one counting pass over all components; no longer a sample). | None. |

@@ -125,7 +125,7 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release --features cli
   --encoder plain
 ```
 
-Sparse dataset (Seismic binary), dot product, DotVByte compression:
+Sparse dataset (Seismic binary), dot product, DotPacking8 compression with 8-bit values:
 
 ```bash
 RUSTFLAGS="-C target-cpu=native" cargo build --release --features cli
@@ -137,7 +137,8 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release --features cli
   --component-type u16 \
   --value-type f32 \
   --distance dotproduct \
-  --encoder dotvbyte
+  --encoder dotpacking8 \
+  --dotpacking8-values scalaru8
 ```
 
 #### Parameters and common combinations
@@ -152,9 +153,13 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release --features cli
   - Sparse queries are always `f32` (dataset values may be quantized).
 - `--dataset-type <dense|sparse>`: dataset format (default: `dense`).
 - `--component-type <u16|u32>`: sparse component type (default: `u32`).
-- `--encoder <plain|pq|dotvbyte>`: encoder (default: `plain`).
+- `--encoder <plain|pq|dotpacking8|blocked>`: encoder (default: `plain`).
   - `pq`: dense‑only, requires `--value-type f32`, and uses `--pq-subspaces`.
-  - `dotvbyte`: sparse‑only, requires `--component-type u16` and `--distance dotproduct`.
+  - `dotpacking8`: sparse‑only, requires `--value-type f32` and `--distance dotproduct`; values are chosen with `--dotpacking8-values`.
+  - `blocked`: sparse‑only, uncompressed `f16` values in 64‑byte blocks (jump_dot for short queries); requires `--component-type u16`, `--value-type f32` and `--distance dotproduct`.
+- `--dotpacking8-values <fixedu8|scalaru8|f16|scalar4bit>`: values stored by `dotpacking8` (with `--component-type u32`, only `scalaru8`, the bridged encoder).
+- `--no-train`: `dotpacking8` with `fixedu8` or `f16` only; skips component reordering.
+- `--groundtruth <PATH>`: reference TSV; recall@k of the computed results is reported.
 - `--pq-subspaces <M>`: number of PQ subspaces (`0` auto‑selects a supported value that divides the dataset dimension).
   - Product Quantization splits vectors into `M` equal‑sized chunks, so `dim % M == 0` is required.
   - Supported values are currently `{128, 96, 64, 32, 16, 8, 4}`.
