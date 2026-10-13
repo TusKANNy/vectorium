@@ -42,7 +42,8 @@ struct Args {
     #[arg(default_value = "euclidean")]
     distance: String,
 
-    /// Value type for dataset: 'f32', 'f16', 'bf16', 'fixedu8', or 'fixedu16' (default: f32)
+    /// Value type for dataset: 'f32', 'f16', 'bf16', 'fixedu8', 'fixedu16'; sparse also
+    /// 'scalaru8', 'scalaru16' (trained per-component steps) (default: f32)
     #[clap(short, long, value_parser)]
     #[arg(default_value = "f32")]
     value_type: String,
@@ -342,87 +343,38 @@ fn dispatch(args: Args) -> bool {
                 compute_sparse_groundtruth_blocked(input_path, query_path, output_path, k);
                 return true;
             }
-            match (
-                component_type.as_str(),
-                distance.as_str(),
-                value_type.as_str(),
-            ) {
-                ("u16", "dotproduct", "f32") => compute_sparse_groundtruth::<
-                    u16,
-                    f32,
-                    distances::DotProduct,
-                >(
-                    input_path, query_path, output_path, k
-                ),
-                ("u16", "dotproduct", "f16") => compute_sparse_groundtruth::<
-                    u16,
-                    f16,
-                    distances::DotProduct,
-                >(
-                    input_path, query_path, output_path, k
-                ),
-                ("u16", "dotproduct", "bf16") => compute_sparse_groundtruth::<
-                    u16,
-                    bf16,
-                    distances::DotProduct,
-                >(
-                    input_path, query_path, output_path, k
-                ),
-                ("u16", "dotproduct", "fixedu8") => compute_sparse_groundtruth::<
-                    u16,
-                    FixedU8Q,
-                    distances::DotProduct,
-                >(
-                    input_path, query_path, output_path, k
-                ),
-                ("u16", "dotproduct", "fixedu16") => compute_sparse_groundtruth::<
-                    u16,
-                    FixedU16Q,
-                    distances::DotProduct,
-                >(
-                    input_path, query_path, output_path, k
-                ),
-                ("u32", "dotproduct", "f32") => compute_sparse_groundtruth::<
-                    u32,
-                    f32,
-                    distances::DotProduct,
-                >(
-                    input_path, query_path, output_path, k
-                ),
-                ("u32", "dotproduct", "f16") => compute_sparse_groundtruth::<
-                    u32,
-                    f16,
-                    distances::DotProduct,
-                >(
-                    input_path, query_path, output_path, k
-                ),
-                ("u32", "dotproduct", "bf16") => compute_sparse_groundtruth::<
-                    u32,
-                    bf16,
-                    distances::DotProduct,
-                >(
-                    input_path, query_path, output_path, k
-                ),
-                ("u32", "dotproduct", "fixedu8") => compute_sparse_groundtruth::<
-                    u32,
-                    FixedU8Q,
-                    distances::DotProduct,
-                >(
-                    input_path, query_path, output_path, k
-                ),
-                ("u32", "dotproduct", "fixedu16") => compute_sparse_groundtruth::<
-                    u32,
-                    FixedU16Q,
-                    distances::DotProduct,
-                >(
-                    input_path, query_path, output_path, k
-                ),
+            // Plain sparse search: cast value types are read directly; ScalarU8/ScalarU16
+            // are trained on the f32 dataset and built with `convert_from`.
+            macro_rules! by_value_type {
+                ($C:ty, $D:ty) => {
+                    match value_type.as_str() {
+                        "f32" => compute_sparse_groundtruth::<$C, f32, $D>(input_path, query_path, output_path, k),
+                        "f16" => compute_sparse_groundtruth::<$C, f16, $D>(input_path, query_path, output_path, k),
+                        "bf16" => compute_sparse_groundtruth::<$C, bf16, $D>(input_path, query_path, output_path, k),
+                        "fixedu8" => compute_sparse_groundtruth::<$C, FixedU8Q, $D>(input_path, query_path, output_path, k),
+                        "fixedu16" => compute_sparse_groundtruth::<$C, FixedU16Q, $D>(input_path, query_path, output_path, k),
+                        "scalaru8" => compute_sparse_groundtruth_scalar_step::<$C, u8, $D>(input_path, query_path, output_path, k),
+                        "scalaru16" => compute_sparse_groundtruth_scalar_step::<$C, u16, $D>(input_path, query_path, output_path, k),
+                        _ => {
+                            eprintln!(
+                                "Unknown value_type='{}' for sparse. Use value_type='f32'|'f16'|'bf16'|'fixedu8'|'fixedu16'|'scalaru8'|'scalaru16'.",
+                                value_type
+                            );
+                            return false;
+                        }
+                    }
+                };
+            }
+            match (component_type.as_str(), distance.as_str()) {
+                ("u16", "dotproduct") => by_value_type!(u16, distances::DotProduct),
+                ("u16", "euclidean") => by_value_type!(u16, distances::SquaredEuclideanDistance),
+                ("u32", "dotproduct") => by_value_type!(u32, distances::DotProduct),
+                ("u32", "euclidean") => by_value_type!(u32, distances::SquaredEuclideanDistance),
                 _ => {
                     eprintln!(
-                        "Unknown combination for sparse: component_type='{}', distance='{}', value_type='{}'. \
-                        Use component_type='u16'|'u32', distance='dotproduct' (euclidean not supported for sparse), \
-                        and value_type='f32'|'f16'|'bf16'|'fixedu8'|'fixedu16'.",
-                        component_type, distance, value_type
+                        "Unknown combination for sparse: component_type='{}', distance='{}'. \
+                         Use component_type='u16'|'u32' and distance='dotproduct'|'euclidean'.",
+                        component_type, distance
                     );
                     return false;
                 }
@@ -770,6 +722,39 @@ fn run_dense_groundtruth_pq<const M: usize, D>(
     }
 }
 
+/// Trains a ScalarU8/ScalarU16 sparse quantizer (one step per component) on the f32 dataset,
+/// encodes it and runs the exhaustive search.
+fn compute_sparse_groundtruth_scalar_step<C, Code, D>(
+    input_path: String,
+    query_path: String,
+    output_path: String,
+    k: usize,
+) where
+    C: vectorium::ComponentType
+        + vectorium::SpaceUsage
+        + std::fmt::Debug
+        + num_traits::FromPrimitive,
+    Code: vectorium::StepCode + vectorium::SpaceUsage,
+    D: vectorium::ScalarSparseSupportedDistance + From<f32> + 'static,
+{
+    use vectorium::ScalarStepSparseQuantizer;
+    use vectorium::dataset::ConvertFrom;
+
+    let plain: PlainSparseDataset<C, f32, D> =
+        readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
+    let queries: PlainSparseDataset<C, f32, D> =
+        readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
+
+    let start = Instant::now();
+    let dataset =
+        vectorium::SparseDataset::<ScalarStepSparseQuantizer<C, Code, D>>::convert_from(plain);
+    println!(
+        "Training + encoding (per-component steps) completed in {:.3}s",
+        start.elapsed().as_secs_f64()
+    );
+    search_sparse_and_write(&dataset, &queries, output_path, k);
+}
+
 fn compute_sparse_groundtruth<C, V, D>(
     input_path: String,
     query_path: String,
@@ -791,6 +776,23 @@ fn compute_sparse_groundtruth<C, V, D>(
     let queries: PlainSparseDataset<C, f32, D> =
         readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
 
+    search_sparse_and_write(&dataset, &queries, output_path, k);
+}
+
+
+/// Prints dataset statistics, runs the exhaustive top-k search for every query (timed, with
+/// ms/query) and writes `query_id\tdoc_id\trank\tscore` lines.
+fn search_sparse_and_write<E, D>(
+    dataset: &vectorium::SparseDataset<E>,
+    queries: &PlainSparseDataset<E::InputComponentType, f32, D>,
+    output_path: String,
+    k: usize,
+) where
+    E: vectorium::SparseVectorEncoder<Distance = D> + SpaceUsage + Sync,
+    E::OutputComponentType: SpaceUsage,
+    E::OutputValueType: SpaceUsage,
+    D: vectorium::ScalarSparseSupportedDistance + 'static,
+{
     // Print dataset info=
     let dataset_gib = dataset.space_usage_GiB();
 
@@ -817,7 +819,7 @@ fn compute_sparse_groundtruth<C, V, D>(
         .progress_count(queries.len() as u64)
         .with_style(pb_style)
         .map(|qvec| {
-            let res: Vec<DatasetResult<D>> = FlatIndex::from(&dataset).search(qvec, k, &());
+            let res: Vec<DatasetResult<D>> = FlatIndex::from(dataset).search(qvec, k, &());
             res.into_iter()
                 .map(|r| (r.distance.distance(), r.vector))
                 .collect()
@@ -825,7 +827,11 @@ fn compute_sparse_groundtruth<C, V, D>(
         .collect();
 
     let elapsed = start_time.elapsed();
-    println!("Computation completed in {:.3}s", elapsed.as_secs_f64());
+    println!(
+        "Computation completed in {:.3}s ({:.3} ms/query)",
+        elapsed.as_secs_f64(),
+        elapsed.as_secs_f64() * 1000.0 / queries.len() as f64
+    );
 
     let mut output_file = File::create(output_path).expect("failed to create output file");
 
