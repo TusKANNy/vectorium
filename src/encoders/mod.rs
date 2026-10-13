@@ -6,7 +6,6 @@ pub mod dotpacking8_u16_scalaru8;
 pub mod dotpacking8_u16_f16;
 pub mod dotpacking8_u16_scalar4bit;
 pub mod dotpacking8_u32_scalaru8;
-pub mod dotvbyte_fixedu8;
 #[cfg(feature = "multivec")]
 pub mod multivec_pq;
 #[cfg(feature = "multivec")]

@@ -384,66 +384,6 @@ where
 }
 
 impl<EIn, S> From<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
-    for PackedSparseDataset<crate::DotVByteFixedU8Encoder>
-where
-    EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
-    EIn::OutputValueType: crate::ValueType + crate::Float,
-    for<'a> EIn::EncodedVector<'a>: crate::VectorView,
-    S: crate::core::storage::SparseStorage<EIn>,
-{
-    fn from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>) -> Self {
-        use crate::SparseVectorEncoder;
-        use crate::encoders::sparse_scalar::ScalarSparseQuantizer;
-        use crate::{DotProduct, FixedU8Q};
-
-        let dim = dataset.output_dim();
-        // Use a scalar quantizer to map values from `EIn::OutputValueType` into `FixedU8Q`.
-        let scalar =
-            ScalarSparseQuantizer::<u16, EIn::OutputValueType, FixedU8Q, DotProduct>::new(dim, dim);
-
-        let mut dotvbyte_encoder = crate::DotVByteFixedU8Encoder::new(dim, dim);
-
-        // DotVByte reorders components by decreasing frequency, counted over all vectors
-        // (a single pass over the components).
-        dotvbyte_encoder.train(dataset.iter());
-
-        let mut offsets = Vec::with_capacity(dataset.len() + 1);
-        offsets.push(0);
-        let mut data = Vec::new();
-
-        for v in dataset.iter() {
-            // Quantize on the fly
-            let q_vec = scalar.encode_vector(v);
-            // Encode (pack)
-            dotvbyte_encoder.push_encoded(q_vec.as_view(), &mut data);
-            offsets.push(data.len());
-        }
-
-        PackedSparseDatasetGeneric {
-            offsets: offsets.into_boxed_slice(),
-            data: data.into_boxed_slice(),
-            encoder: dotvbyte_encoder,
-            nnz: dataset.nnz(),
-        }
-    }
-}
-
-impl<EIn, S> ConvertFrom<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
-    for PackedSparseDataset<crate::DotVByteFixedU8Encoder>
-where
-    EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,
-    EIn::OutputValueType: crate::ValueType + crate::Float,
-    for<'a> EIn::EncodedVector<'a>: crate::VectorView,
-    S: crate::core::storage::SparseStorage<EIn>,
-{
-    fn convert_from(
-        dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>,
-    ) -> Self {
-        dataset.into()
-    }
-}
-
-impl<EIn, S> From<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
     for PackedSparseDataset<crate::encoders::blocked_sparse::BlockedSparseEncoder>
 where
     EIn: crate::SparseVectorEncoder<OutputComponentType = u16>,

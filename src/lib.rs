@@ -77,7 +77,6 @@ pub use encoders::dotpacking8_u16_scalaru8::{
 pub use encoders::dotpacking8_u32_scalaru8::{
     BridgedDotPacking8U32ScalarU8Encoder, BridgedDotPacking8U32ScalarU8QueryEvaluator,
 };
-pub use encoders::dotvbyte_fixedu8::{DotVByteFixedU8Encoder, DotVByteFixedU8QueryEvaluator};
 #[cfg(feature = "multivec")]
 pub use encoders::multivec_pq::{MultiVecPQQueryEvaluator, MultiVecProductQuantizer};
 #[cfg(feature = "multivec")]

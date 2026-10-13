@@ -253,7 +253,7 @@ where
 }
 
 /// Encoder contract for encoding sparse component/value pairs packed into a single container and potentially encoded in some way.
-/// For example, compression schemes such as DotVByte use this approach.
+/// For example, compression schemes such as DotPacking8 use this approach.
 pub trait PackedSparseVectorEncoder: SparseDataEncoder
 where
     for<'a> Self: VectorEncoder<EncodedVector<'a> = PackedVectorView<'a, Self::PackedDataType>>,
