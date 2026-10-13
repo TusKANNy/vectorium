@@ -195,6 +195,85 @@ impl ValueReader for F16Reader<'_> {
     }
 }
 
+/// Two bytes (`u16` code) per value. Raw cursor like [`F16Reader`]; relies on invariants (1)
+/// and (4) in `common.rs` (the stream starts at an even offset and holds exactly `n` values).
+/// Reads are unaligned, so the cursor does not depend on the even offset for soundness.
+pub struct U16Reader<'a> {
+    ptr: *const u16,
+    #[cfg(debug_assertions)]
+    end: *const u16,
+    _stream: std::marker::PhantomData<&'a [u8]>,
+}
+
+impl<'a> U16Reader<'a> {
+    #[inline(always)]
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
+        let range = bytes.as_ptr_range();
+        Self {
+            ptr: range.start.cast(),
+            #[cfg(debug_assertions)]
+            end: range.end.cast(),
+            _stream: std::marker::PhantomData,
+        }
+    }
+
+    #[inline(always)]
+    fn check(&self, len: usize) {
+        #[cfg(debug_assertions)]
+        assert!(
+            self.ptr as usize + 2 * len <= self.end as usize,
+            "value stream over-read"
+        );
+        let _ = len;
+    }
+}
+
+impl ValueReader for U16Reader<'_> {
+    type Code = u16;
+
+    #[inline(always)]
+    fn next_block(&mut self) -> Simd<f32, N> {
+        self.check(N);
+        // SAFETY: a full block has 8 values left in the stream, invariant (4) in `common.rs`.
+        let v = unsafe { self.ptr.cast::<Simd<u16, N>>().read_unaligned() };
+        self.ptr = unsafe { self.ptr.add(N) };
+        v.cast()
+    }
+
+    #[inline(always)]
+    fn next_block_codes(&mut self) -> [u16; N] {
+        self.check(N);
+        // SAFETY: as in `next_block`.
+        let out = unsafe { self.ptr.cast::<[u16; N]>().read_unaligned() };
+        self.ptr = unsafe { self.ptr.add(N) };
+        out
+    }
+
+    #[inline(always)]
+    fn tail(&mut self, rem: usize) -> [u16; N] {
+        self.check(rem);
+        let mut out = [0u16; N];
+        for (i, o) in out.iter_mut().enumerate().take(rem) {
+            // SAFETY: the tail has `rem = n % 8` values left in the stream, invariant (4).
+            *o = unsafe { self.ptr.add(i).read_unaligned() };
+        }
+        self.ptr = unsafe { self.ptr.add(rem) };
+        out
+    }
+
+    #[inline(always)]
+    fn code_as_f32(code: u16) -> f32 {
+        code as f32
+    }
+
+    #[inline(always)]
+    fn tail_value(&self, i: usize) -> f32 {
+        self.check(i + 1);
+        // SAFETY: the tail has `n % 8` values left in the stream, invariant (4) in `common.rs`.
+        (unsafe { self.ptr.add(i).read_unaligned() }) as f32
+    }
+}
+
 /// How one value is quantized, stored and read back. Implemented by the four value formats;
 /// the encoder is generic over it.
 pub trait ValueCodec:
@@ -290,6 +369,48 @@ impl ValueCodec for ScalarU8Values {
     fn stream_bytes(n: usize) -> usize { n }
     fn write_stream(out: &mut Vec<u8>, codes: &[u8]) { out.extend_from_slice(codes) }
     fn reader(stream: &[u8]) -> U8Reader<'_> { U8Reader::new(stream) }
+}
+
+/// 16-bit scalar codes with one step per component (`max / 65535`), rounded to the nearest
+/// code. Same per-component scheme as [`ScalarU8Values`] with 256 times finer steps.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScalarU16Values {
+    quants: Box<[f32]>,
+}
+
+impl ScalarU16Values {
+    pub fn from_steps(quants: Box<[f32]>) -> Self { Self { quants } }
+    pub fn steps(&self) -> &[f32] { &self.quants }
+}
+
+impl SpaceUsage for ScalarU16Values {
+    fn space_usage_bytes(&self) -> usize { self.quants.len() * std::mem::size_of::<f32>() }
+}
+
+impl crate::core::sealed::Sealed for ScalarU16Values {}
+
+impl ValueCodec for ScalarU16Values {
+    type Code = u16;
+    type Output = u16;
+    type Reader<'a> = U16Reader<'a>;
+    fn new_untrained(dim: usize) -> Self { Self::from_steps(vec![0.0; dim].into_boxed_slice()) }
+    fn train<'a, C, W>(&mut self, dim: usize, vectors: impl Iterator<Item = (&'a [C], &'a [W])>)
+    where C: ComponentType, W: ValueType {
+        self.quants = sparse_scalar_quantizer_steps(dim, vectors, 0.0, 1.0, 65535.0).into_boxed_slice();
+    }
+    #[inline(always)]
+    fn encode(&self, c: usize, v: f32) -> u16 {
+        let q = self.quants[c];
+        if q > 0.0 { (v / q).round().clamp(0.0, 65535.0) as u16 } else { 0 }
+    }
+    #[inline(always)]
+    fn decode(&self, c: usize, code: u16) -> f32 { code as f32 * self.quants[c] }
+    #[inline(always)]
+    fn query_value(&self, c: usize, v: f32) -> f32 { v * self.quants[c] }
+    fn zero_code() -> u16 { 0 }
+    fn stream_bytes(n: usize) -> usize { 2 * n }
+    fn write_stream(out: &mut Vec<u8>, codes: &[u16]) { out.extend_from_slice(bytemuck::cast_slice(codes)) }
+    fn reader(stream: &[u8]) -> U16Reader<'_> { U16Reader::new(stream) }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

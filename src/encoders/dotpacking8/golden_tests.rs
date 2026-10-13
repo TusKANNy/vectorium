@@ -7,6 +7,7 @@ use crate::vector_encoder::SparseDataEncoder;
 use crate::{
     BridgedDotPacking8U32ScalarU8Encoder, DatasetGrowable, DotPacking8U16F16Encoder,
     DotPacking8U16FixedU8Encoder, DotPacking8U16Scalar4BitEncoder, DotPacking8U16ScalarU8Encoder,
+    DotPacking8U16ScalarU16Encoder, BridgedDotPacking8U32ScalarU16Encoder,
     DotProduct, PackedSparseVectorEncoder, PlainSparseDataset, PlainSparseDatasetGrowable,
     PlainSparseQuantizer, QueryEvaluator, VectorEncoder,
 };
@@ -145,3 +146,5 @@ golden_case!(golden_u16_f16, DotPacking8U16F16Encoder, u16, 30_000, false, false
 golden_case!(golden_u16_scalar4bit, DotPacking8U16Scalar4BitEncoder, u16, 30_000, false, false, 0x55ccbc2ee021782a, 0x14ba300fd4243399, 0xb390822da2c0ed98);
 golden_case!(golden_u32_scalaru8_bridged, BridgedDotPacking8U32ScalarU8Encoder, u32, 200_000, true, true, 0x0cf5fe2aa6265bab, 0xad451a79b24c1694, 0xdde6d036a236261e);
 golden_case!(golden_u32_scalaru8_frequency, BridgedDotPacking8U32ScalarU8Encoder, u32, 200_000, false, false, 0xfd908050043d8260, 0x4986e0fb155918f2, 0xe521a1c4faf4c1a5);
+golden_case!(golden_u16_scalaru16, DotPacking8U16ScalarU16Encoder, u16, 30_000, false, false, 0x26ca32c3e4c97420, 0x17186cc9bc9ecee3, 0x7c871b8c444782c8);
+golden_case!(golden_u32_scalaru16_bridged, BridgedDotPacking8U32ScalarU16Encoder, u32, 200_000, true, true, 0x97cab9ef7885d719, 0xbd3713f57d908b86, 0x32e5277fc80d32f7);

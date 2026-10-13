@@ -336,6 +336,11 @@ mod tests {
             &DotPacking8Encoder::with_values(dim, Scalar4BitValues::from_steps(vec![4.0 / 15.0; dim].into())),
             4.0 / 15.0,
         );
+        // ScalarU16 rounds to the nearest code: error within half a step (+ f32 rounding).
+        check_roundtrip(
+            &DotPacking8Encoder::with_values(dim, ScalarU16Values::from_steps(vec![4.0 / 65535.0; dim].into())),
+            2.0 / 65535.0 + 1e-6,
+        );
     }
 
     #[test]
@@ -462,6 +467,8 @@ mod tests {
         conversion_matches_train_and_push::<u16, ScalarU8Values>(3000);
         conversion_matches_train_and_push::<u16, F16Values>(3000);
         conversion_matches_train_and_push::<u16, Scalar4BitValues>(3000);
+        conversion_matches_train_and_push::<u16, ScalarU16Values>(3000);
+        conversion_matches_train_and_push::<u32, ScalarU16Values>(200_000);
         // Ids up to 200,000: beyond the u16 range (bridges are covered by the golden tests).
         conversion_matches_train_and_push::<u32, ScalarU8Values>(200_000);
     }

@@ -79,6 +79,12 @@ pub use encoders::dotpacking8_u16_scalar4bit::{
 pub use encoders::dotpacking8_u16_scalaru8::{
     DotPacking8U16ScalarU8Encoder, DotPacking8U16ScalarU8QueryEvaluator,
 };
+pub use encoders::dotpacking8_u16_scalaru16::{
+    DotPacking8U16ScalarU16Encoder, DotPacking8U16ScalarU16QueryEvaluator,
+};
+pub use encoders::dotpacking8_u32_scalaru16::{
+    BridgedDotPacking8U32ScalarU16Encoder, BridgedDotPacking8U32ScalarU16QueryEvaluator,
+};
 pub use encoders::dotpacking8_u32_scalaru8::{
     BridgedDotPacking8U32ScalarU8Encoder, BridgedDotPacking8U32ScalarU8QueryEvaluator,
 };
@@ -144,6 +150,13 @@ pub type DotPacking8U16F16DatasetGrowable = PackedSparseDatasetGrowable<DotPacki
 pub type DotPacking8U16Scalar4BitDataset = PackedSparseDataset<DotPacking8U16Scalar4BitEncoder>;
 pub type DotPacking8U16Scalar4BitDatasetGrowable =
     PackedSparseDatasetGrowable<DotPacking8U16Scalar4BitEncoder>;
+pub type DotPacking8U16ScalarU16Dataset = PackedSparseDataset<DotPacking8U16ScalarU16Encoder>;
+pub type DotPacking8U16ScalarU16DatasetGrowable =
+    PackedSparseDatasetGrowable<DotPacking8U16ScalarU16Encoder>;
+pub type BridgedDotPacking8U32ScalarU16Dataset =
+    PackedSparseDataset<BridgedDotPacking8U32ScalarU16Encoder>;
+pub type BridgedDotPacking8U32ScalarU16DatasetGrowable =
+    PackedSparseDatasetGrowable<BridgedDotPacking8U32ScalarU16Encoder>;
 pub type BridgedDotPacking8U32ScalarU8Dataset =
     PackedSparseDataset<BridgedDotPacking8U32ScalarU8Encoder>;
 pub type BridgedDotPacking8U32ScalarU8DatasetGrowable =

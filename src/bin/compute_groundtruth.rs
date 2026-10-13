@@ -73,8 +73,9 @@ struct Args {
     #[clap(long, value_parser)]
     groundtruth: Option<String>,
 
-    /// Values stored by the dotpacking8 encoder: 'fixedu8', 'scalaru8', 'f16' or 'scalar4bit'
-    /// with component_type='u16'; 'scalaru8' (bridged encoder) with component_type='u32'.
+    /// Values stored by the dotpacking8 encoder: 'fixedu8', 'scalaru8', 'scalaru16', 'f16' or
+    /// 'scalar4bit' with component_type='u16'; 'scalaru8' or 'scalaru16' (bridged encoder) with
+    /// component_type='u32'.
     #[clap(long, value_parser)]
     #[arg(default_value = "fixedu8")]
     dotpacking8_values: String,
@@ -857,7 +858,8 @@ fn compute_sparse_groundtruth_dotpacking8(
     train: bool,
 ) -> bool {
     use vectorium::{
-        BridgedDotPacking8U32ScalarU8Encoder, DotPacking8U16F16Encoder,
+        BridgedDotPacking8U32ScalarU16Encoder, BridgedDotPacking8U32ScalarU8Encoder,
+        DotPacking8U16F16Encoder, DotPacking8U16ScalarU16Encoder,
         DotPacking8U16FixedU8Encoder, DotPacking8U16Scalar4BitEncoder,
         DotPacking8U16ScalarU8Encoder,
     };
@@ -907,6 +909,11 @@ fn compute_sparse_groundtruth_dotpacking8(
                     }
                     run_packed_sparse_groundtruth(encoder, &dataset_plain, &queries, output_path, k);
                 }
+                "scalaru16" => {
+                    let mut encoder = DotPacking8U16ScalarU16Encoder::new(dim);
+                    timed(TRAIN_LABEL, || encoder.train(&dataset_plain));
+                    run_packed_sparse_groundtruth(encoder, &dataset_plain, &queries, output_path, k);
+                }
                 "scalar4bit" => {
                     let mut encoder = DotPacking8U16Scalar4BitEncoder::new(dim);
                     timed(TRAIN_LABEL, || encoder.train(&dataset_plain));
@@ -915,17 +922,17 @@ fn compute_sparse_groundtruth_dotpacking8(
                 _ => {
                     eprintln!(
                         "Unknown dotpacking8 values='{values}' for component_type='u16'. \
-                         Use 'fixedu8'|'scalaru8'|'f16'|'scalar4bit'."
+                         Use 'fixedu8'|'scalaru8'|'scalaru16'|'f16'|'scalar4bit'."
                     );
                     return false;
                 }
             }
         }
         "u32" => {
-            if values != "scalaru8" {
+            if values != "scalaru8" && values != "scalaru16" {
                 eprintln!(
                     "Dotpacking8 with component_type='u32' (bridged encoder) supports only \
-                     values='scalaru8' (found '{values}')."
+                     values='scalaru8' or 'scalaru16' (found '{values}')."
                 );
                 return false;
             }
@@ -933,9 +940,16 @@ fn compute_sparse_groundtruth_dotpacking8(
                 readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
             let queries: PlainSparseDataset<u32, f32, distances::DotProduct> =
                 readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
-            let mut encoder = BridgedDotPacking8U32ScalarU8Encoder::new(dataset_plain.output_dim());
-            timed(TRAIN_LABEL, || encoder.train(&dataset_plain));
-            run_packed_sparse_groundtruth(encoder, &dataset_plain, &queries, output_path, k);
+            let dim = dataset_plain.output_dim();
+            if values == "scalaru8" {
+                let mut encoder = BridgedDotPacking8U32ScalarU8Encoder::new(dim);
+                timed(TRAIN_LABEL, || encoder.train(&dataset_plain));
+                run_packed_sparse_groundtruth(encoder, &dataset_plain, &queries, output_path, k);
+            } else {
+                let mut encoder = BridgedDotPacking8U32ScalarU16Encoder::new(dim);
+                timed(TRAIN_LABEL, || encoder.train(&dataset_plain));
+                run_packed_sparse_groundtruth(encoder, &dataset_plain, &queries, output_path, k);
+            }
         }
         _ => {
             eprintln!(
