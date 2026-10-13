@@ -17,19 +17,13 @@ use rayon::prelude::*;
 ///
 /// ```
 /// use vectorium::{
-///     DotVByteFixedU8Encoder, FixedU8Q, FromF32, PackedSparseDatasetGrowable, DatasetGrowable,
-///     Dataset, SparseVectorView,
+///     DotPacking8U16F16Encoder, PackedSparseDatasetGrowable, DatasetGrowable, Dataset,
+///     SparseVectorView,
 /// };
 ///
-/// let encoder = DotVByteFixedU8Encoder::new(4, 4);
+/// let encoder = DotPacking8U16F16Encoder::new(4);
 /// let mut dataset = PackedSparseDatasetGrowable::new(encoder);
-/// dataset.push(SparseVectorView::new(
-///     &[0_u16, 2],
-///     &[
-///         FixedU8Q::from_f32_saturating(1.0),
-///         FixedU8Q::from_f32_saturating(2.0),
-///     ],
-/// ));
+/// dataset.push(SparseVectorView::new(&[0_u16, 2], &[1.0_f32, 2.0]));
 /// assert_eq!(dataset.len(), 1);
 /// ```
 pub type PackedSparseDatasetGrowable<E> = PackedSparseDatasetGeneric<
@@ -59,7 +53,7 @@ where
 ///
 /// ```
 /// use vectorium::{
-///     Dataset, DotProduct, DotVByteFixedU8Encoder, DatasetGrowable, PackedSparseDataset,
+///     Dataset, DotPacking8U16ScalarU8Encoder, DotProduct, DatasetGrowable, PackedSparseDataset,
 ///     PlainSparseDataset, PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView,
 /// };
 ///
@@ -67,7 +61,8 @@ where
 /// let mut sparse = PlainSparseDatasetGrowable::new(quantizer);
 /// sparse.push(SparseVectorView::new(&[0_u16], &[1.0_f32]));
 /// let frozen: PlainSparseDataset<u16, f32, DotProduct> = sparse.into();
-/// let packed: PackedSparseDataset<DotVByteFixedU8Encoder> = frozen.into();
+/// // Trains the encoder on `frozen`, then encodes every vector.
+/// let packed: PackedSparseDataset<DotPacking8U16ScalarU8Encoder> = frozen.into();
 /// assert_eq!(packed.len(), 1);
 /// ```
 pub type PackedSparseDataset<E> = PackedSparseDatasetGeneric<
@@ -88,7 +83,7 @@ pub type PackedSparseDataset<E> = PackedSparseDatasetGeneric<
 /// # Example
 /// ```
 /// use vectorium::{
-///     Dataset, DotProduct, DotVByteFixedU8Encoder, DatasetGrowable, PackedSparseDataset,
+///     Dataset, DotPacking8U16ScalarU8Encoder, DotProduct, DatasetGrowable, PackedSparseDataset,
 ///     PlainSparseDatasetGrowable, PlainSparseQuantizer, SparseVectorView, VectorEncoder,
 /// };
 ///
@@ -97,7 +92,7 @@ pub type PackedSparseDataset<E> = PackedSparseDatasetGeneric<
 /// sparse.push(SparseVectorView::new(&[1_u16, 3], &[1.0, 2.0]));
 ///
 /// let frozen: vectorium::PlainSparseDataset<u16, f32, DotProduct> = sparse.into();
-/// let packed: PackedSparseDataset<DotVByteFixedU8Encoder> = frozen.into();
+/// let packed: PackedSparseDataset<DotPacking8U16ScalarU8Encoder> = frozen.into();
 /// let range = packed.range_from_id(0);
 /// let v = packed.get_with_range(range);
 /// assert!(!v.data().is_empty());
@@ -177,19 +172,13 @@ where
     /// ```
     /// use rayon::iter::ParallelIterator;
     /// use vectorium::{
-    ///     DotVByteFixedU8Encoder, FixedU8Q, FromF32, PackedSparseDataset, PackedSparseDatasetGrowable,
+    ///     DotPacking8U16F16Encoder, PackedSparseDataset, PackedSparseDatasetGrowable,
     ///     DatasetGrowable, Dataset, SparseVectorView,
     /// };
     ///
-    /// let encoder = DotVByteFixedU8Encoder::new(4, 4);
+    /// let encoder = DotPacking8U16F16Encoder::new(4);
     /// let mut growable = PackedSparseDatasetGrowable::new(encoder);
-    /// growable.push(SparseVectorView::new(
-    ///     &[0_u16, 1],
-    ///     &[
-    ///         FixedU8Q::from_f32_saturating(1.0),
-    ///         FixedU8Q::from_f32_saturating(2.0),
-    ///     ],
-    /// ));
+    /// growable.push(SparseVectorView::new(&[0_u16, 1], &[1.0_f32, 2.0]));
     /// let packed: PackedSparseDataset<_> = growable.into();
     /// let collected: Vec<_> = packed.par_iter().collect();
     /// assert_eq!(collected.len(), packed.len());
@@ -564,9 +553,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DotVByteFixedU8Encoder;
-    use crate::FixedU8Q;
-    use crate::FromF32 as _;
+    use crate::BlockedSparseEncoder;
+    use crate::DotPacking8U16F16Encoder;
     use crate::core::vector::SparseVectorView;
     use crate::core::vector_encoder::VectorEncoder;
 
@@ -577,11 +565,8 @@ mod tests {
         use crate::VectorEncoder as _;
         use crate::core::vector::SparseVectorView;
         use crate::distances::Distance as _;
-        use crate::{
-            DotProduct, DotVByteFixedU8Encoder, FixedU8Q, FromF32 as _, PlainSparseDataset,
-            PlainSparseDatasetGrowable,
-        };
-        use num_traits::ToPrimitive as _;
+        use crate::{DotProduct, PlainSparseDataset, PlainSparseDatasetGrowable};
+        use half::f16;
 
         let dim = 505;
 
@@ -602,53 +587,44 @@ mod tests {
 
         let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
 
-        let dataset: PackedSparseDataset<DotVByteFixedU8Encoder> = frozen.into();
+        let dataset: PackedSparseDataset<BlockedSparseEncoder> = frozen.into();
 
+        // 3 query components, below SPARSE_QUERY_THRESHOLD: the jump_dot path.
         let query = SparseVectorView::new(&[1_u16, 10, 11][..], &[2.0_f32, 3.0, 4.0][..]);
         let evaluator = dataset.encoder().query_evaluator(query);
 
         let d0 = evaluator.compute_distance(dataset.get(0)).distance();
         let d1 = evaluator.compute_distance(dataset.get(1)).distance();
 
-        let expected0 = FixedU8Q::from_f32_saturating(1.5).to_f32().unwrap() * 2.0
-            + FixedU8Q::from_f32_saturating(2.0).to_f32().unwrap() * 3.0;
-        let expected1 = FixedU8Q::from_f32_saturating(1.0).to_f32().unwrap() * 4.0;
+        // Values are stored as f16; the kernel's summation order differs from this one.
+        let r = |x: f32| f16::from_f32(x).to_f32();
+        let expected0 = r(1.5) * 2.0 + r(2.0) * 3.0;
+        let expected1 = r(1.0) * 4.0;
 
-        assert_eq!(d0, expected0);
-        assert_eq!(d1, expected1);
+        assert!((d0 - expected0).abs() < 1e-6, "{d0} vs {expected0}");
+        assert!((d1 - expected1).abs() < 1e-6, "{d1} vs {expected1}");
     }
 
     #[test]
     fn packed_growable_immutable_roundtrip() {
         use crate::PackedSparseDatasetGrowable;
         use crate::core::vector::SparseVectorView;
-        use crate::{DatasetGrowable, DotVByteFixedU8Encoder, FixedU8Q, PackedSparseDataset};
+        use crate::{DatasetGrowable, PackedSparseDataset};
 
         let dim = 8;
-        let encoder = DotVByteFixedU8Encoder::new(dim, dim);
+        let encoder = DotPacking8U16F16Encoder::new(dim);
         let mut growable = PackedSparseDatasetGrowable::new(encoder);
 
-        growable.push(SparseVectorView::new(
-            &[1_u16, 4],
-            &[
-                FixedU8Q::from_f32_saturating(1.0),
-                FixedU8Q::from_f32_saturating(2.0),
-            ],
-        ));
-        growable.push(SparseVectorView::new(
-            &[2_u16],
-            &[FixedU8Q::from_f32_saturating(3.0)],
-        ));
+        growable.push(SparseVectorView::new(&[1_u16, 4], &[1.0_f32, 2.0]));
+        growable.push(SparseVectorView::new(&[2_u16], &[3.0_f32]));
 
-        let frozen: PackedSparseDataset<DotVByteFixedU8Encoder> = growable.into();
+        let frozen: PackedSparseDataset<DotPacking8U16F16Encoder> = growable.into();
         assert_eq!(frozen.len(), 2);
         assert_eq!(frozen.nnz(), 3);
 
-        let mut growable_again: PackedSparseDatasetGrowable<DotVByteFixedU8Encoder> = frozen.into();
-        growable_again.push(SparseVectorView::new(
-            &[7_u16],
-            &[FixedU8Q::from_f32_saturating(4.0)],
-        ));
+        let mut growable_again: PackedSparseDatasetGrowable<DotPacking8U16F16Encoder> =
+            frozen.into();
+        growable_again.push(SparseVectorView::new(&[7_u16], &[4.0_f32]));
 
         assert_eq!(growable_again.len(), 3);
         assert_eq!(growable_again.nnz(), 4);
@@ -656,7 +632,7 @@ mod tests {
 
     #[test]
     fn packed_dataset_iter_and_convert_from_traits_work() {
-        use crate::DotVByteFixedU8Encoder;
+        use crate::DataBlock;
         use crate::PackedSparseDataset;
         use crate::PackedSparseDatasetGrowable;
         use crate::PlainSparseDataset;
@@ -671,13 +647,14 @@ mod tests {
         growable.push(SparseVectorView::new(&[1_u16, 3], &[3.0_f32, 4.0]));
 
         let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
-        let packed = PackedSparseDataset::convert_from(frozen.clone());
+        let packed: PackedSparseDataset<BlockedSparseEncoder> =
+            PackedSparseDataset::convert_from(frozen.clone());
 
         assert_eq!(packed.nnz(), 4);
         assert_eq!(packed.len(), 2);
 
         let range = packed.range_from_id(1);
-        let view: PackedVectorView<'_, u64> = packed.get_with_range(range);
+        let view: PackedVectorView<'_, DataBlock> = packed.get_with_range(range);
         assert!(!view.is_empty());
 
         let iter_values: Vec<_> = packed.iter().collect();
@@ -686,7 +663,7 @@ mod tests {
         let par_iter_values: Vec<_> = packed.par_iter().collect();
         assert_eq!(par_iter_values.len(), 2);
 
-        let growable_again: PackedSparseDatasetGrowable<DotVByteFixedU8Encoder> =
+        let growable_again: PackedSparseDatasetGrowable<BlockedSparseEncoder> =
             PackedSparseDatasetGrowable::convert_from(packed.clone());
         let packed_again = PackedSparseDataset::convert_from(growable_again);
         assert_eq!(packed_again.nnz(), packed.nnz());
@@ -694,18 +671,15 @@ mod tests {
 
     #[test]
     fn packed_dataset_offsets_data_and_prefetch() {
+        use crate::PackedSparseDatasetGrowable;
         use crate::core::vector::SparseVectorView;
-        use crate::{DotVByteFixedU8Encoder, FixedU8Q, PackedSparseDatasetGrowable};
 
         let dim = 5;
-        let encoder = DotVByteFixedU8Encoder::new(dim, dim);
+        let encoder = DotPacking8U16F16Encoder::new(dim);
         let mut growable = PackedSparseDatasetGrowable::new(encoder);
-        growable.push(SparseVectorView::new(
-            &[1_u16],
-            &[FixedU8Q::from_f32_saturating(1.0)],
-        ));
+        growable.push(SparseVectorView::new(&[1_u16], &[1.0_f32]));
 
-        let dataset: PackedSparseDataset<DotVByteFixedU8Encoder> = growable.into();
+        let dataset: PackedSparseDataset<DotPacking8U16F16Encoder> = growable.into();
         assert_eq!(dataset.nnz(), 1);
         assert_eq!(dataset.len(), 1);
         assert_eq!(dataset.offsets(), &[0, dataset.data().len()]);
@@ -720,46 +694,32 @@ mod tests {
     #[test]
     #[should_panic(expected = "Index out of bounds.")]
     fn packed_dataset_range_from_id_panics_when_invalid() {
-        let encoder = DotVByteFixedU8Encoder::new(3, 3);
+        let encoder = DotPacking8U16F16Encoder::new(3);
         let mut growable = PackedSparseDatasetGrowable::new(encoder);
-        growable.push(SparseVectorView::new(
-            &[0_u16],
-            &[FixedU8Q::from_f32_saturating(0.5)],
-        ));
-        let dataset: PackedSparseDataset<DotVByteFixedU8Encoder> = growable.into();
+        growable.push(SparseVectorView::new(&[0_u16], &[0.5_f32]));
+        let dataset: PackedSparseDataset<DotPacking8U16F16Encoder> = growable.into();
         let _ = dataset.range_from_id(1);
     }
 
     #[test]
     #[should_panic]
     fn packed_dataset_id_from_range_panics_when_mismatch() {
-        let encoder = DotVByteFixedU8Encoder::new(3, 3);
+        let encoder = DotPacking8U16F16Encoder::new(3);
         let mut growable = PackedSparseDatasetGrowable::new(encoder);
-        growable.push(SparseVectorView::new(
-            &[0_u16],
-            &[FixedU8Q::from_f32_saturating(0.5)],
-        ));
-        let dataset: PackedSparseDataset<DotVByteFixedU8Encoder> = growable.into();
+        growable.push(SparseVectorView::new(&[0_u16], &[0.5_f32]));
+        let dataset: PackedSparseDataset<DotPacking8U16F16Encoder> = growable.into();
         let _ = dataset.id_from_range(1..2);
     }
 
     #[test]
     fn packed_dataset_with_capacity_pushes_vectors() {
-        use crate::{DotVByteFixedU8Encoder, FixedU8Q};
-
-        let encoder = DotVByteFixedU8Encoder::new(3, 3);
+        let encoder = DotPacking8U16F16Encoder::new(3);
         let mut growable = PackedSparseDatasetGrowable::with_capacity(encoder, 2);
         assert_eq!(growable.offsets().len(), 1);
-        growable.push(SparseVectorView::new(
-            &[0_u16],
-            &[FixedU8Q::from_f32_saturating(1.0)],
-        ));
-        growable.push(SparseVectorView::new(
-            &[1_u16],
-            &[FixedU8Q::from_f32_saturating(2.0)],
-        ));
+        growable.push(SparseVectorView::new(&[0_u16], &[1.0_f32]));
+        growable.push(SparseVectorView::new(&[1_u16], &[2.0_f32]));
         assert_eq!(growable.nnz(), 2);
-        let frozen: PackedSparseDataset<DotVByteFixedU8Encoder> = growable.into();
+        let frozen: PackedSparseDataset<DotPacking8U16F16Encoder> = growable.into();
         assert_eq!(frozen.len(), 2);
     }
 }
