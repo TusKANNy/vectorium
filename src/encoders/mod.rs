@@ -14,3 +14,4 @@ pub mod multivec_scalar;
 pub mod multivec_two_level_pq;
 pub mod pq;
 pub mod sparse_scalar;
+pub mod sparse_scalar_step;

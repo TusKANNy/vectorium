@@ -59,6 +59,11 @@ pub use encoders::blocked_sparse::{
     BlockedSparseEncoder, BlockedSparseQueryEvaluator, SPARSE_QUERY_THRESHOLD,
 };
 pub use core::data_block::{DataBlock, BLOCK_SIZE};
+pub use encoders::sparse_scalar_step::{
+    ScalarStepSparseQuantizer, ScalarStepSparseQueryEvaluator, ScalarU8SparseDataset,
+    ScalarU8SparseDatasetGrowable, ScalarU8SparseQuantizer, ScalarU16SparseDataset,
+    ScalarU16SparseDatasetGrowable, ScalarU16SparseQuantizer, StepCode,
+};
 pub use encoders::dense_scalar::{
     PlainDenseQuantizer, PlainDenseQuantizerDotProduct, PlainDenseQuantizerSquaredEuclidean,
     ScalarDenseQuantizer, ScalarDenseQuantizerDotProduct, ScalarDenseQuantizerSame,
