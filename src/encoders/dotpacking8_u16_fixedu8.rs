@@ -180,9 +180,7 @@ mod tests {
 
         growable.push(input1.clone());
 
-        let training_data = growable.into();
-
-        encoder.train(&training_data);
+        encoder.train(&growable);
 
         let mut buffer0 = Vec::new();
         encoder.push_encoded(input0, &mut buffer0);

@@ -9,9 +9,9 @@ use std::simd::prelude::*;
 
 use crate::encoders::dotpacking8::common::f16_ptr_to_f32x8;
 use crate::encoders::dotpacking8::nibble4bit::{NibbleReader, nibble_bytes, pack_nibbles};
-use crate::utils::{train_sparse_scalar_quantizer, train_sparse_scalar_quantizer_with_levels};
+use crate::utils::sparse_scalar_quantizer_steps;
 use crate::{
-    ComponentType, FixedU8Q, FromF32, PlainSparseDataset, ScalarSparseSupportedDistance,
+    ComponentType, FixedU8Q, FromF32,
     SpaceUsage, ValueType,
 };
 
@@ -206,9 +206,10 @@ pub trait ValueCodec:
     type Output: ValueType;
     type Reader<'a>: ValueReader<Code = Self::Code>;
     fn new_untrained(dim: usize) -> Self;
-    /// Fits per-component parameters; no-op by default.
-    fn train<C, D>(&mut self, _data: &PlainSparseDataset<C, f32, D>)
-    where C: ComponentType, D: ScalarSparseSupportedDistance {}
+    /// Fits per-component parameters on `(components, values)` pairs of vectors with
+    /// components in `0..dim`; no-op by default.
+    fn train<'a, C, W>(&mut self, _dim: usize, _vectors: impl Iterator<Item = (&'a [C], &'a [W])>)
+    where C: ComponentType, W: ValueType {}
     fn encode(&self, component: usize, value: f32) -> Self::Code;
     fn decode(&self, component: usize, code: Self::Code) -> f32;
     /// Query value as stored in the dense query (scaled so `query * code_as_f32(code)` is the
@@ -272,9 +273,9 @@ impl ValueCodec for ScalarU8Values {
     type Output = u8;
     type Reader<'a> = U8Reader<'a>;
     fn new_untrained(dim: usize) -> Self { Self::from_steps(vec![0.0; dim].into_boxed_slice()) }
-    fn train<C, D>(&mut self, data: &PlainSparseDataset<C, f32, D>)
-    where C: ComponentType, D: ScalarSparseSupportedDistance {
-        self.quants = train_sparse_scalar_quantizer(data, 0.0, 1.0).into_boxed_slice();
+    fn train<'a, C, W>(&mut self, dim: usize, vectors: impl Iterator<Item = (&'a [C], &'a [W])>)
+    where C: ComponentType, W: ValueType {
+        self.quants = sparse_scalar_quantizer_steps(dim, vectors, 0.0, 1.0, 255.0).into_boxed_slice();
     }
     #[inline(always)]
     fn encode(&self, c: usize, v: f32) -> u8 {
@@ -340,10 +341,10 @@ impl ValueCodec for Scalar4BitValues {
     type Output = u8;
     type Reader<'a> = NibbleReader<'a>;
     fn new_untrained(dim: usize) -> Self { Self::from_steps(vec![0.0; dim].into_boxed_slice()) }
-    fn train<C, D>(&mut self, data: &PlainSparseDataset<C, f32, D>)
-    where C: ComponentType, D: ScalarSparseSupportedDistance {
+    fn train<'a, C, W>(&mut self, dim: usize, vectors: impl Iterator<Item = (&'a [C], &'a [W])>)
+    where C: ComponentType, W: ValueType {
         self.quants =
-            train_sparse_scalar_quantizer_with_levels(data, 0.0, 1.0, NUM_LEVELS).into_boxed_slice();
+            sparse_scalar_quantizer_steps(dim, vectors, 0.0, 1.0, NUM_LEVELS).into_boxed_slice();
     }
     #[inline(always)]
     fn encode(&self, c: usize, v: f32) -> u8 {

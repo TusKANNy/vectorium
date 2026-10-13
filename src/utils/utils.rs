@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::hash::Hash;
 use std::simd::Simd;
 
-use crate::{ComponentType, Dataset, PlainSparseDataset, ScalarSparseSupportedDistance};
+use crate::{ComponentType, Dataset, PlainSparseDataset, ScalarSparseSupportedDistance, ValueType};
 
 #[inline]
 pub fn prefetch_read_slice<T>(data: &[T]) {
@@ -120,6 +120,28 @@ where
     C: ComponentType,
     D: ScalarSparseSupportedDistance,
 {
+    sparse_scalar_quantizer_steps(
+        training_data.output_dim(),
+        training_data.iter().map(|v| (v.components(), v.values())),
+        lower_percentile,
+        upper_percentile,
+        num_levels,
+    )
+}
+
+/// Core of [`train_sparse_scalar_quantizer_with_levels`] over any sparse vectors, given as
+/// `(components, values)` pairs; values of any [`ValueType`] are widened to `f32`. One pass.
+pub(crate) fn sparse_scalar_quantizer_steps<'a, C, W>(
+    dim: usize,
+    vectors: impl Iterator<Item = (&'a [C], &'a [W])>,
+    lower_percentile: f32,
+    upper_percentile: f32,
+    num_levels: f32,
+) -> Vec<f32>
+where
+    C: ComponentType,
+    W: ValueType,
+{
     assert!(
         (0.0..1.0).contains(&lower_percentile),
         "lower_percentile must be in [0.0, 1.0), got {lower_percentile}"
@@ -130,16 +152,15 @@ where
     );
     assert!(num_levels > 0.0, "num_levels must be positive, got {num_levels}");
 
-    let dim = training_data.output_dim();
-
     // Fast path: classic min-max quantization. Sorting every per-component bucket
     // is wasteful when we only need the maximum, and on high-dim sparse datasets
     // (e.g. SPLADE on MS MARCO) that sort dominates training time. Single pass,
     // no per-component allocations.
     if lower_percentile == 0.0 && upper_percentile >= 1.0 {
         let mut maxes = vec![0.0f32; dim];
-        for doc in training_data.iter() {
-            for (&c, &v) in doc.components().iter().zip(doc.values()) {
+        for (components, values) in vectors {
+            for (&c, v) in components.iter().zip(values) {
+                let v = v.to_f32().unwrap();
                 let idx: usize = c.as_();
                 if v > maxes[idx] {
                     maxes[idx] = v;
@@ -156,10 +177,10 @@ where
 
     // Collect per-component values
     let mut per_component: Vec<Vec<f32>> = vec![Vec::new(); dim];
-    for doc in training_data.iter() {
-        for (&c, &v) in doc.components().iter().zip(doc.values()) {
+    for (components, values) in vectors {
+        for (&c, v) in components.iter().zip(values) {
             let idx: usize = c.as_();
-            per_component[idx].push(v);
+            per_component[idx].push(v.to_f32().unwrap());
         }
     }
 

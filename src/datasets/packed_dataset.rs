@@ -506,6 +506,61 @@ where
     }
 }
 
+impl<EIn, S, C, V> From<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
+    for PackedSparseDataset<crate::encoders::dotpacking8::encoder::DotPacking8Encoder<C, V>>
+where
+    EIn: crate::SparseVectorEncoder<OutputComponentType = C>,
+    EIn::OutputValueType: crate::ValueType + crate::Float,
+    for<'a> EIn::EncodedVector<'a>: crate::VectorView,
+    S: crate::core::storage::SparseStorage<EIn>,
+    C: crate::encoders::dotpacking8::encoder::PackedComponent,
+    V: crate::encoders::dotpacking8::values::ValueCodec,
+{
+    /// Trains the encoder on `dataset` (component order, then value parameters) and encodes
+    /// every vector. Values are widened to `f32`; no copy of the dataset is made.
+    fn from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>) -> Self {
+        use crate::encoders::dotpacking8::encoder::DotPacking8Encoder;
+        use num_traits::ToPrimitive as _;
+
+        let dim = dataset.output_dim();
+        let mut encoder = DotPacking8Encoder::<C, V>::new(dim);
+        encoder.train(&dataset);
+
+        let mut offsets = Vec::with_capacity(dataset.len() + 1);
+        offsets.push(0);
+        let mut data = Vec::new();
+        let mut values = Vec::new();
+        for v in dataset.iter() {
+            values.clear();
+            values.extend(v.values().iter().map(|x| x.to_f32().unwrap()));
+            encoder.push_encoded(crate::SparseVectorView::new(v.components(), &values), &mut data);
+            offsets.push(data.len());
+        }
+
+        PackedSparseDatasetGeneric {
+            offsets: offsets.into_boxed_slice(),
+            data: data.into_boxed_slice(),
+            encoder,
+            nnz: dataset.nnz(),
+        }
+    }
+}
+
+impl<EIn, S, C, V> ConvertFrom<crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>>
+    for PackedSparseDataset<crate::encoders::dotpacking8::encoder::DotPacking8Encoder<C, V>>
+where
+    EIn: crate::SparseVectorEncoder<OutputComponentType = C>,
+    EIn::OutputValueType: crate::ValueType + crate::Float,
+    for<'a> EIn::EncodedVector<'a>: crate::VectorView,
+    S: crate::core::storage::SparseStorage<EIn>,
+    C: crate::encoders::dotpacking8::encoder::PackedComponent,
+    V: crate::encoders::dotpacking8::values::ValueCodec,
+{
+    fn convert_from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>) -> Self {
+        dataset.into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

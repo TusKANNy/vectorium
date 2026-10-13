@@ -84,7 +84,7 @@ pub(crate) fn write_encoded<V: ValueCodec>(
 mod tests {
     use super::*;
     use crate::encoders::dotpacking8::values::{FixedU8Values, U8Reader};
-    use crate::{ComponentType, PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
+    use crate::SpaceUsage;
 
     /// A broken codec whose stream is shorter than it claims: the decoder's unchecked reads
     /// rely on `stream_bytes`, so `write_encoded` must refuse it.
@@ -103,7 +103,6 @@ mod tests {
         fn new_untrained(_dim: usize) -> Self {
             ShortStream
         }
-        fn train<C: ComponentType, D: ScalarSparseSupportedDistance>(&mut self, _: &PlainSparseDataset<C, f32, D>) {}
         fn encode(&self, _c: usize, _v: f32) -> u8 {
             1
         }

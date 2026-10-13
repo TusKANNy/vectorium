@@ -18,7 +18,9 @@ use crate::encoders::dotpacking8::common::{GapDecoder, fast_lane_gather, simd_pr
 use crate::encoders::dotpacking8::layout::{EncodedView, write_encoded};
 pub use crate::encoders::dotpacking8::mapping::{ComponentMapping, PackedComponent};
 use crate::encoders::dotpacking8::values::{ValueCodec, ValueReader};
-use crate::{PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
+use crate::core::storage::SparseStorage;
+use crate::datasets::sparse_dataset::SparseDatasetGeneric;
+use crate::{Dataset, SpaceUsage, SparseVectorEncoder, ValueType};
 
 const N: usize = 8;
 
@@ -66,16 +68,23 @@ impl<C: PackedComponent, V: ValueCodec> DotPacking8Encoder<C, V> {
     }
 
     /// Reorders components by decreasing frequency in `training_data` (shorter gaps), then
-    /// trains the value codec on the original component ids. The distance does not matter.
-    pub fn train<D>(&mut self, training_data: &PlainSparseDataset<C, f32, D>)
+    /// trains the value codec on the original component ids. Accepts any sparse dataset with
+    /// this encoder's component type; values of any [`ValueType`] are widened to `f32`. The
+    /// distance does not matter.
+    pub fn train<E, S>(&mut self, training_data: &SparseDatasetGeneric<E, S>)
     where
-        D: ScalarSparseSupportedDistance,
+        E: SparseVectorEncoder<OutputComponentType = C>,
+        E::OutputValueType: ValueType,
+        S: SparseStorage<E>,
     {
         self.mapping = Some(ComponentMapping::by_decreasing_frequency(
             self.dim,
-            training_data,
+            training_data.iter().map(|v| v.components()),
         ));
-        self.values.train(training_data);
+        self.values.train(
+            training_data.output_dim(),
+            training_data.iter().map(|v| (v.components(), v.values())),
+        );
     }
 }
 
@@ -387,6 +396,104 @@ mod tests {
     fn push_encoded_rejects_unsorted_components() {
         let enc = DotPacking8Encoder::<u32, FixedU8Values>::new(100);
         encode(&enc, &[5u32, 3], &[1.0, 1.0]);
+    }
+
+    // --- Conversion from sparse datasets (`From<SparseDataset>`) ---
+
+    use crate::{
+        Dataset, DatasetGrowable, PackedSparseDataset, PackedSparseDatasetGrowable, PlainSparseDataset,
+        PlainSparseDatasetGrowable,
+        PlainSparseQuantizer,
+    };
+
+    /// Deterministic skewed sparse vectors with ids in `0..dim` and values in (0.05, 3.9].
+    fn plain_dataset<C: PackedComponent>(dim: usize, n: usize, seed: u64) -> PlainSparseDataset<C, f32, DotProduct> {
+        let mut x = seed;
+        let mut next = move |m: u64| {
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            x.wrapping_mul(0x2545F4914F6CDD1D) % m
+        };
+        let mut g = PlainSparseDatasetGrowable::new(PlainSparseQuantizer::<C, f32, DotProduct>::new(dim, dim));
+        for i in 0..n {
+            let len = [0usize, 1, 7, 8, 9, 17, 40, 130][i % 8];
+            let mut c: Vec<usize> = Vec::new();
+            while c.len() < len {
+                let id = if next(2) == 0 { next(dim as u64 / 100 + 1) } else { next(dim as u64) };
+                c.push(id as usize);
+                c.sort_unstable();
+                c.dedup();
+            }
+            let comps: Vec<C> = c.iter().map(|&id| C::from_usize(id)).collect();
+            let vals: Vec<f32> = c.iter().map(|_| 0.05 + next(1000) as f32 * 0.00385).collect();
+            g.push(SparseVectorView::new(&comps, &vals));
+        }
+        g.into()
+    }
+
+    /// Converting a dataset must produce exactly the bytes of `train` followed by `push`.
+    fn conversion_matches_train_and_push<C, V>(dim: usize)
+    where
+        C: PackedComponent,
+        V: ValueCodec,
+        PackedSparseDataset<DotPacking8Encoder<C, V>>: From<PlainSparseDataset<C, f32, DotProduct>>,
+    {
+        let plain = plain_dataset::<C>(dim, 200, 0x9E3779B97F4A7C15);
+        let mut enc = DotPacking8Encoder::<C, V>::new(dim);
+        enc.train(&plain);
+        let mut manual = PackedSparseDatasetGrowable::new(enc);
+        for v in plain.iter() {
+            manual.push(v);
+        }
+        let manual: PackedSparseDataset<DotPacking8Encoder<C, V>> = manual.into();
+
+        let converted: PackedSparseDataset<DotPacking8Encoder<C, V>> = plain.into();
+
+        assert_eq!(converted.offsets(), manual.offsets());
+        assert_eq!(converted.data(), manual.data());
+        assert_eq!(converted.nnz(), manual.nnz());
+        assert_eq!(converted.encoder().component_mapping(), manual.encoder().component_mapping());
+    }
+
+    #[test]
+    fn conversion_matches_train_and_push_all_codecs() {
+        conversion_matches_train_and_push::<u16, FixedU8Values>(3000);
+        conversion_matches_train_and_push::<u16, ScalarU8Values>(3000);
+        conversion_matches_train_and_push::<u16, F16Values>(3000);
+        conversion_matches_train_and_push::<u16, Scalar4BitValues>(3000);
+        // Ids up to 200,000: beyond the u16 range (bridges are covered by the golden tests).
+        conversion_matches_train_and_push::<u32, ScalarU8Values>(200_000);
+    }
+
+    /// `f16` input values are widened to `f32`: same bytes as converting the widened dataset.
+    #[test]
+    fn conversion_accepts_f16_values() {
+        use half::f16;
+        let dim = 3000;
+        let plain32 = plain_dataset::<u16>(dim, 200, 7);
+        let mut g16 = PlainSparseDatasetGrowable::new(PlainSparseQuantizer::<u16, f16, DotProduct>::new(dim, dim));
+        let mut g32 = PlainSparseDatasetGrowable::new(PlainSparseQuantizer::<u16, f32, DotProduct>::new(dim, dim));
+        for v in plain32.iter() {
+            let v16: Vec<f16> = v.values().iter().map(|&x| f16::from_f32(x)).collect();
+            let v32: Vec<f32> = v16.iter().map(|x| x.to_f32()).collect();
+            g16.push(SparseVectorView::new(v.components(), &v16));
+            g32.push(SparseVectorView::new(v.components(), &v32));
+        }
+        let d16: PlainSparseDataset<u16, f16, DotProduct> = g16.into();
+        let d32: PlainSparseDataset<u16, f32, DotProduct> = g32.into();
+        let from16: PackedSparseDataset<DotPacking8Encoder<u16, ScalarU8Values>> = d16.into();
+        let from32: PackedSparseDataset<DotPacking8Encoder<u16, ScalarU8Values>> = d32.into();
+        assert_eq!(from16.offsets(), from32.offsets());
+        assert_eq!(from16.data(), from32.data());
+    }
+
+    #[test]
+    fn conversion_of_empty_dataset() {
+        let plain = plain_dataset::<u16>(100, 0, 1);
+        let packed: PackedSparseDataset<DotPacking8Encoder<u16, ScalarU8Values>> = plain.into();
+        assert_eq!(packed.len(), 0);
+        assert_eq!(packed.nnz(), 0);
     }
 
 }

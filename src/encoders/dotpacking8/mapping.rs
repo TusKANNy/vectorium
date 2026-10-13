@@ -4,7 +4,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
-use crate::{ComponentType, Dataset, PlainSparseDataset, ScalarSparseSupportedDistance, SpaceUsage};
+use crate::{ComponentType, SpaceUsage};
 
 /// Component id types a DotPacking8 encoder can store.
 pub trait PackedComponent:
@@ -69,15 +69,12 @@ impl<C: PackedComponent> ComponentMapping<C> {
         Self { forward: forward.into_boxed_slice(), inverse: inverse.into_boxed_slice() }
     }
 
-    /// Orders components by decreasing document frequency over every vector of `data`.
-    pub fn by_decreasing_frequency<D>(dim: usize, data: &PlainSparseDataset<C, f32, D>) -> Self
+    /// Orders components by decreasing document frequency over the components of every vector.
+    pub fn by_decreasing_frequency<'a>(dim: usize, components: impl Iterator<Item = &'a [C]>) -> Self
     where
-        D: ScalarSparseSupportedDistance,
+        C: 'a,
     {
-        let permutation = crate::utils::permute_components_by_frequency(
-            dim,
-            data.iter().map(|v| v.components()),
-        );
+        let permutation = crate::utils::permute_components_by_frequency(dim, components);
         Self::from_permutation(&permutation)
     }
 
