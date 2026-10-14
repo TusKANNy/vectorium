@@ -1,9 +1,17 @@
-# Changes on branch `compression`
+# Changelog
 
-Running log of changes that matter to crates depending on vectorium (kANNolo, Seismic).
-Baseline: `main` at `3fedb2f`. Newest entries go at the top of each section.
+Changes that matter to crates depending on vectorium (kANNolo, Seismic).
+Newest entries go at the top of each section.
 
-## What kANNolo and Seismic must support
+## [0.10.0] - unreleased (branch `compression`)
+
+Baseline: `main` at `3fedb2f` (0.4.0). This branch does **not** contain the 0.5.0–0.9.4
+releases of `origin/main`; it takes the version 0.10.0 only so as not to collide with them.
+All comparisons below ("relative to `main`") are against 0.4.0.
+
+Dependents: change `vectorium = "0.4"` (or the git `rev`) to `0.10.0` / the new commit.
+
+### What kANNolo and Seismic must support
 
 Every dataset type below must be buildable from the dependent crate. Each one is built from a
 plain sparse dataset with `ConvertFrom` / `.into()` (in Seismic: `convert_dataset_into::<T>()`).
@@ -32,9 +40,9 @@ then **Additions** for what can replace removed pieces.
 
 ---
 
-## Breaking changes (relative to `main`)
+### Breaking changes (relative to `main`)
 
-### Done
+#### Done
 
 | Commit | Change | Who is hit | Migration |
 |---|---|---|---|
@@ -48,7 +56,7 @@ then **Additions** for what can replace removed pieces.
 
 ---
 
-## Renames for code written against `feature/quantization`
+### Renames for code written against `feature/quantization`
 
 The DotPacking8 encoders on `compression` are type aliases of one generic
 `DotPacking8Encoder<C, V>` (`C` = `u16`/`u32` component type, `V` = value codec).
@@ -87,7 +95,7 @@ API differences besides the names:
 
 ---
 
-## Additions (relative to `main`)
+### Additions (relative to `main`)
 
 | Commit | Addition |
 |---|---|
@@ -102,7 +110,7 @@ API differences besides the names:
 | `12211af` | `compute_groundtruth --encoder blocked` (u16 components, dot product): builds a `BlockedSparseDataset` and reports size, time and recall. |
 | `4ee61ff`, `3f994c5` | `compute_groundtruth`: `--encoder dotpacking8`, `--component-type u16\|u32`, `--dotpacking8-values fixedu8\|scalaru8\|f16\|scalar4bit`, `--no-train` (fixedu8/f16 only), `--groundtruth <tsv>` (reports recall@k). Invalid combinations exit with code 2. |
 
-## Performance-relevant changes
+### Performance-relevant changes
 
 | Commit | Change |
 |---|---|
