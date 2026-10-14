@@ -5,16 +5,28 @@ Newest entries go at the top of each section.
 
 ## [0.10.0] - unreleased (branch `compression`)
 
-Baseline: `main` at `3fedb2f` (0.4.0). This branch does **not** contain the 0.5.0–0.9.4
-releases of `origin/main`; it takes the version 0.10.0 only so as not to collide with them.
-All comparisons below ("relative to `main`") are against 0.4.0.
+This branch (`compression`) started from `main` at `3fedb2f` (0.4.0) and has since merged
+`origin/main` up to 0.9.4 (`1ea428a`). The tables below list what `compression` adds or changes;
+the 0.5.0–0.9.4 changes themselves (RaBitQ, `l1_prune_split`, the `Config`/`QueryParams` encoder
+API, k-means and `RerankIndex` work, …) are in the git history of `origin/main`. Commit hashes
+below are on `compression`; "relative to `main`" means relative to 0.4.0 unless stated otherwise.
 
-Dependents: change `vectorium = "0.4"` (or the git `rev`) to `0.10.0` / the new commit.
+Dependents: change the vectorium dependency to `0.10.0` (or the new git `rev`).
+
+### Coming from 0.9.4
+
+A crate already on 0.9.4 only needs the breaking changes below that come from `compression`
+(DotVByte removal; DotPacking8 `train` and `BlockedSparseEncoder` type annotations). Everything
+added on `compression` follows the 0.9.4 API: conversions take a config
+(`ScalarU8SparseDataset::<u16, DotProduct>::convert_from(plain, ())`, `plain.convert_into(())`),
+evaluators take query parameters (`encoder.query_evaluator(query, &())`), and every new encoder has
+`QueryParams = ()`. `compute_groundtruth --l1-prune` works with every sparse encoder (pruning happens
+before encoding). The `rgbisect` dependency of 0.9.4 is dropped together with DotVByte.
 
 ### What kANNolo and Seismic must support
 
 Every dataset type below must be buildable from the dependent crate. Each one is built from a
-plain sparse dataset with `ConvertFrom` / `.into()` (in Seismic: `convert_dataset_into::<T>()`).
+plain sparse dataset with `ConvertFrom::convert_from(plain, ())` / `.into()` (in Seismic: `convert_dataset_into::<T>()`).
 
 | Dataset type | Components | Values | Conversion status |
 |---|---|---|---|

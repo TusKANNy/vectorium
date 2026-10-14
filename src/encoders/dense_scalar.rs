@@ -12,6 +12,7 @@ use crate::core::vector::DenseVectorView;
 use crate::core::vector_encoder::{
     DenseVectorEncoder, DenseVectorOwned, QueryEvaluator, VectorEncoder,
 };
+use crate::utils::numeric_markers::ToF32Fast;
 use crate::{Float, FromF32, SpaceUsage, ValueType};
 
 /// Marker trait for distance types supported by scalar dense quantizers.
@@ -113,11 +114,7 @@ where
         &self,
         encoded: DenseVectorView<'a, Self::OutputValueType>,
     ) -> DenseVectorOwned<f32> {
-        let values = encoded
-            .values()
-            .iter()
-            .map(|&v| v.to_f32().expect("Failed to convert value to f32"))
-            .collect();
+        let values = encoded.values().iter().map(|&v| v.to_f32_fast()).collect();
         DenseVectorOwned::new(values)
     }
 
@@ -204,8 +201,14 @@ where
         Self: 'e;
 
     /// Build an evaluator from a dense `f32` query.
+    type QueryParams = ();
+
     #[inline]
-    fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
+    fn query_evaluator<'e>(
+        &'e self,
+        query: Self::QueryVector<'_>,
+        _params: &(),
+    ) -> Self::Evaluator<'e> {
         assert_eq!(
             query.len(),
             self.input_dim(),
@@ -306,7 +309,7 @@ mod tests {
         type Quant = ScalarDenseQuantizer<f32, f32, SquaredEuclideanDistance>;
         let quant = Quant::new(4);
         let query = DenseVectorView::new(&[1.0f32, 2.0, 3.0, 4.0]);
-        let evaluator = quant.query_evaluator(query);
+        let evaluator = quant.query_evaluator(query, &());
 
         let v0 = DenseVectorView::new(&[0.0f32, 0.0, 0.0, 0.0]);
         let v1 = DenseVectorView::new(&[1.0f32, 1.0, 1.0, 1.0]);
@@ -332,7 +335,7 @@ mod tests {
         type Quant = ScalarDenseQuantizer<f32, f32, DotProduct>;
         let quant = Quant::new(2);
         let query = DenseVectorView::new(&[1.0f32, 2.0]);
-        let evaluator = quant.query_evaluator(query);
+        let evaluator = quant.query_evaluator(query, &());
 
         let v0 = DenseVectorView::new(&[3.0f32, 4.0]);
         let v1 = DenseVectorView::new(&[0.5f32, 0.5]);
@@ -359,7 +362,7 @@ mod tests {
         let quant = Quant::new(2);
         let query = DenseVectorView::new(&[1.0f32, 2.0]);
 
-        let evaluator = quant.query_evaluator(query);
+        let evaluator = quant.query_evaluator(query, &());
         let vector = DenseVectorView::new(&[3.0f32, 4.0]);
         assert_eq!(evaluator.compute_distance(vector), DotProduct::from(11.0));
 

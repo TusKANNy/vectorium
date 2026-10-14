@@ -144,7 +144,7 @@ mod tests {
 
         let query_values = [2.0_f32, 3.0, 1.0];
         let query = SparseVectorView::new(&[0_u32, 1, 2], &query_values);
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
         assert!(
             (dist.0 - 850.0).abs() < 1e-2,
@@ -174,7 +174,7 @@ mod tests {
         // dot = 100*2 + 200*5 = 200 + 1000 = 1200.
         let query_values = [2.0_f32, 5.0];
         let query = SparseVectorView::new(&comps, &query_values);
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
         assert!(
             (dist.0 - 1200.0).abs() < 1e-2,
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(decoded.values(), &values);
 
         let query_values = [1.0_f32, 2.0, 3.0, 4.0];
-        let evaluator = encoder.query_evaluator(SparseVectorView::new(&comps, &query_values));
+        let evaluator = encoder.query_evaluator(SparseVectorView::new(&comps, &query_values), &());
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
         assert!((dist.0 - 300.0).abs() < 1e-3, "expected 300, got {}", dist.0);
     }
@@ -262,7 +262,7 @@ mod tests {
 
         let query_values: Vec<f32> = (0..10).map(|i| 1.0 + i as f32 * 0.5).collect();
         let query = SparseVectorView::new(&comps, &query_values);
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
 
         // Reference: dot product over the (quantized) values.

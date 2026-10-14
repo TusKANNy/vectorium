@@ -344,8 +344,14 @@ where
     where
         Self: 'e;
 
+    type QueryParams = ();
+
     #[inline]
-    fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
+    fn query_evaluator<'e>(
+        &'e self,
+        query: Self::QueryVector<'_>,
+        _params: &(),
+    ) -> Self::Evaluator<'e> {
         assert_eq!(
             query.dim(),
             self.token_dim,
@@ -402,7 +408,7 @@ where
             for m in 0..M {
                 let sub = DenseVectorView::new(&token_f32[m * self.dsub..(m + 1) * self.dsub]);
                 let code = FlatIndex::from(&self.centroids[m])
-                    .search_nearest(sub)
+                    .search_nearest(sub, &())
                     .map(|s| s.vector as u8)
                     .unwrap_or(0);
                 output.extend(std::iter::once(code));
@@ -493,7 +499,7 @@ mod tests {
 
         assert_eq!(encoded_doc.len(), 2 * M); // 2 tokens × M codes each
 
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let encoded_view = DenseMultiVectorView::new(&encoded_doc, M);
         let dist = evaluator.compute_distance(encoded_view);
         // Score should be finite (exact value depends on trained centroids).
@@ -508,7 +514,7 @@ mod tests {
         let encoder = MultiVecProductQuantizer::<M, f32>::train(&training);
         // dim = 2 doesn't match token_dim = 4
         let query = DenseMultiVectorView::new(&[1.0f32, 0.0], 2);
-        encoder.query_evaluator(query);
+        encoder.query_evaluator(query, &());
     }
 
     #[test]
@@ -529,7 +535,7 @@ mod tests {
         let mut enc_exact = Vec::new();
         encoder.push_encoded(doc_exact, &mut enc_exact);
 
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let score_exact = evaluator
             .compute_distance(DenseMultiVectorView::new(&enc_exact, M))
             .distance();
@@ -556,7 +562,7 @@ mod tests {
         let mut encoded = Vec::new();
         encoder.push_encoded(doc, &mut encoded);
 
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let score = evaluator
             .compute_distance(DenseMultiVectorView::new(&encoded, M))
             .distance();
@@ -600,7 +606,7 @@ mod tests {
         let mut encoded = Vec::new();
         encoder.push_encoded(doc, &mut encoded);
 
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let score = evaluator
             .compute_distance(DenseMultiVectorView::new(&encoded, M))
             .distance();

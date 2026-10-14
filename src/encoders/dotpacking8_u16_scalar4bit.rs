@@ -114,7 +114,7 @@ mod tests {
         encoder.push_encoded(input, &mut buffer);
 
         let query = SparseVectorView::new(query_comps, query_vals);
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
 
         let q_values = quantized_values(encoder, comps, in_vals);

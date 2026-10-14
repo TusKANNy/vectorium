@@ -57,7 +57,7 @@ mod tests {
             &[2, 4, 6, 8, 24, 70, 90],
             &[0.5, 1.5, 2.5, 1.0, 2.0, 1.0, 2.0],
         );
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
 
         let expected = calculate_expected_distance(&input, &query);
@@ -77,7 +77,7 @@ mod tests {
             &[2, 4, 8, 24, 28, 70, 90],
             &[0.5, 1.5, 2.5, 1.0, 2.0, 1.0, 2.0],
         );
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
 
         let expected = calculate_expected_distance(&input, &query);
@@ -105,7 +105,7 @@ mod tests {
         let query_vals: Vec<_> = (0..num_vals).map(|i| 0.1 + (i % 5) as f32 / 10.0).collect();
         let query = SparseVectorView::new(&components, &query_vals);
 
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
 
         let expected = calculate_expected_distance(&input, &query);
@@ -221,7 +221,7 @@ mod tests {
         let q_values = [2.0_f32, 3.0, 4.0];
         let evaluator = dataset
             .encoder()
-            .query_evaluator(SparseVectorView::new(&q_components, &q_values));
+            .query_evaluator(SparseVectorView::new(&q_components, &q_values), &());
 
         let q = |v: f32| FixedU8Q::from_f32_saturating(v).to_f32().unwrap();
         let expected0 = q(1.5) * 2.0 + q(2.0) * 3.0;

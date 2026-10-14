@@ -94,7 +94,7 @@ mod tests {
         let query_components = [2_u16, 4, 6, 8, 24, 70, 90];
         let query_values = [0.5_f32, 1.5, 2.5, 1.0, 2.0, 1.0, 2.0];
         let query = SparseVectorView::new(&query_components, &query_values);
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
 
         let q_values = quantized_values(&encoder, &comps, &values);
@@ -117,7 +117,7 @@ mod tests {
         let query_components = [2_u16, 4, 8, 24, 28, 70, 90];
         let query_values = [0.5_f32, 1.5, 2.5, 1.0, 2.0, 1.0, 2.0];
         let query = SparseVectorView::new(&query_components, &query_values);
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
 
         let q_values = quantized_values(&encoder, &comps, &values);
@@ -147,7 +147,7 @@ mod tests {
         let query_vals: Vec<_> = (0..num_vals).map(|i| 1.0 + (i % 5) as f32).collect();
         let query = SparseVectorView::new(&components, &query_vals);
 
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
 
         let q_values = quantized_values(&encoder, &components, &values);

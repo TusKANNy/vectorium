@@ -119,6 +119,26 @@ where
         }
     }
 
+    /// Builds a storage directly from its three CSR arrays, for callers that produce them
+    /// in bulk rather than pushing row by row (see [`crate::Dataset::permute`]).
+    /// The caller guarantees that `offsets` starts at `0`, is non-decreasing, and ends at
+    /// the length of both `components` and `values`.
+    pub(crate) fn from_parts(
+        offsets: Vec<usize>,
+        components: Vec<E::OutputComponentType>,
+        values: Vec<E::OutputValueType>,
+    ) -> Self {
+        debug_assert_eq!(offsets.first().copied(), Some(0));
+        debug_assert_eq!(offsets.last().copied(), Some(components.len()));
+        debug_assert_eq!(components.len(), values.len());
+        Self {
+            offsets,
+            components,
+            values,
+            _phantom: PhantomData,
+        }
+    }
+
     pub(crate) fn relabel<E2>(self) -> GrowableSparseStorage<E2>
     where
         E2: SparseVectorEncoder<

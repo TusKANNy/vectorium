@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::SpaceUsage;
+use crate::core::dataset::{assert_valid_permutation, invert_permutation};
 use crate::core::sealed;
 use crate::core::vector_encoder::{DenseVectorEncoder, VectorEncoder};
 use crate::{Dataset, DatasetGrowable, VectorId};
@@ -172,6 +173,9 @@ where
     Data: AsRef<[E::OutputValueType]>,
 {
     type Encoder = E;
+    /// Frozen, `Box<[_]>`-backed variant. For `DenseDataset<E>` this *is* `Self`; for the
+    /// growable variant it is the frozen counterpart, which is what a bulk copy should yield.
+    type Owned = DenseDatasetGeneric<E, Box<[E::OutputValueType]>>;
 
     #[inline]
     fn encoder(&self) -> &E {
@@ -253,6 +257,27 @@ where
     #[inline]
     fn prefetch_with_range(&self, range: std::ops::Range<usize>) {
         crate::utils::prefetch_read_slice(&self.data.as_ref()[range]);
+    }
+
+    fn permute(&self, permutation: &[usize]) -> Self::Owned {
+        let n_vecs = self.n_vecs;
+        assert_valid_permutation(permutation, n_vecs);
+
+        // Gather in the new order rather than scatter into a pre-filled buffer: appending rows
+        // only needs `Copy` (guaranteed by `ValueType`), while scattering would need `Default`.
+        let dim = self.encoder.output_dim();
+        let source = self.data.as_ref();
+        let mut permuted = Vec::with_capacity(n_vecs * dim);
+        for old_id in invert_permutation(permutation) {
+            let old_start = old_id * dim;
+            permuted.extend_from_slice(&source[old_start..old_start + dim]);
+        }
+
+        DenseDatasetGeneric {
+            n_vecs,
+            data: permuted.into_boxed_slice(),
+            encoder: self.encoder.clone(),
+        }
     }
 }
 
@@ -361,9 +386,18 @@ where
     /// `flat_input`: all input vector values concatenated in row-major order;
     /// layout `[vec0_v0, ..., vec0_vD, vec1_v0, ...]`.
     ///
-    /// Each vector is encoded independently on a rayon thread pool, then
-    /// results are assembled into a single flat buffer. Significantly faster
-    /// than sequential `push` for any non-trivial encoder (e.g. PQ).
+    /// Each vector is encoded independently on a rayon thread pool, straight into its own
+    /// row of the final buffer: the slab is allocated once up front and each worker is handed
+    /// the `&mut [OutputValueType]` slice it owns, so there is no per-vector allocation and no
+    /// reassembly copy. Significantly faster than sequential `push` for any non-trivial
+    /// encoder (e.g. PQ).
+    ///
+    /// Requires a **fixed-width** encoder: every record must be exactly
+    /// [`output_dim`](crate::core::vector_encoder::VectorEncoder::output_dim) values long, since each row is a
+    /// pre-sized slice of the slab. A record of any other length panics (see [`SliceSink`](crate::utils::SliceSink))
+    /// rather than shifting every subsequent vector. Variable-length encodings belong in a
+    /// packed dataset ([`PackedSparseDataset`](crate::datasets::packed_dataset::PackedSparseDataset)),
+    /// which carries per-vector offsets.
     pub fn from_flat_par(encoder: E, flat_input: &[E::InputValueType], n_vecs: usize) -> Self
     where
         E: Sync,
@@ -379,23 +413,67 @@ where
             "flat_input length must equal n_vecs * input_dim"
         );
 
-        // Each thread encodes one vector into a small local Vec.
-        let encoded_vecs: Vec<Vec<E::OutputValueType>> = flat_input
-            .par_chunks_exact(input_dim)
-            .map(|chunk| {
-                let view = DenseVectorView::new(chunk);
-                let mut buf = Vec::with_capacity(output_dim);
-                encoder.push_encoded(view, &mut buf);
-                buf
-            })
-            .collect();
+        // Zero-initialized so encoders that OR their output into place (bit-plane packers) see
+        // a clean row; every encoder then overwrites exactly `output_dim` values, which
+        // `SliceSink::finish` enforces — a short record would otherwise leave those zeros
+        // indistinguishable from encoder output.
+        let mut data = vec![num_traits::Zero::zero(); n_vecs * output_dim];
+        data.par_chunks_mut(output_dim)
+            .zip(flat_input.par_chunks_exact(input_dim))
+            .for_each(|(out, chunk)| {
+                let mut sink = crate::utils::SliceSink::new(out);
+                encoder.push_encoded(DenseVectorView::new(chunk), &mut sink);
+                sink.finish();
+            });
 
-        // Assemble flat buffer (sequential, O(N * output_dim)).
-        let total_len = n_vecs * output_dim;
-        let mut data = Vec::with_capacity(total_len);
-        for vec in &encoded_vecs {
-            data.extend_from_slice(vec);
-        }
+        Self::from_raw(data.into_boxed_slice(), n_vecs, encoder)
+    }
+}
+
+impl<E> DenseDataset<E>
+where
+    E: DenseVectorEncoder<InputValueType = f32>,
+{
+    /// [`from_flat_par`](Self::from_flat_par) for a source held at half precision.
+    ///
+    /// The compressing encoders (PQ, RaBitQ) take `f32` input, so a caller holding an `f16`
+    /// collection would otherwise have to materialize a full `f32` copy
+    /// Each worker upcasts one vector at a time into a reusable scratch buffer, so
+    /// the extra memory is `output_dim` floats per thread.
+    ///
+    /// The resulting codes are those of the `f16` values, which differ from codes derived from
+    /// the original `f32` collection by at most the `f16` rounding of the input.
+    pub fn from_flat_par_upcast<S>(encoder: E, flat_input: &[S], n_vecs: usize) -> Self
+    where
+        E: Sync,
+        E::OutputValueType: Send,
+        S: crate::ValueType + Sync,
+    {
+        let input_dim = encoder.input_dim();
+        let output_dim = encoder.output_dim();
+
+        assert_eq!(
+            flat_input.len(),
+            n_vecs * input_dim,
+            "flat_input length must equal n_vecs * input_dim"
+        );
+
+        let mut data = vec![num_traits::Zero::zero(); n_vecs * output_dim];
+        data.par_chunks_mut(output_dim)
+            .zip(flat_input.par_chunks_exact(input_dim))
+            .for_each_init(
+                || vec![0.0f32; input_dim],
+                |scratch, (out, chunk)| {
+                    for (dst, src) in scratch.iter_mut().zip(chunk) {
+                        *dst = src
+                            .to_f32()
+                            .expect("source value is not representable as f32");
+                    }
+                    let mut sink = crate::utils::SliceSink::new(out);
+                    encoder.push_encoded(DenseVectorView::new(scratch), &mut sink);
+                    sink.finish();
+                },
+            );
 
         Self::from_raw(data.into_boxed_slice(), n_vecs, encoder)
     }
@@ -468,8 +546,11 @@ where
     SrcStorage: AsRef<[Mid]>,
     DstStorage: From<Box<[DstOut]>> + AsRef<[DstOut]>,
 {
+    type Config = ();
+
     fn convert_from(
         source: &DenseDatasetGeneric<ScalarDenseQuantizer<SrcIn, Mid, D>, SrcStorage>,
+        _config: (),
     ) -> Self {
         let m = source.encoder.output_dim();
         let encoder = ScalarDenseQuantizer::<Mid, DstOut, D>::new(m);
@@ -505,6 +586,61 @@ mod tests {
     use crate::dataset::ConvertFrom;
     use crate::distances::DotProduct;
     use crate::encoders::dense_scalar::ScalarDenseQuantizer;
+
+    type PermuteEncoder = ScalarDenseQuantizer<f32, f32, DotProduct>;
+
+    /// Rows `[10, 11] [20, 21] [30, 31] [40, 41]`, so each row is easy to identify.
+    fn permutable_dense() -> DenseDataset<PermuteEncoder> {
+        let mut growable = DenseDatasetGrowable::new(PermuteEncoder::new(2));
+        for i in 1..=4 {
+            let base = (i * 10) as f32;
+            growable.push(DenseVectorView::new(&[base, base + 1.0]));
+        }
+        growable.into()
+    }
+
+    #[test]
+    fn dense_permute_moves_each_row_to_its_target_slot() {
+        let dataset = permutable_dense();
+        let permutation = [2usize, 0, 3, 1];
+
+        let permuted = dataset.permute(&permutation);
+
+        assert_eq!(permuted.len(), dataset.len());
+        for (old_id, &new_id) in permutation.iter().enumerate() {
+            assert_eq!(
+                permuted.get(new_id as VectorId).values(),
+                dataset.get(old_id as VectorId).values()
+            );
+        }
+    }
+
+    #[test]
+    fn dense_permute_with_identity_is_a_no_op() {
+        let dataset = permutable_dense();
+        assert_eq!(dataset.permute(&[0, 1, 2, 3]), dataset);
+    }
+
+    #[test]
+    fn dense_permute_then_inverse_round_trips() {
+        let dataset = permutable_dense();
+        let permutation = [2usize, 0, 3, 1];
+        let inverse = crate::core::dataset::invert_permutation(&permutation);
+
+        assert_eq!(dataset.permute(&permutation).permute(&inverse), dataset);
+    }
+
+    #[test]
+    #[should_panic(expected = "permutation length")]
+    fn dense_permute_rejects_wrong_length() {
+        permutable_dense().permute(&[0, 1, 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "more than one vector to position")]
+    fn dense_permute_rejects_non_bijective_permutation() {
+        permutable_dense().permute(&[0, 1, 1, 3]);
+    }
 
     #[test]
     fn dense_dataset_range_and_id_are_consistent() {
@@ -671,8 +807,31 @@ mod tests {
         let dataset =
             DenseDataset::from_raw(vec![5.0f32, 6.0, 7.0, 8.0].into_boxed_slice(), 2, encoder);
         let converted: DenseDatasetGeneric<MidEncoder, Vec<f32>> =
-            ConvertFrom::convert_from(&dataset);
+            ConvertFrom::convert_from(&dataset, ());
         assert_eq!(converted.len(), dataset.len());
         assert_eq!(converted.values(), dataset.values());
+    }
+
+    /// The upcasting encode path must produce exactly what the `f32` path produces when handed
+    /// the same values. This is the contract that lets a caller hold the collection as `f16`
+    /// without a full `f32` copy: the only difference from the `f32` path is the source's
+    /// precision, never the encoding.
+    #[test]
+    fn from_flat_par_upcast_matches_from_flat_par_on_the_same_values() {
+        use half::f16;
+
+        let d = 8;
+        let n = 40;
+        let source_f16: Vec<f16> = (0..n * d)
+            .map(|i| f16::from_f32((i as f32 * 0.37).sin() * 3.0))
+            .collect();
+        let source_f32: Vec<f32> = source_f16.iter().map(|v| v.to_f32()).collect();
+
+        let encoder = ScalarDenseQuantizer::<f32, f16, DotProduct>::new(d);
+        let from_f32 = DenseDataset::from_flat_par(encoder.clone(), &source_f32, n);
+        let from_f16 = DenseDataset::from_flat_par_upcast(encoder, &source_f16, n);
+
+        assert_eq!(from_f16.len(), from_f32.len());
+        assert_eq!(from_f16.values(), from_f32.values());
     }
 }

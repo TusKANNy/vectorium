@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::PackedSparseVectorEncoder;
 use crate::SpaceUsage;
+use crate::core::dataset::{assert_valid_permutation, invert_permutation};
 use crate::core::sealed;
 use crate::dataset::ConvertFrom;
 use crate::utils::prefetch_read_slice;
@@ -267,6 +268,8 @@ where
     Data: AsRef<[E::PackedDataType]>,
 {
     type Encoder = E;
+    /// Frozen, `Box<[_]>`-backed variant; identical to `Self` for [`PackedSparseDataset`].
+    type Owned = PackedSparseDatasetGeneric<E, Box<[usize]>, Box<[E::PackedDataType]>>;
 
     #[inline]
     fn nnz(&self) -> usize {
@@ -327,6 +330,34 @@ where
             .windows(2)
             .map(move |w| PackedVectorView::new(&data[w[0]..w[1]]))
     }
+
+    fn permute(&self, permutation: &[usize]) -> Self::Owned {
+        let n_vecs = self.offsets.as_ref().len() - 1;
+        assert_valid_permutation(permutation, n_vecs);
+
+        // Each row is padded to a whole number of `PackedDataType` words, so its encoding does
+        // not depend on its position: copying the range verbatim is lossless.
+        let old_by_new = invert_permutation(permutation);
+        let offsets = self.offsets.as_ref();
+        let source = self.data.as_ref();
+
+        let mut new_offsets = Vec::with_capacity(n_vecs + 1);
+        new_offsets.push(0);
+        let mut permuted = Vec::with_capacity(source.len());
+
+        for old_id in old_by_new {
+            permuted.extend_from_slice(&source[offsets[old_id]..offsets[old_id + 1]]);
+            new_offsets.push(permuted.len());
+        }
+
+        PackedSparseDatasetGeneric {
+            offsets: new_offsets.into_boxed_slice(),
+            data: permuted.into_boxed_slice(),
+            encoder: self.encoder.clone(),
+            // Reordering rows moves non-zeros around but never adds or drops any.
+            nnz: self.nnz,
+        }
+    }
 }
 
 impl<E, Offsets, Data> SparseData for PackedSparseDatasetGeneric<E, Offsets, Data>
@@ -355,7 +386,9 @@ impl<E> ConvertFrom<PackedSparseDatasetGrowable<E>> for PackedSparseDataset<E>
 where
     E: PackedSparseVectorEncoder,
 {
-    fn convert_from(dataset: PackedSparseDatasetGrowable<E>) -> Self {
+    type Config = ();
+
+    fn convert_from(dataset: PackedSparseDatasetGrowable<E>, _config: ()) -> Self {
         dataset.into()
     }
 }
@@ -378,7 +411,9 @@ impl<E> ConvertFrom<PackedSparseDataset<E>> for PackedSparseDatasetGrowable<E>
 where
     E: PackedSparseVectorEncoder,
 {
-    fn convert_from(dataset: PackedSparseDataset<E>) -> Self {
+    type Config = ();
+
+    fn convert_from(dataset: PackedSparseDataset<E>, _config: ()) -> Self {
         dataset.into()
     }
 }
@@ -431,7 +466,12 @@ where
     S: crate::core::storage::SparseStorage<EIn>,
     V: crate::encoders::blocked_sparse::BlockValues,
 {
-    fn convert_from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>) -> Self {
+    type Config = ();
+
+    fn convert_from(
+        dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>,
+        _config: (),
+    ) -> Self {
         dataset.into()
     }
 }
@@ -486,7 +526,12 @@ where
     C: crate::encoders::dotpacking8::encoder::PackedComponent,
     V: crate::encoders::dotpacking8::values::ValueCodec,
 {
-    fn convert_from(dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>) -> Self {
+    type Config = ();
+
+    fn convert_from(
+        dataset: crate::datasets::sparse_dataset::SparseDatasetGeneric<EIn, S>,
+        _config: (),
+    ) -> Self {
         dataset.into()
     }
 }
@@ -497,7 +542,86 @@ mod tests {
     use crate::BlockedSparseEncoder;
     use crate::DotPacking8U16F16Encoder;
     use crate::core::vector::SparseVectorView;
-    use crate::core::vector_encoder::VectorEncoder;
+    use crate::core::vector_encoder::{SparseDataEncoder, VectorEncoder};
+
+    /// Four DotPacking8 FixedU8 rows of differing encoded lengths.
+    fn permutable_packed() -> PackedSparseDataset<crate::DotPacking8U16FixedU8Encoder> {
+        use crate::DatasetGrowable;
+
+        let rows: [(&[u16], &[f32]); 4] = [
+            (&[1, 10, 100], &[1.5, 2.0, 2.5]),
+            (&[2, 11], &[0.5, 1.0]),
+            (&[0, 5, 50, 200, 400], &[0.25, 0.5, 0.75, 1.0, 1.25]),
+            (&[300], &[2.0]),
+        ];
+
+        let mut growable =
+            PackedSparseDatasetGrowable::new(crate::DotPacking8U16FixedU8Encoder::new(505));
+        for (components, values) in rows {
+            growable.push(SparseVectorView::new(components, values));
+        }
+        growable.into()
+    }
+
+    /// A verbatim copy is exact, while decoding and re-quantizing through `FixedU8Q` would
+    /// lose precision on every permutation.
+    #[test]
+    fn packed_permute_is_lossless() {
+        let dataset = permutable_packed();
+        let permutation = [2usize, 0, 3, 1];
+
+        let permuted = dataset.permute(&permutation);
+        let encoder = dataset.encoder();
+
+        assert_eq!(permuted.len(), dataset.len());
+        assert_eq!(permuted.nnz(), dataset.nnz());
+        for (old_id, &new_id) in permutation.iter().enumerate() {
+            let expected = encoder.decode_vector(dataset.get(old_id as VectorId));
+            let actual = encoder.decode_vector(permuted.get(new_id as VectorId));
+            assert_eq!(actual.components(), expected.components());
+            // Exact equality, no tolerance: the bytes were copied, not recomputed.
+            assert_eq!(actual.values(), expected.values());
+        }
+    }
+
+    #[test]
+    fn packed_permute_copies_row_bytes_verbatim() {
+        let dataset = permutable_packed();
+        let permutation = [2usize, 0, 3, 1];
+
+        let permuted = dataset.permute(&permutation);
+
+        for (old_id, &new_id) in permutation.iter().enumerate() {
+            assert_eq!(
+                permuted.get(new_id as VectorId).data(),
+                dataset.get(old_id as VectorId).data()
+            );
+        }
+    }
+
+    #[test]
+    fn packed_permute_then_inverse_round_trips() {
+        let dataset = permutable_packed();
+        let permutation = [2usize, 0, 3, 1];
+        let inverse = crate::core::dataset::invert_permutation(&permutation);
+
+        let round_tripped = dataset.permute(&permutation).permute(&inverse);
+
+        assert_eq!(round_tripped.offsets(), dataset.offsets());
+        assert_eq!(round_tripped.data(), dataset.data());
+    }
+
+    #[test]
+    #[should_panic(expected = "permutation length")]
+    fn packed_permute_rejects_wrong_length() {
+        permutable_packed().permute(&[0, 1, 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "more than one vector to position")]
+    fn packed_permute_rejects_non_bijective_permutation() {
+        permutable_packed().permute(&[0, 1, 1, 3]);
+    }
 
     #[test]
     fn conversion_and_dot_product() {
@@ -532,7 +656,7 @@ mod tests {
 
         // 3 query components, below SPARSE_QUERY_THRESHOLD: the jump_dot path.
         let query = SparseVectorView::new(&[1_u16, 10, 11][..], &[2.0_f32, 3.0, 4.0][..]);
-        let evaluator = dataset.encoder().query_evaluator(query);
+        let evaluator = dataset.encoder().query_evaluator(query, &());
 
         let d0 = evaluator.compute_distance(dataset.get(0)).distance();
         let d1 = evaluator.compute_distance(dataset.get(1)).distance();
@@ -589,7 +713,7 @@ mod tests {
 
         let frozen: PlainSparseDataset<u16, f32, DotProduct> = growable.into();
         let packed: PackedSparseDataset<BlockedSparseEncoder> =
-            PackedSparseDataset::convert_from(frozen.clone());
+            PackedSparseDataset::convert_from(frozen.clone(), ());
 
         assert_eq!(packed.nnz(), 4);
         assert_eq!(packed.len(), 2);
@@ -605,8 +729,8 @@ mod tests {
         assert_eq!(par_iter_values.len(), 2);
 
         let growable_again: PackedSparseDatasetGrowable<BlockedSparseEncoder> =
-            PackedSparseDatasetGrowable::convert_from(packed.clone());
-        let packed_again = PackedSparseDataset::convert_from(growable_again);
+            PackedSparseDatasetGrowable::convert_from(packed.clone(), ());
+        let packed_again = PackedSparseDataset::convert_from(growable_again, ());
         assert_eq!(packed_again.nnz(), packed.nnz());
     }
 

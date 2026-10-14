@@ -162,7 +162,13 @@ impl<C: PackedComponent, V: ValueCodec> VectorEncoder for DotPacking8Encoder<C, 
     where
         Self: 'e;
 
-    fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
+    type QueryParams = ();
+
+    fn query_evaluator<'e>(
+        &'e self,
+        query: Self::QueryVector<'_>,
+        _params: &(),
+    ) -> Self::Evaluator<'e> {
         DotPacking8QueryEvaluator::new(query, self)
     }
 
@@ -350,8 +356,8 @@ mod tests {
         let e2 = DotPacking8Encoder::<u16, F16Values>::new(10);
         assert!(encode(&e1, &[], &[]).is_empty());
         assert!(encode(&e2, &[], &[]).is_empty());
-        assert_eq!(e1.query_evaluator(q).compute_distance(PackedVectorView::new(&[])).0, 0.0);
-        assert_eq!(e2.query_evaluator(q).compute_distance(PackedVectorView::new(&[])).0, 0.0);
+        assert_eq!(e1.query_evaluator(q, &()).compute_distance(PackedVectorView::new(&[])).0, 0.0);
+        assert_eq!(e2.query_evaluator(q, &()).compute_distance(PackedVectorView::new(&[])).0, 0.0);
     }
 
     #[test]
@@ -368,7 +374,7 @@ mod tests {
     #[should_panic(expected = "exceeds")]
     fn query_component_out_of_range_panics() {
         let enc = DotPacking8Encoder::<u16, FixedU8Values>::new(10);
-        let _ = enc.query_evaluator(SparseVectorView::new(&[10u16], &[1.0f32]));
+        let _ = enc.query_evaluator(SparseVectorView::new(&[10u16], &[1.0f32]), &());
     }
 
     /// The `n: u16` header holds 65535, so a vector of 65535 entries must round-trip
@@ -383,7 +389,7 @@ mod tests {
         let d = enc.decode_vector(PackedVectorView::new(&blob));
         assert_eq!(d.components().len(), n);
         let q = SparseVectorView::new(&comps, &vals);
-        assert_eq!(enc.query_evaluator(q).compute_distance(PackedVectorView::new(&blob)).0, n as f32);
+        assert_eq!(enc.query_evaluator(q, &()).compute_distance(PackedVectorView::new(&blob)).0, n as f32);
     }
 
     /// Without a mapping, encoded components are used as gather indices: an id >= dim would

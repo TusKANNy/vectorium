@@ -121,7 +121,7 @@ macro_rules! golden_case {
             let mut decoded: Vec<u64> = Vec::new();
             for (qc, qv) in &queries {
                 let qc: Vec<$C> = qc.iter().map(|&x| x as $C).collect();
-                let eval = enc.query_evaluator(SparseVectorView::new(&qc, qv));
+                let eval = enc.query_evaluator(SparseVectorView::new(&qc, qv), &());
                 for blob in blobs.iter().filter(|b| !b.is_empty()) {
                     scores.push(eval.compute_distance(PackedVectorView::new(blob)).0.to_bits() as u64);
                 }

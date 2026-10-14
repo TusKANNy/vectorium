@@ -199,7 +199,13 @@ where
     where
         Self: 'e;
 
-    fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
+    type QueryParams = ();
+
+    fn query_evaluator<'e>(
+        &'e self,
+        query: Self::QueryVector<'_>,
+        _params: &(),
+    ) -> Self::Evaluator<'e> {
         ScalarStepSparseQueryEvaluator::new(query, self)
     }
 
@@ -369,7 +375,12 @@ where
     D: ScalarSparseSupportedDistance + From<f32>,
     S: SparseStorage<ScalarSparseQuantizer<C, SrcIn, Mid, D>>,
 {
-    fn convert_from(source: SparseDatasetGeneric<ScalarSparseQuantizer<C, SrcIn, Mid, D>, S>) -> Self {
+    type Config = ();
+
+    fn convert_from(
+        source: SparseDatasetGeneric<ScalarSparseQuantizer<C, SrcIn, Mid, D>, S>,
+        _config: (),
+    ) -> Self {
         let dim = source.output_dim();
         let mut quantizer = ScalarStepSparseQuantizer::<C, Code, D>::new(dim);
         quantizer.train(&source);
@@ -506,7 +517,7 @@ mod tests {
             })
             .collect();
         for query in queries.iter() {
-            let ev = q.query_evaluator(query);
+            let ev = q.query_evaluator(query, &());
             for (c, x) in &encoded {
                 let view = SparseVectorView::new(c, x);
                 let got = ev.compute_distance(view).distance();
@@ -557,7 +568,7 @@ mod tests {
         }
 
         let converted =
-            SparseDataset::<ScalarStepSparseQuantizer<C, Code, DotProduct>>::convert_from(data);
+            SparseDataset::<ScalarStepSparseQuantizer<C, Code, DotProduct>>::convert_from(data, ());
         assert_eq!(converted.encoder().steps(), q.steps());
         assert_eq!(converted.len(), offsets.len() - 1);
         for i in 0..converted.len() {
@@ -590,9 +601,11 @@ mod tests {
         }
         let a = ScalarU16SparseDataset::<u16, DotProduct>::convert_from(
             Into::<PlainSparseDataset<u16, f16, DotProduct>>::into(g16),
+            (),
         );
         let b = ScalarU16SparseDataset::<u16, DotProduct>::convert_from(
             Into::<PlainSparseDataset<u16, f32, DotProduct>>::into(g32),
+            (),
         );
         assert_eq!(a.encoder().steps(), b.encoder().steps());
         for i in 0..a.len() as u64 {

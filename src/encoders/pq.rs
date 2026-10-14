@@ -43,6 +43,15 @@ impl ProductQuantizerDistance for DotProduct {
 
 /// Number of centroids per subspace (always 256 = 2^8)
 const KSUB: usize = 256;
+/// Centroids processed per tile in the distance-table build. Must divide `KSUB`.
+///
+/// The `TILE` accumulators stay in registers across all `dsub` dimension passes,
+/// so each table element is written exactly once rather than read-modify-written
+/// on every pass. The width balances two costs: the per-(tile, dimension) setup
+/// -- broadcasting `q_k`, address computation, loop bookkeeping -- is paid once
+/// per step regardless of `TILE`, so a narrow tile amortizes it over too little
+/// arithmetic, while a wide one raises register pressure.
+const TILE: usize = 32;
 const DEFAULT_KMEANS_N_ITER: usize = 25;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -71,7 +80,9 @@ where
     D: ProductQuantizerDistance,
 {
     #[inline]
-    pub fn train(training_data: &PlainDenseDataset<f32, SquaredEuclideanDistance>) -> Self {
+    pub fn train<Ds: crate::ScalarDenseSupportedDistance>(
+        training_data: &PlainDenseDataset<f32, Ds>,
+    ) -> Self {
         Self::train_with_kmeans_options(training_data, DEFAULT_KMEANS_N_ITER, None)
     }
 
@@ -79,8 +90,8 @@ where
     /// This keeps the outer PQ training API unchanged for existing callers while allowing
     /// reproducible bin-specific runs to match older pipelines more closely.
     #[inline]
-    pub fn train_with_kmeans_options(
-        training_data: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
+    pub fn train_with_kmeans_options<Ds: crate::ScalarDenseSupportedDistance>(
+        training_data: &PlainDenseDataset<f32, Ds>,
         n_iter: usize,
         seed: Option<u64>,
     ) -> Self {
@@ -100,8 +111,8 @@ where
     /// Returns a flat Vec<f32> of length M * dsub * KSUB in SoA layout: [M × dsub × KSUB].
     /// KMeans output is AoS [KSUB × dsub]; we transpose each subspace to SoA [dsub × KSUB]
     /// so that the distance table build inner loop is over contiguous KSUB f32 values.
-    fn train_centroids(
-        training_data: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
+    fn train_centroids<Ds: crate::ScalarDenseSupportedDistance>(
+        training_data: &PlainDenseDataset<f32, Ds>,
         dsub: usize,
         n_iter: usize,
         seed: Option<u64>,
@@ -153,10 +164,10 @@ where
         flat
     }
 
-    fn sample_random_dataset(
-        dataset: &PlainDenseDataset<f32, SquaredEuclideanDistance>,
+    fn sample_random_dataset<Ds: crate::ScalarDenseSupportedDistance>(
+        dataset: &PlainDenseDataset<f32, Ds>,
         sample_size: usize,
-    ) -> PlainDenseDataset<f32, SquaredEuclideanDistance> {
+    ) -> PlainDenseDataset<f32, Ds> {
         use rand::seq::SliceRandom;
         let d = dataset.output_dim();
         let dataset_size = dataset.len();
@@ -173,10 +184,52 @@ where
             values.extend_from_slice(&dataset.values()[start..start + d]);
         }
 
-        PlainDenseDataset::<f32, SquaredEuclideanDistance>::from_raw(
+        PlainDenseDataset::<f32, Ds>::from_raw(
             values.into_boxed_slice(),
             sample_size,
             dataset.encoder().clone(),
+        )
+    }
+
+    /// [`sample_random_dataset`](Self::sample_random_dataset) from a half-precision source,
+    /// upcasting the sampled rows to `f32` so k-means trains exactly as it does for an `f32`
+    /// collection.
+    ///
+    /// When `sample_size` covers the whole dataset the rows are taken in their original order
+    /// rather than shuffled: k-means seeding consumes the leading rows, so preserving the order
+    /// keeps this path comparable with the `f32` one.
+    fn sample_random_dataset_upcast<Ds: crate::ScalarDenseSupportedDistance>(
+        dataset: &PlainDenseDataset<half::f16, Ds>,
+        sample_size: usize,
+    ) -> PlainDenseDataset<f32, Ds> {
+        use rand::seq::SliceRandom;
+        let d = dataset.output_dim();
+        let dataset_size = dataset.len();
+        let sample_size = sample_size.min(dataset_size);
+
+        let indices: Vec<usize> = if sample_size == dataset_size {
+            (0..dataset_size).collect()
+        } else {
+            let mut indices: Vec<usize> = (0..dataset_size).collect();
+            let mut rng = rand::thread_rng();
+            indices.partial_shuffle(&mut rng, sample_size);
+            indices
+        };
+
+        let mut values = Vec::with_capacity(sample_size * d);
+        for &idx in &indices[..sample_size] {
+            let start = idx * d;
+            values.extend(
+                dataset.values()[start..start + d]
+                    .iter()
+                    .map(|v| v.to_f32()),
+            );
+        }
+
+        PlainDenseDataset::<f32, Ds>::from_raw(
+            values.into_boxed_slice(),
+            sample_size,
+            PlainDenseQuantizer::<f32, Ds>::new(d),
         )
     }
 
@@ -295,26 +348,26 @@ where
         let dsub = self.dsub;
         let mut table = vec![0.0_f32; KSUB * M];
 
-        // Tiled loop: process 8 centroids at a time.
-        // The 8 partial accumulators `acc` are kept in registers across all dsub
-        // dimension passes, so table_sub is written exactly once per element —
-        // no read-modify-write.
+        // Tiled loop: process TILE centroids at a time.
+        // The TILE partial accumulators `acc` are kept in registers across all
+        // dsub dimension passes, so table_sub is written exactly once per
+        // element — no read-modify-write. See TILE's docs for the width choice.
         for (m, (table_sub, query_sub)) in table
             .chunks_mut(KSUB)
             .zip(query.values().chunks(dsub))
             .enumerate()
         {
             let centroids = self.subspace_centroids(m);
-            for i in (0..KSUB).step_by(8) {
-                let mut acc = [0.0_f32; 8];
+            for i in (0..KSUB).step_by(TILE) {
+                let mut acc = [0.0_f32; TILE];
                 for (k, &q_k) in query_sub.iter().enumerate() {
-                    let col8 = &centroids[k * KSUB + i..k * KSUB + i + 8];
-                    for (a, &c) in acc.iter_mut().zip(col8) {
+                    let col = &centroids[k * KSUB + i..k * KSUB + i + TILE];
+                    for (a, &c) in acc.iter_mut().zip(col) {
                         let d = q_k - c;
                         *a += d * d;
                     }
                 }
-                table_sub[i..i + 8].copy_from_slice(&acc);
+                table_sub[i..i + TILE].copy_from_slice(&acc);
             }
         }
         table
@@ -325,7 +378,7 @@ where
         let dsub = self.dsub;
         let mut table = vec![0.0_f32; KSUB * M];
 
-        // Same tiling strategy as the euclidean table: 8-wide accumulators in
+        // Same tiling strategy as the euclidean table: TILE-wide accumulators in
         // registers across all dsub passes → single write per table element.
         for (m, (table_sub, query_sub)) in table
             .chunks_mut(KSUB)
@@ -333,15 +386,15 @@ where
             .enumerate()
         {
             let centroids = self.subspace_centroids(m);
-            for i in (0..KSUB).step_by(8) {
-                let mut acc = [0.0_f32; 8];
+            for i in (0..KSUB).step_by(TILE) {
+                let mut acc = [0.0_f32; TILE];
                 for (k, &q_k) in query_sub.iter().enumerate() {
-                    let col8 = &centroids[k * KSUB + i..k * KSUB + i + 8];
-                    for (a, &c) in acc.iter_mut().zip(col8) {
+                    let col = &centroids[k * KSUB + i..k * KSUB + i + TILE];
+                    for (a, &c) in acc.iter_mut().zip(col) {
                         *a += q_k * c;
                     }
                 }
-                table_sub[i..i + 8].copy_from_slice(&acc);
+                table_sub[i..i + TILE].copy_from_slice(&acc);
             }
         }
         table
@@ -456,7 +509,13 @@ where
     where
         Self: 'e;
 
-    fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
+    type QueryParams = ();
+
+    fn query_evaluator<'e>(
+        &'e self,
+        query: Self::QueryVector<'_>,
+        _params: &(),
+    ) -> Self::Evaluator<'e> {
         assert_eq!(query.len(), self.d());
         ProductQuantizerQueryEvaluator::new(self, query)
     }
@@ -511,29 +570,37 @@ where
 
 use crate::dataset::ConvertFrom;
 
-/// Convert from PlainDenseDataset<f32, SquaredEuclideanDistance> to PQ-encoded dataset
-/// with automatic training (optionally sampled) and encoding.
-impl<const M: usize, D> ConvertFrom<PlainDenseDataset<f32, SquaredEuclideanDistance>>
+/// Train a product quantizer on `dataset` (sampling the training set on large inputs) and encode
+/// every vector.
+///
+/// The source is taken by **reference**, so the plain vectors survive the call — a caller that
+/// still needs them (to compute ground truth, or to encode a second time at another `M`) does not
+/// have to clone the dataset first.
+impl<const M: usize, D, Ds> ConvertFrom<&PlainDenseDataset<f32, Ds>>
     for crate::DenseDataset<ProductQuantizer<M, D>>
 where
     D: ProductQuantizerDistance + 'static,
+    Ds: crate::ScalarDenseSupportedDistance,
 {
-    fn convert_from(dataset: PlainDenseDataset<f32, SquaredEuclideanDistance>) -> Self {
+    type Config = ();
+
+    fn convert_from(dataset: &PlainDenseDataset<f32, Ds>, _config: ()) -> Self {
         let sample_size = ProductQuantizer::<M, D>::compute_training_sample_size(dataset.len());
 
-        let training_dataset = match sample_size {
+        let pq_encoder = match sample_size {
             Some(size) => {
                 println!(
                     "Sampling {} vectors from {} for PQ training",
                     size,
                     dataset.len()
                 );
-                ProductQuantizer::<M, D>::sample_random_dataset(&dataset, size)
+                let sample = ProductQuantizer::<M, D>::sample_random_dataset(dataset, size);
+                ProductQuantizer::<M, D>::train(&sample)
             }
-            None => dataset.clone(),
+            // Small enough to train on directly — no copy of any kind.
+            None => ProductQuantizer::<M, D>::train(dataset),
         };
 
-        let pq_encoder = ProductQuantizer::<M, D>::train(&training_dataset);
         crate::DenseDataset::<ProductQuantizer<M, D>>::from_flat_par(
             pq_encoder,
             dataset.values(),
@@ -542,35 +609,38 @@ where
     }
 }
 
-/// Convert from PlainDenseDataset<f32, DotProduct> to PQ-encoded dataset
-/// with automatic training (optionally sampled) and encoding.
-/// Training uses SquaredEuclideanDistance internally (zero-copy conversion).
-impl<const M: usize, D> ConvertFrom<PlainDenseDataset<f32, DotProduct>>
+/// Same, from a source held at half precision.
+///
+/// Lets a caller that already has the collection as `f16` — which is how the graph indexes store
+/// it — encode without first materializing an `f32` copy. k-means still trains in `f32`, on an
+/// upcast copy of the training sample only; the encode pass upcasts one vector at a time.
+impl<const M: usize, D, Ds> ConvertFrom<&PlainDenseDataset<half::f16, Ds>>
     for crate::DenseDataset<ProductQuantizer<M, D>>
 where
     D: ProductQuantizerDistance + 'static,
+    Ds: crate::ScalarDenseSupportedDistance,
 {
-    fn convert_from(dataset: PlainDenseDataset<f32, DotProduct>) -> Self {
-        let euclidean_dataset: PlainDenseDataset<f32, SquaredEuclideanDistance> =
-            dataset.clone().into();
+    type Config = ();
 
-        let sample_size =
-            ProductQuantizer::<M, D>::compute_training_sample_size(euclidean_dataset.len());
+    fn convert_from(dataset: &PlainDenseDataset<half::f16, Ds>, _config: ()) -> Self {
+        let sample_size = ProductQuantizer::<M, D>::compute_training_sample_size(dataset.len());
 
-        let training_dataset = match sample_size {
+        let training_data: PlainDenseDataset<f32, Ds> = match sample_size {
             Some(size) => {
                 println!(
                     "Sampling {} vectors from {} for PQ training",
                     size,
-                    euclidean_dataset.len()
+                    dataset.len()
                 );
-                ProductQuantizer::<M, D>::sample_random_dataset(&euclidean_dataset, size)
+                ProductQuantizer::<M, D>::sample_random_dataset_upcast(dataset, size)
             }
-            None => euclidean_dataset,
+            // Small enough to train on directly; the upcast copy is bounded by
+            // `PQ_TRAIN_SAMPLING_MIN_SIZE` vectors.
+            None => ProductQuantizer::<M, D>::sample_random_dataset_upcast(dataset, dataset.len()),
         };
+        let pq_encoder = ProductQuantizer::<M, D>::train(&training_data);
 
-        let pq_encoder = ProductQuantizer::<M, D>::train(&training_dataset);
-        crate::DenseDataset::<ProductQuantizer<M, D>>::from_flat_par(
+        crate::DenseDataset::<ProductQuantizer<M, D>>::from_flat_par_upcast(
             pq_encoder,
             dataset.values(),
             dataset.len(),
@@ -611,6 +681,141 @@ mod tests {
 
         let pq = ProductQuantizer::<M_TEST, SquaredEuclideanDistance>::train(&training_data);
         (pq, seed_vecs)
+    }
+
+    /// The table-build tile loop steps by TILE with no remainder handling, so
+    /// TILE must divide KSUB exactly.
+    #[test]
+    fn tile_divides_ksub() {
+        assert_eq!(KSUB % TILE, 0, "TILE ({TILE}) must divide KSUB ({KSUB})");
+    }
+
+    /// The tiled table build must agree with a straightforward untiled
+    /// reference, for both metrics. This is what pins the tile width as a pure
+    /// performance knob with no effect on results.
+    #[test]
+    fn tiled_table_matches_untiled_reference() {
+        let (pq, vecs) = make_pq_and_data();
+        let query = DenseVectorView::new(&vecs[2]);
+
+        let dsub = pq.dsub();
+        let l2 = pq.compute_euclidean_distance_table(query);
+        for m in 0..M_TEST {
+            let centroids = pq.subspace_centroids(m);
+            let q_sub = &vecs[2][m * dsub..(m + 1) * dsub];
+            for i in 0..KSUB {
+                let mut want = 0.0_f32;
+                for (k, &q_k) in q_sub.iter().enumerate() {
+                    let d = q_k - centroids[k * KSUB + i];
+                    want += d * d;
+                }
+                let got = l2[m * KSUB + i];
+                assert!(
+                    (got - want).abs() <= 1e-4 * want.abs().max(1e-3),
+                    "euclidean table m={m} i={i}: got {got}, want {want}"
+                );
+            }
+        }
+
+        let pq_dot =
+            ProductQuantizer::<M_TEST, DotProduct>::from_pretrained(D_TEST, pq.centroids_as_aos());
+        let dot = pq_dot.compute_dot_product_table(query);
+        for m in 0..M_TEST {
+            let centroids = pq_dot.subspace_centroids(m);
+            let q_sub = &vecs[2][m * dsub..(m + 1) * dsub];
+            for i in 0..KSUB {
+                let mut want = 0.0_f32;
+                for (k, &q_k) in q_sub.iter().enumerate() {
+                    want += q_k * centroids[k * KSUB + i];
+                }
+                let got = dot[m * KSUB + i];
+                assert!(
+                    (got - want).abs() <= 1e-4 * want.abs().max(1e-3),
+                    "dot table m={m} i={i}: got {got}, want {want}"
+                );
+            }
+        }
+    }
+
+    /// Building a PQ dataset borrows its source and accepts a source of either metric. The
+    /// assertions on `plain` *after* the conversions are the point: they would not compile if the
+    /// source were moved.
+    #[test]
+    fn convert_from_borrows_the_source_and_accepts_either_source_metric() {
+        use crate::dataset::ConvertInto;
+
+        let (_, vecs) = make_pq_and_data();
+        let quantizer = PlainDenseQuantizer::<f32, DotProduct>::new(D_TEST);
+        let mut growable =
+            PlainDenseDatasetGrowable::<f32, DotProduct>::with_capacity(quantizer, vecs.len());
+        for v in &vecs {
+            growable.push(DenseVectorView::new(v));
+        }
+        let plain: PlainDenseDataset<f32, DotProduct> = growable.into();
+
+        // An inner-product source.
+        let pq_ip: crate::DenseDataset<ProductQuantizer<M_TEST, DotProduct>> =
+            (&plain).convert_into(());
+        // The same source again, for the other target metric. Only possible because `plain` lives.
+        let pq_l2: crate::DenseDataset<ProductQuantizer<M_TEST, SquaredEuclideanDistance>> =
+            (&plain).convert_into(());
+
+        assert_eq!(plain.len(), vecs.len());
+        assert_eq!(pq_ip.len(), vecs.len());
+        assert_eq!(pq_l2.len(), vecs.len());
+        assert_eq!(pq_ip.encoder().output_dim(), M_TEST);
+        assert_eq!(pq_l2.encoder().output_dim(), M_TEST);
+    }
+
+    /// PQ's k-means runs in squared-Euclidean space over sub-vectors it builds itself, so the
+    /// source dataset's metric never reaches training. This asserts that at the bit level: same
+    /// vectors, two source metrics, one k-means seed, byte-identical centroids. If the metric ever
+    /// did leak into training, the inner-product path would drift from the Euclidean one and this
+    /// test fails.
+    #[test]
+    fn training_is_independent_of_the_source_metric() {
+        let (_, vecs) = make_pq_and_data();
+
+        let mut l2 = PlainDenseDatasetGrowable::<f32, SquaredEuclideanDistance>::with_capacity(
+            PlainDenseQuantizer::<f32, SquaredEuclideanDistance>::new(D_TEST),
+            vecs.len(),
+        );
+        let mut ip = PlainDenseDatasetGrowable::<f32, DotProduct>::with_capacity(
+            PlainDenseQuantizer::<f32, DotProduct>::new(D_TEST),
+            vecs.len(),
+        );
+        for v in &vecs {
+            l2.push(DenseVectorView::new(v));
+            ip.push(DenseVectorView::new(v));
+        }
+        let l2: PlainDenseDataset<f32, SquaredEuclideanDistance> = l2.into();
+        let ip: PlainDenseDataset<f32, DotProduct> = ip.into();
+
+        // A fixed seed makes k-means deterministic; `train` itself passes `None`.
+        let from_l2 =
+            ProductQuantizer::<M_TEST, SquaredEuclideanDistance>::train_with_kmeans_options(
+                &l2,
+                DEFAULT_KMEANS_N_ITER,
+                Some(42),
+            );
+        let from_ip =
+            ProductQuantizer::<M_TEST, SquaredEuclideanDistance>::train_with_kmeans_options(
+                &ip,
+                DEFAULT_KMEANS_N_ITER,
+                Some(42),
+            );
+
+        assert_eq!(from_l2.d, from_ip.d);
+        assert_eq!(from_l2.dsub, from_ip.dsub);
+        assert_eq!(from_l2.centroids, from_ip.centroids);
+
+        // And the codes those centroids produce agree, which is what actually reaches a query.
+        for v in &vecs {
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            from_l2.push_encoded(DenseVectorView::new(v), &mut a);
+            from_ip.push_encoded(DenseVectorView::new(v), &mut b);
+            assert_eq!(a, b);
+        }
     }
 
     /// Encoding a vector then decoding it should reconstruct something close to
@@ -665,5 +870,29 @@ mod tests {
                 codes[m], best
             );
         }
+    }
+
+    /// The upcasting encode path must assign exactly the same centroids as the `f32` path when
+    /// both are handed the same trained quantizer and the same (already-rounded) values.
+    ///
+    /// The full `ConvertFrom` is not compared end to end because PQ's k-means is randomly seeded
+    /// and its training sample is drawn at random, so two trainings do not share a codebook. What
+    /// the `f16` path changes is the *encode*, and that is what this pins.
+    #[test]
+    fn f16_source_encodes_exactly_like_the_equivalent_f32_source() {
+        use half::f16;
+
+        let (pq, vecs) = make_pq_and_data();
+        let n = vecs.len();
+        let source_f16: Vec<f16> = vecs
+            .iter()
+            .flat_map(|v| v.iter().map(|&x| f16::from_f32(x)))
+            .collect();
+        let source_f32: Vec<f32> = source_f16.iter().map(|v| v.to_f32()).collect();
+
+        let from_f32 = crate::DenseDataset::from_flat_par(pq.clone(), &source_f32, n);
+        let from_f16 = crate::DenseDataset::from_flat_par_upcast(pq, &source_f16, n);
+
+        assert_eq!(from_f16.values(), from_f32.values());
     }
 }

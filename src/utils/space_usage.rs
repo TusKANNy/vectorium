@@ -47,6 +47,12 @@ impl SpaceUsage for () {
     }
 }
 
+impl<T: SpaceUsage> SpaceUsage for Option<T> {
+    fn space_usage_bytes(&self) -> usize {
+        mem::size_of::<Self>() + self.as_ref().map_or(0, |t| t.space_usage_bytes())
+    }
+}
+
 impl<T> SpaceUsage for Box<[T]>
 where
     T: SpaceUsage + Copy,

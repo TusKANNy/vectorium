@@ -14,6 +14,7 @@ use crate::distances::{
     squared_euclidean_distance_sparse_with_merge,
 };
 use crate::utils::is_strictly_sorted;
+use crate::utils::numeric_markers::ToF32Fast;
 use crate::{ComponentType, Float, FromF32, SpaceUsage, ValueType};
 
 /// Marker trait for distance types supported by scalar sparse quantizers.
@@ -245,11 +246,7 @@ where
         encoded: SparseVectorView<'a, Self::OutputComponentType, Self::OutputValueType>,
     ) -> SparseVectorOwned<Self::InputComponentType, f32> {
         let components = encoded.components().to_vec();
-        let values = encoded
-            .values()
-            .iter()
-            .map(|&v| v.to_f32().expect("Failed to convert value to f32"))
-            .collect();
+        let values = encoded.values().iter().map(|&v| v.to_f32_fast()).collect();
         SparseVectorOwned::new(components, values)
     }
 }
@@ -295,7 +292,13 @@ where
     where
         Self: 'e;
 
-    fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
+    type QueryParams = ();
+
+    fn query_evaluator<'e>(
+        &'e self,
+        query: Self::QueryVector<'_>,
+        _params: &(),
+    ) -> Self::Evaluator<'e> {
         ScalarSparseQueryEvaluator::new(query, self)
     }
 

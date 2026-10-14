@@ -12,8 +12,9 @@ use vectorium::distances;
 use vectorium::encoders::pq::{ProductQuantizer, ProductQuantizerDistance};
 use vectorium::readers;
 use vectorium::{
-    Dataset, FixedU8Q, FixedU16Q, FlatIndex, Index, PlainDenseDataset, PlainSparseDataset,
-    ScalarDenseDataset, SpaceUsage,
+    Dataset, DenseDataset, FixedU8Q, FixedU16Q, FlatIndex, Index, PlainDenseDataset,
+    PlainSparseDataset, RabitqConfig, RabitqExtConfig, RabitqExtQuantizer, RabitqQuantizer,
+    RabitqQueryParams, RabitqSupportedDistance, ScalarDenseDataset, SpaceUsage,
 };
 use vectorium::{Distance, Float};
 
@@ -58,12 +59,13 @@ struct Args {
     #[arg(default_value = "u32")]
     component_type: String,
 
-    /// Encoder: 'plain', 'pq' (dense only), 'dotpacking8' or 'blocked' (default: plain)
+    /// Encoder: 'plain', 'pq', 'rabitq', 'rabitq-ext' (dense only), 'dotpacking8' or 'blocked'
+    /// (sparse only) (default: plain)
     #[clap(long, value_parser)]
     #[arg(default_value = "plain")]
     encoder: String,
 
-    /// PQ subspace count (must divide the dataset dimension). 0 auto-selects from {128,96,64,32,16,8,4}.
+    /// PQ subspace count (must divide the dataset dimension). Supported: 4, 8, 16, 24, 32, 48, 64, 96, 128, 192, 256. 0 auto-selects from {128,96,64,32,16,8,4}.
     #[clap(long, value_parser)]
     #[arg(default_value_t = 0)]
     pq_subspaces: usize,
@@ -91,6 +93,41 @@ struct Args {
     /// (trained per-component steps; 48-byte blocks for scalaru8).
     #[clap(long, value_parser, default_value = "f16")]
     blocked_values: String,
+
+    /// Bits per component for the query, for `--encoder rabitq` only (1..=8). Documents are always
+    /// 1 bit. `rabitq-ext` scores against an unquantized query and ignores this.
+    #[clap(long, value_parser)]
+    #[arg(default_value_t = 1)]
+    rabitq_query_bits: u32,
+
+    /// Bits per component for the document code, for `--encoder rabitq-ext` only: 2, 4 or 8.
+    #[clap(long, value_parser)]
+    #[arg(default_value_t = 4)]
+    rabitq_total_bits: u32,
+
+    /// Seed for the RaBitQ random orthogonal rotation.
+    #[clap(long, value_parser)]
+    #[arg(default_value_t = 42)]
+    rabitq_seed: u64,
+
+    /// Apply the RaBitQ random orthogonal rotation. Pass `--rabitq-rotate false` to skip the
+    /// O(d log d) transform at encode and query time; recall on real data is expected to drop.
+    #[clap(long, default_value_t = true, action = clap::ArgAction::Set)]
+    rabitq_rotate: bool,
+
+    /// For `--encoder rabitq-ext`: estimate the rescale factor once at train time instead of
+    /// searching per vector. Pass `--rabitq-faster-quant false` for the exact per-vector search,
+    /// which costs a heap sweep per document for a small accuracy gain.
+    #[clap(long, default_value_t = true, action = clap::ArgAction::Set)]
+    rabitq_faster_quant: bool,
+
+    /// Sparse datasets only: before scanning, L1-prune every document to the components carrying
+    /// the top PERCENTAGE% of its mass (see `vectorium::l1_prune_split`) and search that part
+    /// alone. Use it to measure what a two-stage index's first stage can see: the top-k this
+    /// produces is the candidate ceiling the real, approximate first stage is bounded by.
+    /// Omit the flag to scan the collection unpruned.
+    #[clap(long, value_parser)]
+    l1_prune: Option<f32>,
 }
 
 fn main() {
@@ -200,9 +237,12 @@ fn dispatch(args: Args) -> bool {
             vectorium::SPARSE_QUERY_THRESHOLD
         );
     }
-    if !matches!(encoder.as_str(), "plain" | "dotpacking8" | "blocked" | "pq") {
+    if !matches!(
+        encoder.as_str(),
+        "plain" | "pq" | "rabitq" | "rabitq-ext" | "dotpacking8" | "blocked"
+    ) {
         eprintln!(
-            "Unknown encoder='{}'. Use encoder='plain'|'dotpacking8'|'blocked'|'pq' (dense only).",
+            "Unknown encoder='{}'. Use encoder='plain'|'pq'|'rabitq'|'rabitq-ext' (dense) or 'dotpacking8'|'blocked' (sparse).",
             encoder
         );
         return false;
@@ -290,17 +330,52 @@ fn dispatch(args: Args) -> bool {
                     return false;
                 }
             }
+            "rabitq" | "rabitq-ext" => {
+                if value_type != "f32" {
+                    eprintln!("Encoder '{}' requires value_type='f32'.", encoder);
+                    return false;
+                }
+                let config = RabitqCliConfig {
+                    query_bits: args.rabitq_query_bits,
+                    total_bits: args.rabitq_total_bits,
+                    seed: args.rabitq_seed,
+                    rotate: args.rabitq_rotate,
+                    faster_quant: args.rabitq_faster_quant,
+                };
+                if let Err(err) = compute_dense_groundtruth_rabitq(
+                    input_path,
+                    query_path,
+                    output_path,
+                    k,
+                    &encoder,
+                    &distance,
+                    config,
+                ) {
+                    eprintln!("Failed to compute RaBitQ groundtruth: {}", err);
+                }
+            }
             _ => {
                 eprintln!(
-                    "Encoder '{}' is not supported for dense datasets. Use 'plain' or 'pq'.",
+                    "Encoder '{}' is not supported for dense datasets. Use 'plain', 'pq', 'rabitq' or 'rabitq-ext'.",
                     encoder
                 );
                 return false;
             }
         },
         "sparse" => {
-            if encoder == "pq" {
-                eprintln!("Encoder 'pq' is only supported with dataset_type='dense'.");
+            let l1_prune = args.l1_prune;
+            if let Some(p) = l1_prune {
+                assert!(
+                    (0.0..=100.0).contains(&p),
+                    "--l1-prune must be in [0, 100], got {p}"
+                );
+                println!("L1 pruning: keeping the top {p}% of each document's L1 mass");
+            }
+            if matches!(encoder.as_str(), "pq" | "rabitq" | "rabitq-ext") {
+                eprintln!(
+                    "Encoder '{}' is only supported with dataset_type='dense'.",
+                    encoder
+                );
                 return false;
             }
             // Sparse dataset logic
@@ -325,6 +400,7 @@ fn dispatch(args: Args) -> bool {
                     &component_type,
                     &args.dotpacking8_values.to_lowercase(),
                     !args.no_train,
+                    l1_prune,
                 );
             }
             if encoder == "blocked" {
@@ -349,15 +425,15 @@ fn dispatch(args: Args) -> bool {
                 }
                 return match args.blocked_values.to_lowercase().as_str() {
                     "f16" => {
-                        compute_sparse_groundtruth_blocked::<vectorium::BlockF16Values>(input_path, query_path, output_path, k);
+                        compute_sparse_groundtruth_blocked::<vectorium::BlockF16Values>(input_path, query_path, output_path, k, l1_prune);
                         true
                     }
                     "scalaru8" => {
-                        compute_sparse_groundtruth_blocked::<vectorium::BlockScalarU8Values>(input_path, query_path, output_path, k);
+                        compute_sparse_groundtruth_blocked::<vectorium::BlockScalarU8Values>(input_path, query_path, output_path, k, l1_prune);
                         true
                     }
                     "scalaru16" => {
-                        compute_sparse_groundtruth_blocked::<vectorium::BlockScalarU16Values>(input_path, query_path, output_path, k);
+                        compute_sparse_groundtruth_blocked::<vectorium::BlockScalarU16Values>(input_path, query_path, output_path, k, l1_prune);
                         true
                     }
                     other => {
@@ -371,13 +447,13 @@ fn dispatch(args: Args) -> bool {
             macro_rules! by_value_type {
                 ($C:ty, $D:ty) => {
                     match value_type.as_str() {
-                        "f32" => compute_sparse_groundtruth::<$C, f32, $D>(input_path, query_path, output_path, k),
-                        "f16" => compute_sparse_groundtruth::<$C, f16, $D>(input_path, query_path, output_path, k),
-                        "bf16" => compute_sparse_groundtruth::<$C, bf16, $D>(input_path, query_path, output_path, k),
-                        "fixedu8" => compute_sparse_groundtruth::<$C, FixedU8Q, $D>(input_path, query_path, output_path, k),
-                        "fixedu16" => compute_sparse_groundtruth::<$C, FixedU16Q, $D>(input_path, query_path, output_path, k),
-                        "scalaru8" => compute_sparse_groundtruth_scalar_step::<$C, u8, $D>(input_path, query_path, output_path, k),
-                        "scalaru16" => compute_sparse_groundtruth_scalar_step::<$C, u16, $D>(input_path, query_path, output_path, k),
+                        "f32" => compute_sparse_groundtruth::<$C, f32, $D>(input_path, query_path, output_path, k, l1_prune),
+                        "f16" => compute_sparse_groundtruth::<$C, f16, $D>(input_path, query_path, output_path, k, l1_prune),
+                        "bf16" => compute_sparse_groundtruth::<$C, bf16, $D>(input_path, query_path, output_path, k, l1_prune),
+                        "fixedu8" => compute_sparse_groundtruth::<$C, FixedU8Q, $D>(input_path, query_path, output_path, k, l1_prune),
+                        "fixedu16" => compute_sparse_groundtruth::<$C, FixedU16Q, $D>(input_path, query_path, output_path, k, l1_prune),
+                        "scalaru8" => compute_sparse_groundtruth_scalar_step::<$C, u8, $D>(input_path, query_path, output_path, k, l1_prune),
+                        "scalaru16" => compute_sparse_groundtruth_scalar_step::<$C, u16, $D>(input_path, query_path, output_path, k, l1_prune),
                         _ => {
                             eprintln!(
                                 "Unknown value_type='{}' for sparse. Use value_type='f32'|'f16'|'bf16'|'fixedu8'|'fixedu16'|'scalaru8'|'scalaru16'.",
@@ -429,7 +505,7 @@ fn compute_dense_groundtruth<V, D>(
     let queries = readers::read_npy_f32::<D>(&query_path).expect("failed to read queries");
 
     // Convert dataset from f32 to target value type V using ConvertInto
-    let dataset: ScalarDenseDataset<f32, V, D> = (&dataset_f32).convert_into();
+    let dataset: ScalarDenseDataset<f32, V, D> = (&dataset_f32).convert_into(());
 
     // Print dataset size in GiB
     let dataset_gib = dataset.space_usage_GiB();
@@ -481,7 +557,13 @@ fn compute_dense_groundtruth<V, D>(
     }
 }
 
-const PQ_SUPPORTED_SUBSPACES: [usize; 7] = [128, 96, 64, 32, 16, 8, 4];
+/// Order matters: `--pq-subspaces 0` picks the first entry that divides the dimension.
+///
+/// The four widest values sit at the end so that adding them cannot change what auto-selection
+/// returns. Each is a multiple of an earlier entry (`8 | 24`, `16 | 48`, `64 | 192`, `128 | 256`),
+/// so any dimension one of them divides is already matched further up the list and the search
+/// never reaches them. They are only ever selected by being asked for explicitly.
+const PQ_SUPPORTED_SUBSPACES: [usize; 11] = [128, 96, 64, 32, 16, 8, 4, 256, 192, 48, 24];
 
 #[derive(Copy, Clone, Debug)]
 enum PqDistanceKind {
@@ -559,6 +641,38 @@ fn compute_dense_groundtruth_pq(
     let mut output_path = Some(output_path);
 
     match selected_m {
+        256 => match distance_kind {
+            PqDistanceKind::Euclidean => {
+                run_dense_groundtruth_pq::<256, distances::SquaredEuclideanDistance>(
+                    dataset.take().unwrap(),
+                    queries.take().unwrap(),
+                    k,
+                    output_path.take().unwrap(),
+                )
+            }
+            PqDistanceKind::DotProduct => run_dense_groundtruth_pq::<256, distances::DotProduct>(
+                dataset.take().unwrap(),
+                queries.take().unwrap(),
+                k,
+                output_path.take().unwrap(),
+            ),
+        },
+        192 => match distance_kind {
+            PqDistanceKind::Euclidean => {
+                run_dense_groundtruth_pq::<192, distances::SquaredEuclideanDistance>(
+                    dataset.take().unwrap(),
+                    queries.take().unwrap(),
+                    k,
+                    output_path.take().unwrap(),
+                )
+            }
+            PqDistanceKind::DotProduct => run_dense_groundtruth_pq::<192, distances::DotProduct>(
+                dataset.take().unwrap(),
+                queries.take().unwrap(),
+                k,
+                output_path.take().unwrap(),
+            ),
+        },
         128 => match distance_kind {
             PqDistanceKind::Euclidean => {
                 run_dense_groundtruth_pq::<128, distances::SquaredEuclideanDistance>(
@@ -607,6 +721,22 @@ fn compute_dense_groundtruth_pq(
                 output_path.take().unwrap(),
             ),
         },
+        48 => match distance_kind {
+            PqDistanceKind::Euclidean => {
+                run_dense_groundtruth_pq::<48, distances::SquaredEuclideanDistance>(
+                    dataset.take().unwrap(),
+                    queries.take().unwrap(),
+                    k,
+                    output_path.take().unwrap(),
+                )
+            }
+            PqDistanceKind::DotProduct => run_dense_groundtruth_pq::<48, distances::DotProduct>(
+                dataset.take().unwrap(),
+                queries.take().unwrap(),
+                k,
+                output_path.take().unwrap(),
+            ),
+        },
         32 => match distance_kind {
             PqDistanceKind::Euclidean => {
                 run_dense_groundtruth_pq::<32, distances::SquaredEuclideanDistance>(
@@ -617,6 +747,22 @@ fn compute_dense_groundtruth_pq(
                 )
             }
             PqDistanceKind::DotProduct => run_dense_groundtruth_pq::<32, distances::DotProduct>(
+                dataset.take().unwrap(),
+                queries.take().unwrap(),
+                k,
+                output_path.take().unwrap(),
+            ),
+        },
+        24 => match distance_kind {
+            PqDistanceKind::Euclidean => {
+                run_dense_groundtruth_pq::<24, distances::SquaredEuclideanDistance>(
+                    dataset.take().unwrap(),
+                    queries.take().unwrap(),
+                    k,
+                    output_path.take().unwrap(),
+                )
+            }
+            PqDistanceKind::DotProduct => run_dense_groundtruth_pq::<24, distances::DotProduct>(
                 dataset.take().unwrap(),
                 queries.take().unwrap(),
                 k,
@@ -688,7 +834,10 @@ fn run_dense_groundtruth_pq<const M: usize, D>(
     let start_time = Instant::now();
 
     // Convert dataset using ConvertFrom trait with automatic sampling
-    let pq_dataset: vectorium::DenseDataset<ProductQuantizer<M, D>> = dataset.convert_into();
+    let pq_dataset: vectorium::DenseDataset<ProductQuantizer<M, D>> = (&dataset).convert_into(());
+    // The plain f32 vectors are not needed past this point, and on a large collection they dwarf
+    // the codes; release them before the scan rather than holding both.
+    drop(dataset);
 
     let elapsed = start_time.elapsed();
     println!(
@@ -745,6 +894,205 @@ fn run_dense_groundtruth_pq<const M: usize, D>(
     }
 }
 
+/// RaBitQ knobs collected from the command line. `query_bits` applies to `rabitq` only,
+/// `total_bits` and `faster_quant` to `rabitq-ext` only; the rest are shared.
+#[derive(Copy, Clone, Debug)]
+struct RabitqCliConfig {
+    query_bits: u32,
+    total_bits: u32,
+    seed: u64,
+    rotate: bool,
+    faster_quant: bool,
+}
+
+/// Validate the RaBitQ options against the dataset, then dispatch on metric and encoder.
+///
+/// Unlike PQ, neither encoder needs a const-generic ladder here: `total_bits` is a runtime field,
+/// so the only type-level choice is the metric.
+fn compute_dense_groundtruth_rabitq(
+    input_path: String,
+    query_path: String,
+    output_path: String,
+    k: usize,
+    encoder: &str,
+    distance: &str,
+    config: RabitqCliConfig,
+) -> Result<(), String> {
+    let dataset = readers::read_npy_f32::<distances::SquaredEuclideanDistance>(&input_path)
+        .expect("failed to read dataset");
+    let queries = readers::read_npy_f32::<distances::SquaredEuclideanDistance>(&query_path)
+        .expect("failed to read queries");
+
+    let dim = dataset.input_dim();
+    if !dim.is_multiple_of(64) {
+        return Err(format!(
+            "RaBitQ requires a dataset dimension that is a multiple of 64 (found {dim}); \
+             there is no bit-padding"
+        ));
+    }
+    match encoder {
+        "rabitq" if !(1..=8).contains(&config.query_bits) => {
+            return Err(format!(
+                "rabitq_query_bits must be in 1..=8 (found {})",
+                config.query_bits
+            ));
+        }
+        "rabitq-ext" if !matches!(config.total_bits, 2 | 4 | 8) => {
+            return Err(format!(
+                "rabitq_total_bits must be 2, 4 or 8 (found {}); for 1-bit codes use --encoder rabitq",
+                config.total_bits
+            ));
+        }
+        _ => {}
+    }
+
+    match (encoder, distance) {
+        ("rabitq", "euclidean") => run_dense_groundtruth_rabitq::<
+            distances::SquaredEuclideanDistance,
+        >(dataset, queries, k, output_path, config),
+        ("rabitq", "dotproduct") => run_dense_groundtruth_rabitq::<distances::DotProduct>(
+            dataset,
+            queries,
+            k,
+            output_path,
+            config,
+        ),
+        ("rabitq-ext", "euclidean") => run_dense_groundtruth_rabitq_ext::<
+            distances::SquaredEuclideanDistance,
+        >(dataset, queries, k, output_path, config),
+        ("rabitq-ext", "dotproduct") => run_dense_groundtruth_rabitq_ext::<distances::DotProduct>(
+            dataset,
+            queries,
+            k,
+            output_path,
+            config,
+        ),
+        _ => unreachable!("encoder and distance validated before"),
+    }
+
+    Ok(())
+}
+
+fn run_dense_groundtruth_rabitq<D>(
+    dataset: PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
+    queries: PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
+    k: usize,
+    output_path: String,
+    config: RabitqCliConfig,
+) where
+    D: RabitqSupportedDistance + 'static,
+{
+    let start_time = Instant::now();
+    let encoded: DenseDataset<RabitqQuantizer<D>> = (&dataset).convert_into(RabitqConfig {
+        seed: config.seed,
+        rotate: config.rotate,
+    });
+    // The plain f32 vectors are not needed past this point, and on a large collection they dwarf
+    // the codes; release them before the scan rather than holding both.
+    drop(dataset);
+    println!(
+        "RaBitQ encoding (query_bits={}, seed={}, rotate={}) completed in {:.3}s",
+        config.query_bits,
+        config.seed,
+        config.rotate,
+        start_time.elapsed().as_secs_f64()
+    );
+    scan_dense_and_write(
+        &encoded,
+        &queries,
+        k,
+        output_path,
+        &RabitqQueryParams::new(config.query_bits),
+    );
+}
+
+fn run_dense_groundtruth_rabitq_ext<D>(
+    dataset: PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
+    queries: PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
+    k: usize,
+    output_path: String,
+    config: RabitqCliConfig,
+) where
+    D: RabitqSupportedDistance + 'static,
+{
+    let start_time = Instant::now();
+    let encoded: DenseDataset<RabitqExtQuantizer<D>> = (&dataset).convert_into(RabitqExtConfig {
+        total_bits: config.total_bits,
+        seed: config.seed,
+        rotate: config.rotate,
+        faster_quant: config.faster_quant,
+    });
+    drop(dataset);
+    println!(
+        "Extended RaBitQ encoding (total_bits={}, seed={}, rotate={}, faster_quant={}) completed in {:.3}s",
+        config.total_bits,
+        config.seed,
+        config.rotate,
+        config.faster_quant,
+        start_time.elapsed().as_secs_f64()
+    );
+    scan_dense_and_write(&encoded, &queries, k, output_path, &());
+}
+
+/// Exhaustively score every query against an encoded dense dataset and write the ranked results.
+fn scan_dense_and_write<E>(
+    dataset: &DenseDataset<E>,
+    queries: &PlainDenseDataset<f32, distances::SquaredEuclideanDistance>,
+    k: usize,
+    output_path: String,
+    search_params: &E::QueryParams,
+) where
+    E: vectorium::DenseVectorEncoder + SpaceUsage,
+    E::Distance: Distance,
+    E::OutputValueType: SpaceUsage,
+{
+    println!("N documents: {}", dataset.len());
+    println!("N dims: {}", dataset.input_dim());
+    println!("N queries: {}", queries.len());
+    println!("Dataset size: {:.3} GiB", dataset.space_usage_GiB());
+    println!(
+        "Encoded: {} u64 words per vector",
+        dataset.encoder().output_dim()
+    );
+    println!("Computing ground truth for {} queries...", queries.len());
+
+    let start_time = Instant::now();
+
+    let pb_style = ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec}, ETA: {eta})")
+        .unwrap()
+        .progress_chars("=>-");
+
+    let results: Vec<Vec<(f32, u64)>> = queries
+        .par_iter()
+        .progress_count(queries.len() as u64)
+        .with_style(pb_style)
+        .map(|qvec| {
+            let res: Vec<DatasetResult<E::Distance>> =
+                FlatIndex::from(dataset).search(qvec, k, search_params);
+            res.into_iter()
+                .map(|r| (r.distance.distance(), r.vector))
+                .collect()
+        })
+        .collect();
+
+    let elapsed = start_time.elapsed();
+    println!("Computation completed in {:.3}s", elapsed.as_secs_f64());
+
+    let mut output_file = File::create(output_path).expect("failed to create output file");
+
+    for (query_id, result) in results.iter().enumerate() {
+        for (idx, (score, doc_id)) in result.iter().enumerate() {
+            writeln!(
+                &mut output_file,
+                "{query_id}\t{doc_id}\t{}\t{score}",
+                idx + 1
+            )
+            .expect("failed to write result");
+        }
+    }
+}
+
 /// Trains a ScalarU8/ScalarU16 sparse quantizer (one step per component) on the f32 dataset,
 /// encodes it and runs the exhaustive search.
 fn compute_sparse_groundtruth_scalar_step<C, Code, D>(
@@ -752,6 +1100,7 @@ fn compute_sparse_groundtruth_scalar_step<C, Code, D>(
     query_path: String,
     output_path: String,
     k: usize,
+    l1_prune: Option<f32>,
 ) where
     C: vectorium::ComponentType
         + vectorium::SpaceUsage
@@ -765,12 +1114,13 @@ fn compute_sparse_groundtruth_scalar_step<C, Code, D>(
 
     let plain: PlainSparseDataset<C, f32, D> =
         readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
+    let plain = maybe_l1_prune(plain, l1_prune);
     let queries: PlainSparseDataset<C, f32, D> =
         readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
 
     let start = Instant::now();
     let dataset =
-        vectorium::SparseDataset::<ScalarStepSparseQuantizer<C, Code, D>>::convert_from(plain);
+        vectorium::SparseDataset::<ScalarStepSparseQuantizer<C, Code, D>>::convert_from(plain, ());
     println!(
         "Training + encoding (per-component steps) completed in {:.3}s",
         start.elapsed().as_secs_f64()
@@ -778,11 +1128,47 @@ fn compute_sparse_groundtruth_scalar_step<C, Code, D>(
     search_sparse_and_write(&dataset, &queries, output_path, k);
 }
 
+/// With `Some(percentage)`, L1-prunes every document to the components carrying the top
+/// `percentage`% of its mass and returns that part alone. The residual is dropped on purpose:
+/// this measures what a first stage built over the pruned part could retrieve, so the residual
+/// must not contribute to the scores. Encoders that pack the data see the pruned component
+/// sequence, since pruning happens before encoding.
+fn maybe_l1_prune<C, V, D>(
+    dataset: PlainSparseDataset<C, V, D>,
+    l1_prune: Option<f32>,
+) -> PlainSparseDataset<C, V, D>
+where
+    C: vectorium::ComponentType,
+    V: vectorium::ValueType + Float + vectorium::FromF32 + vectorium::SpaceUsage,
+    D: vectorium::ScalarSparseSupportedDistance,
+{
+    let Some(percentage) = l1_prune else {
+        return dataset;
+    };
+    let prune_start = Instant::now();
+    let (pruned, residual) = vectorium::l1_prune_split(&dataset, percentage);
+    // Empty residuals are the case a two-stage rerank path has to survive, so report
+    // how many this split actually produced rather than leaving it to be assumed.
+    let empty_residuals = residual.iter().filter(|v| v.is_empty()).count();
+    println!(
+        "L1 prune at {percentage}%: {} -> {} non-zeroes kept, {} in the residual; \
+         {} of {} residuals are empty ({:.3}s)",
+        dataset.nnz(),
+        pruned.nnz(),
+        residual.nnz(),
+        empty_residuals,
+        residual.len(),
+        prune_start.elapsed().as_secs_f64()
+    );
+    pruned
+}
+
 fn compute_sparse_groundtruth<C, V, D>(
     input_path: String,
     query_path: String,
     output_path: String,
     k: usize,
+    l1_prune: Option<f32>,
 ) where
     C: vectorium::ComponentType
         + vectorium::SpaceUsage
@@ -794,6 +1180,8 @@ fn compute_sparse_groundtruth<C, V, D>(
     // Read sparse dataset from seismic binary format
     let dataset: PlainSparseDataset<C, V, D> =
         readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
+
+    let dataset = maybe_l1_prune(dataset, l1_prune);
 
     // Queries must use f32 value type for sparse quantizers
     let queries: PlainSparseDataset<C, f32, D> =
@@ -811,7 +1199,7 @@ fn search_sparse_and_write<E, D>(
     output_path: String,
     k: usize,
 ) where
-    E: vectorium::SparseVectorEncoder<Distance = D> + SpaceUsage + Sync,
+    E: vectorium::SparseVectorEncoder<Distance = D, QueryParams = ()> + SpaceUsage + Sync,
     E::OutputComponentType: SpaceUsage,
     E::OutputValueType: SpaceUsage,
     D: vectorium::ScalarSparseSupportedDistance + 'static,
@@ -878,6 +1266,7 @@ fn compute_sparse_groundtruth_dotpacking8(
     component_type: &str,
     values: &str,
     train: bool,
+    l1_prune: Option<f32>,
 ) -> bool {
     use vectorium::{
         BridgedDotPacking8U32ScalarU16Encoder, BridgedDotPacking8U32ScalarU8Encoder,
@@ -908,6 +1297,7 @@ fn compute_sparse_groundtruth_dotpacking8(
         "u16" => {
             let dataset_plain: PlainSparseDataset<u16, f32, distances::DotProduct> =
                 readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
+            let dataset_plain = maybe_l1_prune(dataset_plain, l1_prune);
             let queries: PlainSparseDataset<u16, f32, distances::DotProduct> =
                 readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
             let dim = dataset_plain.output_dim();
@@ -960,6 +1350,7 @@ fn compute_sparse_groundtruth_dotpacking8(
             }
             let dataset_plain: PlainSparseDataset<u32, f32, distances::DotProduct> =
                 readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
+            let dataset_plain = maybe_l1_prune(dataset_plain, l1_prune);
             let queries: PlainSparseDataset<u32, f32, distances::DotProduct> =
                 readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
             let dim = dataset_plain.output_dim();
@@ -990,11 +1381,13 @@ fn compute_sparse_groundtruth_blocked<V: vectorium::BlockValues>(
     query_path: String,
     output_path: String,
     k: usize,
+    l1_prune: Option<f32>,
 ) {
     use vectorium::{BlockedSparseEncoder, PackedSparseDataset};
 
     let dataset_plain: PlainSparseDataset<u16, f32, distances::DotProduct> =
         readers::read_seismic_format(&input_path).expect("failed to read sparse dataset");
+    let dataset_plain = maybe_l1_prune(dataset_plain, l1_prune);
     let queries: PlainSparseDataset<u16, f32, distances::DotProduct> =
         readers::read_seismic_format(&query_path).expect("failed to read sparse queries");
     let plain_bytes = dataset_plain.space_usage_bytes();
@@ -1017,7 +1410,7 @@ fn run_packed_sparse_groundtruth<E>(
     k: usize,
 ) where
     E: vectorium::PackedSparseVectorEncoder<InputValueType = f32>
-        + vectorium::VectorEncoder<Distance = distances::DotProduct>
+        + vectorium::VectorEncoder<Distance = distances::DotProduct, QueryParams = ()>
         + SpaceUsage
         + Sync,
     PlainSparseDataset<E::InputComponentType, f32, distances::DotProduct>: SpaceUsage,
@@ -1050,7 +1443,7 @@ fn search_packed_sparse_and_report<E>(
     k: usize,
 ) where
     E: vectorium::PackedSparseVectorEncoder
-        + vectorium::VectorEncoder<Distance = distances::DotProduct>
+        + vectorium::VectorEncoder<Distance = distances::DotProduct, QueryParams = ()>
         + SpaceUsage
         + Sync,
 {

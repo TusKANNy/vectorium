@@ -55,7 +55,7 @@ mod tests {
             &[2, 4, 6, 8, 24, 70, 90],
             &[0.5, 1.5, 2.5, 1.0, 2.0, 1.0, 2.0],
         );
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
 
         let expected = calculate_expected_distance(&input, &query);
@@ -75,7 +75,7 @@ mod tests {
             &[2, 4, 8, 24, 28, 70, 90],
             &[0.5, 1.5, 2.5, 1.0, 2.0, 1.0, 2.0],
         );
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
 
         let expected = calculate_expected_distance(&input, &query);
@@ -102,7 +102,7 @@ mod tests {
         let query_vals: Vec<_> = (0..num_vals).map(|i| 0.1 + (i % 5) as f32 / 10.0).collect();
         let query = SparseVectorView::new(&components, &query_vals);
 
-        let evaluator = encoder.query_evaluator(query);
+        let evaluator = encoder.query_evaluator(query, &());
         let dist = evaluator.compute_distance(PackedVectorView::new(&buffer));
 
         let expected = calculate_expected_distance(&input, &query);

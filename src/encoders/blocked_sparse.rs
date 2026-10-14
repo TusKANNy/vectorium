@@ -241,7 +241,13 @@ impl<V: BlockValues> VectorEncoder for BlockedSparseEncoder<V> {
     where
         Self: 'e;
 
-    fn query_evaluator<'e>(&'e self, query: Self::QueryVector<'_>) -> Self::Evaluator<'e> {
+    type QueryParams = ();
+
+    fn query_evaluator<'e>(
+        &'e self,
+        query: Self::QueryVector<'_>,
+        _params: &(),
+    ) -> Self::Evaluator<'e> {
         BlockedSparseQueryEvaluator::new(query, self)
     }
 
@@ -487,7 +493,7 @@ mod tests {
 
         // Query: [(1, 3.0), (10, 4.0)]
         let query = SparseVectorView::new(&[1u16, 10], &[3.0f32, 4.0]);
-        let evaluator = dataset.encoder().query_evaluator(query);
+        let evaluator = dataset.encoder().query_evaluator(query, &());
         let dist = evaluator.compute_distance(dataset.get(0));
 
         // Expected: 1.0 * 3.0 + 2.0 * 4.0 = 11.0
@@ -561,7 +567,7 @@ mod tests {
 
         // Verify dot product matches.
         let query = SparseVectorView::new(&[1u16, 10], &[2.0f32, 3.0]);
-        let evaluator = blocked.encoder().query_evaluator(query);
+        let evaluator = blocked.encoder().query_evaluator(query, &());
         let dist = evaluator.compute_distance(blocked.get(0));
 
         let expected = f16::from_f32(1.5).to_f32() * 2.0 + f16::from_f32(2.0).to_f32() * 3.0;
@@ -934,7 +940,7 @@ mod tests {
         }
         let mut scores: Vec<u64> = Vec::new();
         for (qc, qv) in &queries {
-            let eval = encoder.query_evaluator(SparseVectorView::new(qc, qv));
+            let eval = encoder.query_evaluator(SparseVectorView::new(qc, qv), &());
             for blob in &blobs {
                 scores.push(eval.compute_distance(PackedVectorView::new(blob)).distance().to_bits() as u64);
             }
@@ -1009,7 +1015,7 @@ mod tests {
 
         let queries = golden_vectors(dim as u64, 77, &[1, 3, 10, 20, 32, 33, 50, 90]);
         for (qc, qv) in &queries {
-            let eval = encoder.query_evaluator(SparseVectorView::new(qc, qv));
+            let eval = encoder.query_evaluator(SparseVectorView::new(qc, qv), &());
             for blob in &manual {
                 let got = eval.compute_distance(PackedVectorView::new(blob)).distance();
                 let d = encoder.decode_vector(PackedVectorView::new(blob));

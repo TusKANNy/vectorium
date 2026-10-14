@@ -13,6 +13,7 @@
 use crate::core::vector::DenseMultiVectorView;
 use crate::core::vector::{DenseVectorView, SparseVectorView};
 use crate::utils::is_strictly_sorted;
+use crate::utils::numeric_markers::ToF32Fast;
 use crate::{ComponentType, ValueType};
 
 use std::hint::assert_unchecked;
@@ -26,8 +27,11 @@ pub trait Distance: Ord + Copy + Send + Sync + 'static {
     ///
     /// The relaxation parameter `lambda` (typically 0.0 to 0.5) controls how much
     /// wider the acceptance window becomes:
-    /// - For minimize metrics (Euclidean, squared distances): `self ≤ threshold × (1 + λ)`
+    /// - For minimize metrics (Euclidean, squared distances): `self ≤ threshold + |threshold| × λ`
     /// - For maximize metrics (DotProduct, similarities): `self ≥ threshold - |threshold| × λ`
+    ///
+    /// Both forms use `|threshold|` so that the window widens regardless of the threshold's sign:
+    /// quantizers that *estimate* a distance can return negative values for either metric.
     ///
     /// When `lambda = 0.0`, this is equivalent to the standard `self <= threshold` (for minimize)
     /// or `self >= threshold` (for maximize) comparison.
@@ -42,6 +46,18 @@ pub trait Distance: Ord + Copy + Send + Sync + 'static {
 }
 
 /// Squared Euclidean distance wrapper around an `f32`.
+///
+/// The enforced invariant is **not NaN** — deliberately *not* non-negativity. Exact encoders only
+/// produce non-negative values, but quantizers that *estimate* a distance can go below zero:
+/// RaBitQ computes `‖r‖² + ‖r_q‖² − 2‖r‖·‖r_q‖·cos` with an estimated cosine that can exceed 1, so
+/// near-duplicate pairs score negative — including a vector against itself, which is typically the
+/// nearest candidate and therefore the running threshold. Adding a `v >= 0.0` assert to `From<f32>`
+/// would panic on the first query of a debug-build RaBitQ search.
+///
+/// Consumers must not assume a sign. Two places where that assumption has already caused trouble:
+/// [`Distance::is_within_relaxation`] once used `threshold × (1 + λ)`, which *tightens* a negative
+/// bound instead of widening it, and [`Self::sqrt`] returns NaN on a negative value — a NaN that
+/// `total_cmp` orders below every real number, i.e. first in a minimize search.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct SquaredEuclideanDistance(f32);
 
@@ -54,13 +70,26 @@ impl Distance for SquaredEuclideanDistance {
     fn is_within_relaxation(&self, threshold: &Self, lambda: f32) -> bool {
         debug_assert!(lambda.is_finite(), "lambda must be finite");
         debug_assert!(lambda >= 0.0, "lambda must be non-negative");
-        // Minimize metric: accept if candidate ≤ threshold × (1 + λ)
-        self.0 <= threshold.0 * (1.0 + lambda)
+        // Minimize metric: accept if candidate ≤ threshold + |threshold| × λ.
+        //
+        // Equal to `threshold × (1 + λ)` whenever the threshold is non-negative, but written with
+        // `|threshold|` so the window always widens. Estimating encoders can return a negative
+        // squared distance — RaBitQ's unbiased estimator does so routinely for near-duplicate
+        // pairs, including the self-match that typically *becomes* the threshold — and the
+        // multiplicative form would move a negative bound further from zero, tightening the window
+        // exactly when it should loosen. Mirrors the `DotProduct` impl, which is already written
+        // this way. A zero threshold admits no relaxation either way: the relaxation is relative.
+        self.0 <= threshold.0 + threshold.0.abs() * lambda
     }
 }
 
 impl SquaredEuclideanDistance {
     /// Returns the actual Euclidean distance by taking the square root.
+    ///
+    /// Meaningful only for exact encoders. An estimated distance can be negative (see the type
+    /// docs), and this returns NaN for those — deliberately not clamped, since mapping every
+    /// negative to `0.0` would make genuinely different candidates compare equal. Being a monotone
+    /// transform of the stored value, it is never needed for ranking.
     #[inline]
     pub fn sqrt(&self) -> f32 {
         self.0.sqrt()
@@ -68,6 +97,8 @@ impl SquaredEuclideanDistance {
 }
 
 impl From<f32> for SquaredEuclideanDistance {
+    /// Wraps `v` unchanged. The only invariant is non-NaN: negative values are legal and expected
+    /// from estimating quantizers, so do not add a non-negativity assert here (see the type docs).
     fn from(v: f32) -> Self {
         debug_assert!(
             !v.is_nan(),
@@ -191,9 +222,8 @@ where
         .iter()
         .map(|(c, v)| {
             unsafe { *query_slice.get_unchecked(c.as_()) }
-                .to_f32()
-                .unwrap()
-                .algebraic_mul(v.to_f32().unwrap())
+                .to_f32_fast()
+                .algebraic_mul(v.to_f32_fast())
         })
         .fold(0.0, |acc: f32, x| acc.algebraic_add(x))
         .into()
@@ -244,10 +274,9 @@ where
     let mut i = 0;
     while i < min_len {
         for j in 0..6 {
-            let q_val = unsafe { *q.get_unchecked((*comps[j].get_unchecked(i)).as_()) }
-                .to_f32()
-                .unwrap();
-            let v_val = unsafe { (*vals[j].get_unchecked(i)).to_f32().unwrap() };
+            let q_val =
+                unsafe { *q.get_unchecked((*comps[j].get_unchecked(i)).as_()) }.to_f32_fast();
+            let v_val = unsafe { (*vals[j].get_unchecked(i)).to_f32_fast() };
             accs[j] = accs[j].algebraic_add(q_val.algebraic_mul(v_val));
         }
         i += 1;
@@ -257,10 +286,9 @@ where
     for j in 0..6 {
         let mut ij = min_len;
         while ij < lens[j] {
-            let q_val = unsafe { *q.get_unchecked((*comps[j].get_unchecked(ij)).as_()) }
-                .to_f32()
-                .unwrap();
-            let v_val = unsafe { (*vals[j].get_unchecked(ij)).to_f32().unwrap() };
+            let q_val =
+                unsafe { *q.get_unchecked((*comps[j].get_unchecked(ij)).as_()) }.to_f32_fast();
+            let v_val = unsafe { (*vals[j].get_unchecked(ij)).to_f32_fast() };
             accs[j] = accs[j].algebraic_add(q_val.algebraic_mul(v_val));
             ij += 1;
         }
@@ -339,7 +367,7 @@ where
         }
         match current {
             Some((v_id, v_v)) if v_id == q_id => {
-                result += v_v.to_f32().unwrap() * q_v.to_f32().unwrap();
+                result += v_v.to_f32_fast() * q_v.to_f32_fast();
             }
             None => {
                 break;
@@ -388,7 +416,7 @@ where
     query
         .iter()
         .zip(vector.iter())
-        .map(|(q, v)| q.to_f32().unwrap().algebraic_mul(v.to_f32().unwrap()))
+        .map(|(q, v)| q.to_f32_fast().algebraic_mul(v.to_f32_fast()))
         .fold(0.0, |acc: f32, x| acc.algebraic_add(x))
         .into()
 }
@@ -428,13 +456,13 @@ where
 
     for i in 0..d {
         unsafe {
-            let qi = q.get_unchecked(i).to_f32().unwrap();
-            r0 = r0.algebraic_add(qi.algebraic_mul(a0.get_unchecked(i).to_f32().unwrap()));
-            r1 = r1.algebraic_add(qi.algebraic_mul(a1.get_unchecked(i).to_f32().unwrap()));
-            r2 = r2.algebraic_add(qi.algebraic_mul(a2.get_unchecked(i).to_f32().unwrap()));
-            r3 = r3.algebraic_add(qi.algebraic_mul(a3.get_unchecked(i).to_f32().unwrap()));
-            r4 = r4.algebraic_add(qi.algebraic_mul(a4.get_unchecked(i).to_f32().unwrap()));
-            r5 = r5.algebraic_add(qi.algebraic_mul(a5.get_unchecked(i).to_f32().unwrap()));
+            let qi = q.get_unchecked(i).to_f32_fast();
+            r0 = r0.algebraic_add(qi.algebraic_mul(a0.get_unchecked(i).to_f32_fast()));
+            r1 = r1.algebraic_add(qi.algebraic_mul(a1.get_unchecked(i).to_f32_fast()));
+            r2 = r2.algebraic_add(qi.algebraic_mul(a2.get_unchecked(i).to_f32_fast()));
+            r3 = r3.algebraic_add(qi.algebraic_mul(a3.get_unchecked(i).to_f32_fast()));
+            r4 = r4.algebraic_add(qi.algebraic_mul(a4.get_unchecked(i).to_f32_fast()));
+            r5 = r5.algebraic_add(qi.algebraic_mul(a5.get_unchecked(i).to_f32_fast()));
         }
     }
     [
@@ -488,8 +516,8 @@ where
         .iter()
         .zip(vector.values().iter())
         .map(|(q, c)| {
-            let q = q.to_f32().unwrap();
-            let c = c.to_f32().unwrap();
+            let q = q.to_f32_fast();
+            let c = c.to_f32_fast();
             let diff = q.algebraic_sub(c);
             diff.algebraic_mul(diff)
         })
@@ -533,13 +561,13 @@ where
 
     for i in 0..d {
         unsafe {
-            let qi = q.get_unchecked(i).to_f32().unwrap();
-            let d0 = qi.algebraic_sub(a0.get_unchecked(i).to_f32().unwrap());
-            let d1 = qi.algebraic_sub(a1.get_unchecked(i).to_f32().unwrap());
-            let d2 = qi.algebraic_sub(a2.get_unchecked(i).to_f32().unwrap());
-            let d3 = qi.algebraic_sub(a3.get_unchecked(i).to_f32().unwrap());
-            let d4 = qi.algebraic_sub(a4.get_unchecked(i).to_f32().unwrap());
-            let d5 = qi.algebraic_sub(a5.get_unchecked(i).to_f32().unwrap());
+            let qi = q.get_unchecked(i).to_f32_fast();
+            let d0 = qi.algebraic_sub(a0.get_unchecked(i).to_f32_fast());
+            let d1 = qi.algebraic_sub(a1.get_unchecked(i).to_f32_fast());
+            let d2 = qi.algebraic_sub(a2.get_unchecked(i).to_f32_fast());
+            let d3 = qi.algebraic_sub(a3.get_unchecked(i).to_f32_fast());
+            let d4 = qi.algebraic_sub(a4.get_unchecked(i).to_f32_fast());
+            let d5 = qi.algebraic_sub(a5.get_unchecked(i).to_f32_fast());
             r0 = r0.algebraic_add(d0.algebraic_mul(d0));
             r1 = r1.algebraic_add(d1.algebraic_mul(d1));
             r2 = r2.algebraic_add(d2.algebraic_mul(d2));
@@ -567,7 +595,7 @@ where
         .values()
         .iter()
         .map(|v| {
-            let v = v.to_f32().unwrap();
+            let v = v.to_f32_fast();
             v.algebraic_mul(v)
         })
         .fold(0.0f32, |acc, x| acc.algebraic_add(x))
@@ -742,7 +770,7 @@ where
     for d_token in doc.iter_vectors() {
         // Materialize this doc token to f32 once.
         for (dst, &src) in d_buf.iter_mut().zip(d_token.values()) {
-            *dst = src.to_f32().unwrap();
+            *dst = src.to_f32_fast();
         }
         let d_f32 = DenseVectorView::new(d_buf);
 
@@ -1154,6 +1182,50 @@ mod tests {
     }
 
     #[test]
+    fn euclidean_relaxation_widens_for_a_negative_threshold() {
+        // An estimating encoder can return a negative squared distance (RaBitQ does, for
+        // near-duplicate pairs), and such a value can be the running threshold. Relaxation must
+        // still *admit* more candidates, so the bound has to move toward zero, not away from it.
+        let threshold = SquaredEuclideanDistance::from(-10.0);
+
+        // Bound is −10 + 10 × 0.1 = −9: strictly looser than the un-relaxed −10.
+        let candidate = SquaredEuclideanDistance::from(-9.5);
+        assert!(!candidate.is_within_relaxation(&threshold, 0.0));
+        assert!(candidate.is_within_relaxation(&threshold, 0.1));
+
+        let candidate2 = SquaredEuclideanDistance::from(-8.5);
+        assert!(!candidate2.is_within_relaxation(&threshold, 0.1));
+
+        // Anything the un-relaxed test accepts must stay accepted for every λ.
+        let nearer = SquaredEuclideanDistance::from(-11.0);
+        assert!(nearer.is_within_relaxation(&threshold, 0.0));
+        assert!(nearer.is_within_relaxation(&threshold, 0.3));
+    }
+
+    #[test]
+    fn euclidean_relaxation_is_monotone_in_lambda() {
+        // Whatever the threshold's sign, a larger λ can only ever accept more.
+        for threshold in [-25.0f32, -1.0, 0.0, 1.0, 25.0] {
+            let threshold = SquaredEuclideanDistance::from(threshold);
+            for candidate in [-30.0f32, -12.5, -0.5, 0.0, 0.5, 12.5, 30.0] {
+                let candidate = SquaredEuclideanDistance::from(candidate);
+                let mut accepted = candidate.is_within_relaxation(&threshold, 0.0);
+                for lambda in [0.1f32, 0.2, 0.5, 1.0] {
+                    let now = candidate.is_within_relaxation(&threshold, lambda);
+                    assert!(
+                        now || !accepted,
+                        "λ = {lambda} rejected candidate {:?} that a smaller λ accepted \
+                         (threshold {:?})",
+                        candidate.distance(),
+                        threshold.distance()
+                    );
+                    accepted = now;
+                }
+            }
+        }
+    }
+
+    #[test]
     fn dotproduct_no_relaxation() {
         let candidate = DotProduct::from(0.9);
         let threshold = DotProduct::from(0.9);
@@ -1252,14 +1324,19 @@ mod tests {
         candidate.is_within_relaxation(&threshold, f32::NAN);
     }
 
+    // The NaN guards are `debug_assert!`s — `From<f32>` runs once per scanned candidate, so the
+    // check must not survive into release builds. Gated like the `lambda` tests above, which make
+    // the same trade.
     #[test]
     #[should_panic(expected = "NaN is not allowed for DotProduct")]
+    #[cfg(debug_assertions)]
     fn dot_product_from_nan_panics() {
         let _ = DotProduct::from(f32::NAN);
     }
 
     #[test]
     #[should_panic(expected = "NaN is not allowed for SquaredEuclideanDistance")]
+    #[cfg(debug_assertions)]
     fn squared_euclidean_from_nan_panics() {
         let _ = SquaredEuclideanDistance::from(f32::NAN);
     }
