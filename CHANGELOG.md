@@ -127,4 +127,5 @@ API differences besides the names:
 | Commit | Change |
 |---|---|
 | `7f76345` | `FlatIndex::search` (used by `Dataset::search`) marks its per-vector closure `#[inline(always)]`. Measured: no slowdown on plain sparse/dense, fixes a +4.3% regression on DotPacking8 F16. |
+| `eb4ca45` | `prefetch_read_slice` (used by every `prefetch_with_range`) prefetches up to 512 bytes instead of 256. Measured on Seismic (MS MARCO cocondenser), against the 256-byte cap: blocked-sparse −19% / −15% query time, DotPacking8 F16 −8% / −4%, DotPacking8 scalar u8 −5% / −3%. Dense workloads not measured. |
 | — | No nightly feature was added or removed relative to `main`. |
