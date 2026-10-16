@@ -15,8 +15,9 @@ pub fn prefetch_read_slice<T>(data: &[T]) {
     let len = core::mem::size_of_val(data);
 
     // Looping with pointer arithmetic improves unrolling and avoids bounds checks.
-    // Prefetching only 256 bytes per vector is enough and prevents cache pollution.
-    let len_to_prefetch = len.min(256);
+    // Prefetch at most 512 bytes: enough for the vectors and ranges read right after, without
+    // polluting the cache. 256 bytes slowed Seismic's posting-block scans by up to 24%.
+    let len_to_prefetch = len.min(512);
     let mut i = 0;
     while i < len_to_prefetch {
         unsafe {
