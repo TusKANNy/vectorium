@@ -22,7 +22,7 @@ half = { version = "2.6", features = [
     "num-traits",
 ] }
 ndarray = "0.16"
-ndarray-npy = "0.9"
+ndarray-npy = {version="0.9", default-features = false}
 # TODO: use upstream when https://gitlab.com/tspiteri/fixed/-/issues/69 is fixed
 # If it's not getting fixed, prefer using a git patch when https://github.com/rust-lang/cargo/issues/4648 is fixed
 fixed = { git = "https://gitlab.com/tinozzo123/fixed", rev = "e7d72487b9da972d3ed7aec7bc32c12cd8881994", features = ["num-traits", "serde"] }
